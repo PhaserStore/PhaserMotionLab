@@ -33,7 +33,7 @@
     // beat-sync engine
     beatSensitivity: 55, bassReaction: 70, midReaction: 50, highReaction: 55,
     smoothing: 60, peakThreshold: 60, motionIntensity: 65, syncTightness: 65,
-    audioReactive: true,
+    audioReactive: true, snapBeat: false, autoKeyframes: false,
     // output
     bgMode: "custom", bgColor: "#0B0B0F", bgColor2: "#1A1030",
     format: { w: 1080, h: 1080, label: "Post 1:1" },
@@ -41,6 +41,15 @@
     exposeSub: false,   // default: group SVG as single layer
     zoom: 1, zoomMode: "fit",
     time: 0,
+    // audio mixer (0..1.2)
+    mixMaster: 1, mixMusic: 1, mixSfx: 0.9, mixVoice: 1,
+    muteMaster: false, muteMusic: false, muteSfx: false, muteVoice: false,
+    // BPM estimate (0 = unknown)
+    bpm: 0,
+    // timeline zoom multiplier (1 = "fill available width")
+    tlZoom: 1,
+    // event-clip creation options
+    attachSfx: false, attachSfxId: "",
     // live audio runtime
     audioLevel: 0, bassLevel: 0, midLevel: 0, highLevel: 0, beat: 0, peak: 0, buildup: 0,
   };
@@ -89,6 +98,25 @@
   ];
   const FX_TRANSFORM = new Set(FX_LIBRARY.filter((f) => f.transform).map((f) => f.key));
 
+  // Event-only effects: short timeline events, not sustained toggles.
+  // Reference-style hits — brief signal interruptions rather than
+  // permanent visual effects.
+  const FX_EVENTS = [
+    { key: "focusSnap",      label: "Focus Snap",       defDur: 0.20 },
+    { key: "signalInterrupt",label: "Signal Interrupt", defDur: 0.10 },
+    { key: "frameHold",      label: "Frame Hold",       defDur: 0.16 },
+    { key: "rgbSpike",       label: "RGB Spike",        defDur: 0.12 },
+    { key: "hardCutEvent",   label: "Hard Cut Event",   defDur: 0.08 },
+    { key: "radarSweep",     label: "Radar Sweep",      defDur: 1.50 },
+    { key: "scanRevealEvent",label: "Scan Reveal",      defDur: 0.90 },
+    { key: "coordBlinkEvt",  label: "Coordinate Blink", defDur: 0.30 },
+    { key: "dataBreakEvent", label: "Data Break",       defDur: 0.18 },
+    { key: "pathEnergize",   label: "Path Energize",    defDur: 1.20 },
+    { key: "layerSwap",      label: "Layer Swap",       defDur: 0.10 },
+    { key: "textReplace",    label: "Text Replace",     defDur: 0.30 },
+  ];
+  const FX_EVENT_KEYS = new Set(FX_EVENTS.map((f) => f.key));
+
   /* ---------------- PRESETS (public names, no private refs) ----------------
      fx: effect keys. patch: scene params. transform stays off unless the
      preset explicitly needs it (none of the defaults rotate/zoom). */
@@ -102,6 +130,9 @@
     "CRT Monitor":         { fx: ["scanReveal","dataBreakup","oscilloscope","pulseGlow"], patch: { flicker: 28, blur: 10, scanline: 95, noise: 34, glow: 40 } },
     "Interface Intro":     { fx: ["blurIn","lineDraw","hudOverlay","rgbOffset"], patch: { flicker: 26, scanline: 50, rgbSplit: 30, glow: 45 }, stagger: true },
     "Hardware Motion Intro":{ fx: ["blurIn","scanReveal","hudOverlay","coordBlink","trimPaths"], patch: { flicker: 24, scanline: 55, glow: 50, blur: 12 }, stagger: true },
+    "Terrain Scanner":     { fx: ["lineDraw","radarSweep","coordBlink","scanReveal","dataStream","rgbOffset"], patch: { flicker: 22, scanline: 60, rgbSplit: 22, glow: 50, noise: 14 } },
+    "Detroit Techno":      { fx: ["hardCut","rgbOffset","scanReveal","flickerBlocks","pulseGlow"], patch: { flicker: 42, rgbSplit: 46, scanline: 42, glow: 55, bassReaction: 90, motionIntensity: 85 } },
+    "Data Terminal":       { fx: ["textFlicker","hudOverlay","coordBlink","dataStream","oscilloscope","scanReveal"], patch: { flicker: 34, scanline: 60, noise: 20, glow: 40 } },
   };
 
   /* ---------------- DOM ---------------- */
@@ -132,14 +163,25 @@
     colApplyFill: $("#colApplyFill"), colApplyStroke: $("#colApplyStroke"), colApplyAll: $("#colApplyAll"),
     colRestore: $("#colRestore"), colMono: $("#colMono"), colInvert: $("#colInvert"),
     // fx
-    fxEmpty: $("#fxEmpty"), fxBody: $("#fxBody"), fxToggleGrid: $("#fxToggleGrid"), allowTransform: $("#allowTransform"),
+    fxEmpty: $("#fxEmpty"), fxBody: $("#fxBody"), fxToggleGrid: $("#fxToggleGrid"), fxEventGrid: $("#fxEventGrid"), allowTransform: $("#allowTransform"),
+    attachSfx: $("#attachSfx"), attachSfxSel: $("#attachSfxSel"),
+    // selected clip
+    clipEmpty: $("#clipEmpty"), clipBody: $("#clipBody"), clipType: $("#clipType"), clipTrack: $("#clipTrack"),
+    clipMute: $("#clipMute"), clipDup: $("#clipDup"), clipDel: $("#clipDel"), clipPreview: $("#clipPreview"), clipVolRow: $("#clipVolRow"),
     // audio
     audioBtn: $("#audioBtn"), audioInput: $("#audioInput"), levelFill: $("#levelFill"), audioName: $("#audioName"),
     audioReactiveToggle: $("#audioReactiveToggle"), beatMeter: $("#beatMeter"),
+    bpmVal: $("#bpmVal"), snapBeat: $("#snapBeat"), autoKeyframes: $("#autoKeyframes"),
+    // sfx library
+    sfxDropzone: $("#sfxDropzone"), sfxInput: $("#sfxInput"), sfxList: $("#sfxList"), sfxCount: $("#sfxCount"),
+    // mixer
+    mixerGroup: $("#mixerGroup"),
     // bg
     bgColor: $("#bgColor"), bgHex: $("#bgHex"),
     // timeline
-    tlBody: $("#tlBody"), tlRuler: $("#tlRuler"), tlTracks: $("#tlTracks"), tlEmpty: $("#tlEmpty"), tlPlayhead: $("#tlPlayhead"), durSegTl: $("#durSegTl"),
+    tlBody: $("#tlBody"), tlRuler: $("#tlRuler"), tlTracks: $("#tlTracks"), tlEmpty: $("#tlEmpty"), tlPlayhead: $("#tlPlayhead"),
+    tlAudioTracks: $("#tlAudioTracks"), tlTracksWrap: $("#tlTracksWrap"), durSegTl: $("#durSegTl"),
+    tlZoom: $("#tlZoom"), markerBtn: $("#markerBtn"),
     // export
     exportBtn: $("#exportBtn"), exportSheet: $("#exportSheet"), exportClose: $("#exportClose"),
     exportPng: $("#exportPng"), exportPngT: $("#exportPngT"), exportSeq: $("#exportSeq"), exportSeqT: $("#exportSeqT"),
@@ -148,6 +190,23 @@
     layerModeRow: $("#layerModeRow"),
     toast: $("#toast"),
   };
+
+  /* ---------------- AUDIO / SFX STATE ---------------- */
+  // Audio graph:
+  //   [each clip source] -> [clip GainNode] -> [trackBus GainNode] -> [masterBus] -> destination
+  // Music (main track) uses a separate MediaElementSource -> analyser + musicBus.
+  // Peaks/BPM come from the analyser reading of the music.
+  const sounds = [];         // library: { id, name, url, buffer, duration }
+  const audioClips = [];     // placed on timeline: { id, soundId, track: 'sfx1'|'sfx2'|'sfx3'|'voice', start, duration, volume, muted, selected, gain, source }
+  const markers = [];        // { type: 'beat'|'peak'|'manual', time }
+  let selectedAudioClip = null;
+  const AUDIO_TRACKS = [
+    { id: "music",  label: "Music",  color: "music",  fixed: true },
+    { id: "sfx1",   label: "SFX 1",  color: "sfx",    fixed: false },
+    { id: "sfx2",   label: "SFX 2",  color: "sfx",    fixed: false },
+    { id: "sfx3",   label: "SFX 3",  color: "sfx",    fixed: false },
+    { id: "voice",  label: "Voice",  color: "voice",  fixed: false },
+  ];
 
   /* ---------------- ASSETS + LAYERS ---------------- */
   const assets = [];
@@ -255,6 +314,7 @@
       transform: { cx: 0, cy: 0, wPct: (wPx / A.w) * 100, hPct: (hPx / A.h) * 100, rot: 0, opacity: 100 },
       start: 0, duration: STATE.duration,
       fx: [], allowTransform: false,
+      clips: [],   // timeline event clips: { id, fxKey, start, duration }
       recipe: makeRecipe(id * 131),
       originalColors: null,
     };
@@ -292,6 +352,7 @@
     const dup = layers[layers.length - 1];
     dup.transform = { ...layer.transform, cx: layer.transform.cx + 4, cy: layer.transform.cy + 4 };
     dup.fx = layer.fx.slice(); dup.allowTransform = layer.allowTransform;
+    dup.clips = layer.clips.map((c) => ({ ...c, id: ++idSeq }));
     dup.start = layer.start; dup.duration = layer.duration;
     renderLayers(); renderTimeline(); paintIfPaused();
   }
@@ -377,10 +438,27 @@
       b.addEventListener("click", () => {
         const i = selectedLayer.fx.indexOf(fx.key);
         if (i >= 0) selectedLayer.fx.splice(i, 1); else selectedLayer.fx.push(fx.key);
-        b.classList.toggle("on"); if (selectedLayer.fx.length && !STATE.playing) startPlayback(); else if (!selectedLayer.fx.length) paintIfPaused();
+        b.classList.toggle("on");
+        renderTimeline();
+        if (selectedLayer.fx.length && !STATE.playing) startPlayback(); else if (!selectedLayer.fx.length) paintIfPaused();
       });
       el.fxToggleGrid.appendChild(b);
     });
+    // event-clip buttons
+    if (el.fxEventGrid) {
+      el.fxEventGrid.innerHTML = "";
+      FX_EVENTS.forEach((fx) => {
+        const b = document.createElement("button");
+        b.className = "fx-event";
+        b.innerHTML = `<span class="fx-dot"></span>${fx.label}`;
+        b.title = `Add a ${fx.label} event clip at the current time (${fx.defDur.toFixed(2)}s)`;
+        b.addEventListener("click", () => {
+          const c = createEventClip(fx.key, selectedLayer);
+          if (c) { toast(`+ ${fx.label} @ ${(selectedLayer.start + c.start).toFixed(2)}s`); startPlayback(); }
+        });
+        el.fxEventGrid.appendChild(b);
+      });
+    }
     if (isSvg) { el.colorNote.hidden = !selectedLayer.complex; }
   }
   function initialWPct(layer) {
@@ -452,28 +530,81 @@
   }
 
   /* ---------------- TIMELINE ---------------- */
-  const TL = { pxPerSec: 0, dragClip: null, mode: null, startX: 0, orig: null };
-  function renderTimeline() {
+  const TL = { pxPerSec: 0, dragClip: null, mode: null, startX: 0, orig: null, dragEvent: null, dragAudio: null };
+  function computePxPerSec() {
     const bodyW = el.tlTracks.clientWidth || el.tlBody.clientWidth || 600;
-    TL.pxPerSec = bodyW / STATE.duration;
+    TL.pxPerSec = (bodyW / STATE.duration) * (STATE.tlZoom || 1);
+  }
+  function renderTimeline() {
+    computePxPerSec();
+    // ruler
     el.tlRuler.innerHTML = "";
     for (let s = 0; s <= STATE.duration; s++) { const tick = document.createElement("div"); tick.className = "tl-tick"; tick.style.left = (s * TL.pxPerSec) + "px"; tick.textContent = s + "s"; el.tlRuler.appendChild(tick); }
+    // markers overlay (draw in ruler and behind tracks)
+    markers.forEach((m) => { const mk = document.createElement("div"); mk.className = "tl-marker " + m.type; mk.style.left = (m.time * TL.pxPerSec) + "px"; el.tlRuler.appendChild(mk); });
+
+    // VISUAL tracks
     el.tlEmpty.style.display = layers.length ? "none" : "";
     el.tlTracks.querySelectorAll(".tl-track").forEach((n) => n.remove());
     [...layers].reverse().forEach((layer) => {
       const track = document.createElement("div"); track.className = "tl-track";
+      // marker lines behind clip (subtle)
+      markers.forEach((m) => { const mk = document.createElement("div"); mk.className = "tl-marker " + m.type; mk.style.left = (m.time * TL.pxPerSec) + "px"; track.appendChild(mk); });
       const label = document.createElement("span"); label.className = "tl-track-label"; label.textContent = layer.name; track.appendChild(label);
-      const clip = document.createElement("div"); clip.className = "tl-clip" + (layer === selectedLayer ? " selected" : "");
+      // main sustained clip
+      const clip = document.createElement("div"); clip.className = "tl-clip" + (layer === selectedLayer && !selectedAudioClip ? " selected" : "");
       clip.style.left = (layer.start * TL.pxPerSec) + "px"; clip.style.width = Math.max(14, layer.duration * TL.pxPerSec) + "px";
-      const fxName = layer.fx.length ? layer.fx.length + " fx" : "no fx";
-      clip.innerHTML = `<span class="tl-handle left"></span><span class="tl-clip-label">${layer.name} \u00b7 ${fxName}</span><span class="tl-handle right"></span>`;
+      const summary = (layer.fx.length ? layer.fx.length + " fx" : "no fx") + (layer.clips.length ? " · " + layer.clips.length + " ev" : "");
+      clip.innerHTML = `<span class="tl-handle left"></span><span class="tl-clip-label">${layer.name} \u00b7 ${summary}</span><span class="tl-handle right"></span>`;
       clip.addEventListener("mousedown", (e) => startClipDrag(e, layer, clip));
-      clip.addEventListener("click", (e) => { e.stopPropagation(); selectLayer(layer); });
-      track.appendChild(clip); el.tlTracks.appendChild(track);
+      clip.addEventListener("click", (e) => { e.stopPropagation(); selectLayer(layer); selectAudioClip(null); });
+      track.appendChild(clip);
+      // event clips
+      layer.clips.forEach((c) => {
+        const ec = document.createElement("div"); ec.className = "tl-clip event"; ec.dataset.eid = c.id;
+        ec.style.left = ((layer.start + c.start) * TL.pxPerSec) + "px";
+        ec.style.width = Math.max(6, c.duration * TL.pxPerSec) + "px";
+        const def = FX_EVENTS.find((f) => f.key === c.fxKey);
+        ec.innerHTML = `<span class="tl-handle left"></span><span class="tl-clip-label">${def ? def.label : c.fxKey}</span><span class="tl-handle right"></span>`;
+        ec.addEventListener("mousedown", (e) => { e.stopPropagation(); startEventClipDrag(e, layer, c, ec); });
+        ec.addEventListener("click", (e) => { e.stopPropagation(); selectEventClip(layer, c); });
+        track.appendChild(ec);
+      });
+      el.tlTracks.appendChild(track);
+    });
+
+    // AUDIO tracks (music + sfx1/2/3 + voice)
+    el.tlAudioTracks.innerHTML = "";
+    AUDIO_TRACKS.forEach((tr) => {
+      const track = document.createElement("div"); track.className = "tl-track";
+      markers.forEach((m) => { const mk = document.createElement("div"); mk.className = "tl-marker " + m.type; mk.style.left = (m.time * TL.pxPerSec) + "px"; track.appendChild(mk); });
+      const label = document.createElement("span"); label.className = "tl-track-label"; label.innerHTML = `<span class="mix-lbl mix-${tr.color}">${tr.label}</span>`; track.appendChild(label);
+      // music clip (fake single-clip representation for the loaded music)
+      if (tr.id === "music" && audio.ready && audio.el) {
+        const musicDur = Math.min(STATE.duration, isFinite(audio.el.duration) ? audio.el.duration : STATE.duration);
+        const mc = document.createElement("div"); mc.className = "tl-clip audio music" + (STATE.muteMusic ? " muted" : "");
+        mc.style.left = "0px"; mc.style.width = Math.max(14, musicDur * TL.pxPerSec) + "px";
+        mc.innerHTML = `<span class="tl-clip-label">${(el.audioName.textContent || "Music")}</span>`;
+        mc.addEventListener("click", () => { STATE.muteMusic = !STATE.muteMusic; refreshMixer(); renderTimeline(); });
+        track.appendChild(mc);
+      }
+      // audio clips on this track
+      audioClips.filter((c) => c.track === tr.id).forEach((c) => {
+        const s = sounds.find((x) => x.id === c.soundId);
+        const cn = document.createElement("div");
+        cn.className = "tl-clip audio " + tr.color + (c.muted ? " muted" : "") + (selectedAudioClip === c ? " selected" : "");
+        cn.dataset.aid = c.id;
+        cn.style.left = (c.start * TL.pxPerSec) + "px"; cn.style.width = Math.max(14, c.duration * TL.pxPerSec) + "px";
+        cn.innerHTML = `<span class="tl-handle left"></span><span class="tl-clip-label">${s ? s.name : "sound"}</span><span class="tl-handle right"></span>`;
+        cn.addEventListener("mousedown", (e) => { e.stopPropagation(); startAudioClipDrag(e, c, cn); });
+        cn.addEventListener("click", (e) => { e.stopPropagation(); selectAudioClip(c); });
+        track.appendChild(cn);
+      });
+      el.tlAudioTracks.appendChild(track);
     });
   }
   function startClipDrag(e, layer, clip) {
-    e.preventDefault(); selectLayer(layer);
+    e.preventDefault(); selectLayer(layer); selectAudioClip(null);
     const isLeft = e.target.classList.contains("left"), isRight = e.target.classList.contains("right");
     TL.dragClip = { layer, clip }; TL.mode = isLeft ? "trim-left" : isRight ? "trim-right" : "move";
     TL.startX = e.clientX; TL.orig = { start: layer.start, duration: layer.duration };
@@ -486,9 +617,93 @@
     if (TL.mode === "move") layer.start = clamp(o.start + dx, 0, Math.max(0, D - layer.duration));
     else if (TL.mode === "trim-left") { const ns = clamp(o.start + dx, 0, o.start + o.duration - 0.2); layer.duration = o.duration - (ns - o.start); layer.start = ns; }
     else if (TL.mode === "trim-right") layer.duration = clamp(o.duration + dx, 0.2, D - layer.start);
+    if (STATE.snapBeat) layer.start = snapTimeToBeat(layer.start);
     const c = TL.dragClip.clip; c.style.left = (layer.start * TL.pxPerSec) + "px"; c.style.width = Math.max(14, layer.duration * TL.pxPerSec) + "px";
   }
   function endClipDrag() { if (TL.dragClip) TL.dragClip.clip.classList.remove("dragging"); TL.dragClip = null; document.removeEventListener("mousemove", onClipDrag); document.removeEventListener("mouseup", endClipDrag); }
+
+  function startEventClipDrag(e, layer, ec, node) {
+    e.preventDefault(); selectEventClip(layer, ec);
+    const isLeft = e.target.classList.contains("left"), isRight = e.target.classList.contains("right");
+    TL.dragEvent = { layer, ec, node, mode: isLeft ? "trim-left" : isRight ? "trim-right" : "move", startX: e.clientX, orig: { start: ec.start, duration: ec.duration } };
+    node.classList.add("dragging");
+    document.addEventListener("mousemove", onEventClipDrag); document.addEventListener("mouseup", endEventClipDrag);
+  }
+  function onEventClipDrag(e) {
+    if (!TL.dragEvent) return;
+    const D = TL.dragEvent, dx = (e.clientX - D.startX) / TL.pxPerSec, layerDur = D.layer.duration;
+    if (D.mode === "move") D.ec.start = clamp(D.orig.start + dx, 0, Math.max(0, layerDur - D.ec.duration));
+    else if (D.mode === "trim-left") { const ns = clamp(D.orig.start + dx, 0, D.orig.start + D.orig.duration - 0.02); D.ec.duration = D.orig.duration - (ns - D.orig.start); D.ec.start = ns; }
+    else if (D.mode === "trim-right") D.ec.duration = clamp(D.orig.duration + dx, 0.02, layerDur - D.ec.start);
+    if (STATE.snapBeat) D.ec.start = snapTimeToBeat(D.ec.start + D.layer.start) - D.layer.start;
+    D.node.style.left = ((D.layer.start + D.ec.start) * TL.pxPerSec) + "px";
+    D.node.style.width = Math.max(6, D.ec.duration * TL.pxPerSec) + "px";
+    renderClipInspector();
+  }
+  function endEventClipDrag() { if (TL.dragEvent) TL.dragEvent.node.classList.remove("dragging"); TL.dragEvent = null; document.removeEventListener("mousemove", onEventClipDrag); document.removeEventListener("mouseup", endEventClipDrag); }
+
+  function startAudioClipDrag(e, ac, node) {
+    e.preventDefault(); selectAudioClip(ac);
+    const isLeft = e.target.classList.contains("left"), isRight = e.target.classList.contains("right");
+    TL.dragAudio = { ac, node, mode: isLeft ? "trim-left" : isRight ? "trim-right" : "move", startX: e.clientX, orig: { start: ac.start, duration: ac.duration } };
+    node.classList.add("dragging");
+    document.addEventListener("mousemove", onAudioClipDrag); document.addEventListener("mouseup", endAudioClipDrag);
+  }
+  function onAudioClipDrag(e) {
+    if (!TL.dragAudio) return;
+    const D = TL.dragAudio, dx = (e.clientX - D.startX) / TL.pxPerSec, dur = STATE.duration;
+    if (D.mode === "move") D.ac.start = clamp(D.orig.start + dx, 0, Math.max(0, dur - D.ac.duration));
+    else if (D.mode === "trim-left") { const ns = clamp(D.orig.start + dx, 0, D.orig.start + D.orig.duration - 0.05); D.ac.duration = D.orig.duration - (ns - D.orig.start); D.ac.start = ns; }
+    else if (D.mode === "trim-right") D.ac.duration = clamp(D.orig.duration + dx, 0.05, dur - D.ac.start);
+    if (STATE.snapBeat) D.ac.start = snapTimeToBeat(D.ac.start);
+    D.node.style.left = (D.ac.start * TL.pxPerSec) + "px";
+    D.node.style.width = Math.max(14, D.ac.duration * TL.pxPerSec) + "px";
+    renderClipInspector();
+  }
+  function endAudioClipDrag() { if (TL.dragAudio) TL.dragAudio.node.classList.remove("dragging"); TL.dragAudio = null; document.removeEventListener("mousemove", onAudioClipDrag); document.removeEventListener("mouseup", endAudioClipDrag); }
+
+  /* ---- Clip selection helpers ---- */
+  let selectedEventClip = null;
+  function selectEventClip(layer, ec) {
+    selectedAudioClip = null;
+    selectedEventClip = { layer, ec };
+    renderTimeline(); renderClipInspector();
+  }
+  function selectAudioClip(ac) {
+    selectedEventClip = null;
+    selectedAudioClip = ac;
+    renderTimeline(); renderClipInspector();
+  }
+  function renderClipInspector() {
+    const hasEvt = !!selectedEventClip, hasAud = !!selectedAudioClip;
+    const hasAny = hasEvt || hasAud;
+    if (!el.clipEmpty || !el.clipBody) return;
+    el.clipEmpty.hidden = hasAny; el.clipBody.hidden = !hasAny;
+    if (!hasAny) return;
+    let type = "—", track = "—", start = 0, dur = 0, vol = 100, muted = false;
+    if (hasEvt) {
+      const def = FX_EVENTS.find((f) => f.key === selectedEventClip.ec.fxKey);
+      type = def ? def.label : selectedEventClip.ec.fxKey;
+      track = "Visual · " + selectedEventClip.layer.name;
+      start = selectedEventClip.ec.start; dur = selectedEventClip.ec.duration;
+      el.clipVolRow.style.display = "none";
+    } else if (hasAud) {
+      const s = sounds.find((x) => x.id === selectedAudioClip.soundId);
+      type = "Audio · " + (s ? s.name : "sound");
+      track = AUDIO_TRACKS.find((tt) => tt.id === selectedAudioClip.track).label;
+      start = selectedAudioClip.start; dur = selectedAudioClip.duration;
+      vol = Math.round(selectedAudioClip.volume * 100); muted = selectedAudioClip.muted;
+      el.clipVolRow.style.display = "";
+      const csvi = document.getElementById("ctl-cv"); if (csvi) csvi.value = vol;
+      const cvvi = document.getElementById("val-cv"); if (cvvi) cvvi.textContent = vol;
+      el.clipMute.textContent = muted ? "Unmute" : "Mute";
+    }
+    el.clipType.textContent = type; el.clipTrack.textContent = track;
+    setSlider("cs", start); setSlider("cd", dur);
+    // dynamic max on start/dur
+    const csEl = document.getElementById("ctl-cs"); if (csEl) csEl.max = STATE.duration;
+    const cdEl = document.getElementById("ctl-cd"); if (cdEl) cdEl.max = STATE.duration;
+  }
   function setDuration(sec) { STATE.duration = sec; layers.forEach((l) => { l.start = clamp(l.start, 0, sec); l.duration = clamp(l.duration, 0.2, sec - l.start); }); EXPORTOPTS.duration = sec; syncDurationUI(); renderTimeline(); }
   function syncDurationUI() { [el.durSegTl, document.getElementById("durSeg")].forEach((seg) => { if (!seg) return; seg.querySelectorAll("[data-dur]").forEach((b) => b.classList.toggle("active", b.dataset.dur == STATE.duration || (b.dataset.dur === "custom" && ![4, 8, 15].includes(STATE.duration)))); }); }
 
@@ -498,13 +713,19 @@
     try {
       if (audio.el) audio.el.pause();
       audio.el = new Audio(URL.createObjectURL(file)); audio.el.loop = STATE.loop;
-      audio.ctx = audio.ctx || new (window.AudioContext || window.webkitAudioContext)();
+      ensureCtx();
       audio.source = audio.ctx.createMediaElementSource(audio.el);
       audio.analyser = audio.ctx.createAnalyser(); audio.analyser.fftSize = 2048; audio.analyser.smoothingTimeConstant = 0.75;
-      audio.destGain = audio.ctx.createGain();
-      audio.source.connect(audio.analyser); audio.source.connect(audio.destGain); audio.destGain.connect(audio.ctx.destination);
+      audio.destGain = audio.ctx.createGain(); // legacy passthrough kept for MediaStream capture
+      // analyser tees off; music routes through the mixer bus
+      audio.source.connect(audio.analyser);
+      audio.source.connect(audio.destGain);
+      audio.destGain.connect(mixerBus.music);
       audio.freqData = new Uint8Array(audio.analyser.frequencyBinCount); audio.timeData = new Uint8Array(audio.analyser.frequencyBinCount);
-      audio.ready = true; el.audioName.textContent = file.name; toast("Audio loaded — reactions engaged");
+      audio.ready = true; el.audioName.textContent = file.name;
+      // reset BPM state
+      audio.beatTimes = []; STATE.bpm = 0; if (el.bpmVal) el.bpmVal.textContent = "—";
+      toast("Music loaded");
     } catch (e) { toast("Could not initialize audio"); }
   }
   function bandAverage(lo, hi) { const nyq = (audio.ctx ? audio.ctx.sampleRate : 44100) / 2, bins = audio.analyser.frequencyBinCount; const a = Math.max(0, Math.floor((lo / nyq) * bins)), b = Math.min(bins - 1, Math.ceil((hi / nyq) * bins)); let s = 0, n = 0; for (let i = a; i <= b; i++) { s += audio.freqData[i]; n++; } return n ? s / (n * 255) : 0; }
@@ -522,7 +743,22 @@
     const peakGate = 0.04 + (STATE.peakThreshold / 100) * 0.25;
     if (flux > peakGate) STATE.peak = 1; else STATE.peak *= (0.65 + (STATE.syncTightness / 100) * 0.3);
     const now = performance.now(), sens = STATE.beatSensitivity / 100, beatGate = 0.30 + (1 - sens) * 0.35, refractory = 120 + (1 - sens) * 260;
-    if (bass > beatGate && bass > audio.prevBass * (1.05 + (1 - sens) * 0.25) && now - audio.lastBeat > refractory) { STATE.beat = 1; audio.lastBeat = now; } else STATE.beat *= (0.80 + (1 - STATE.syncTightness / 100) * 0.15);
+    if (bass > beatGate && bass > audio.prevBass * (1.05 + (1 - sens) * 0.25) && now - audio.lastBeat > refractory) {
+      STATE.beat = 1; audio.lastBeat = now;
+      if (!audio.beatTimes) audio.beatTimes = [];
+      audio.beatTimes.push(now);
+      if (audio.beatTimes.length > 64) audio.beatTimes.shift();
+      if (STATE.playing) { const bt = STATE.time; if (!markers.some((m) => m.type === "beat" && Math.abs(m.time - bt) < 0.05)) markers.push({ type: "beat", time: bt }); }
+      updateBpm();
+    } else STATE.beat *= (0.80 + (1 - STATE.syncTightness / 100) * 0.15);
+    // record peak markers (music-driven)
+    if (STATE.peak > 0.85 && STATE.playing) {
+      const pt = STATE.time;
+      if (!markers.some((m) => m.type === "peak" && Math.abs(m.time - pt) < 0.08)) {
+        markers.push({ type: "peak", time: pt });
+        if (STATE.autoKeyframes) autoEventFromPeak(pt);
+      }
+    }
     audio.prevBass = audio.prevBass * 0.7 + bass * 0.3;
     const energy = (bass + mid + high) / 3; audio.energyAvg = audio.energyAvg * 0.99 + energy * 0.01; STATE.buildup = clamp01(STATE.buildup + (energy > audio.energyAvg * 1.08 ? 0.01 : -0.006));
     updateDebugMeter();
@@ -537,6 +773,208 @@
   function audioSignal() {
     const on = STATE.audioReactive && audio.ready ? 1 : 0, m = STATE.motionIntensity / 100;
     return { on, bass: on * STATE.bassLevel * (STATE.bassReaction / 100) * m, mid: on * STATE.midLevel * (STATE.midReaction / 100) * m, high: on * STATE.highLevel * (STATE.highReaction / 100) * m, level: on * STATE.audioLevel * m, beat: on * STATE.beat, peak: on * STATE.peak, buildup: on * STATE.buildup };
+  }
+
+  /* ============================================================ SFX / MIXER
+     User-imported sound library + audio clips on timeline tracks.
+     Audio graph:
+       source -> clipGain -> trackBus(gain) -> masterBus(gain) -> destination
+     Music has its own path: mediaElementSource -> analyser + musicBus.
+     ============================================================ */
+  const mixerBus = { master: null, music: null, sfx: null, voice: null };
+  let previewSource = null, previewGain = null;
+
+  function ensureCtx() {
+    if (!audio.ctx) audio.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audio.ctx.state === "suspended") audio.ctx.resume().catch(() => {});
+    if (!mixerBus.master) {
+      mixerBus.master = audio.ctx.createGain(); mixerBus.master.gain.value = mixLevel("master");
+      mixerBus.master.connect(audio.ctx.destination);
+      mixerBus.music = audio.ctx.createGain(); mixerBus.music.gain.value = mixLevel("music"); mixerBus.music.connect(mixerBus.master);
+      mixerBus.sfx = audio.ctx.createGain(); mixerBus.sfx.gain.value = mixLevel("sfx"); mixerBus.sfx.connect(mixerBus.master);
+      mixerBus.voice = audio.ctx.createGain(); mixerBus.voice.gain.value = mixLevel("voice"); mixerBus.voice.connect(mixerBus.master);
+    }
+    return audio.ctx;
+  }
+  function mixLevel(bus) {
+    if (bus === "master") return STATE.muteMaster ? 0 : STATE.mixMaster;
+    if (bus === "music")  return STATE.muteMusic  ? 0 : STATE.mixMusic;
+    if (bus === "sfx")    return STATE.muteSfx    ? 0 : STATE.mixSfx;
+    if (bus === "voice")  return STATE.muteVoice  ? 0 : STATE.mixVoice;
+    return 1;
+  }
+  function refreshMixer() {
+    ensureCtx();
+    mixerBus.master.gain.value = mixLevel("master");
+    mixerBus.music.gain.value = mixLevel("music");
+    mixerBus.sfx.gain.value = mixLevel("sfx");
+    mixerBus.voice.gain.value = mixLevel("voice");
+  }
+  function trackBus(track) {
+    if (track === "music") return mixerBus.music;
+    if (track === "voice") return mixerBus.voice;
+    return mixerBus.sfx;
+  }
+
+  async function handleSfxFiles(fileList) {
+    const files = Array.from(fileList || []); if (!files.length) return;
+    ensureCtx();
+    for (const file of files) {
+      if (!file.type.startsWith("audio/")) { toast(`Skipped: ${file.name} (not audio)`); continue; }
+      try {
+        const buf = await file.arrayBuffer();
+        const decoded = await audio.ctx.decodeAudioData(buf.slice(0));
+        const url = URL.createObjectURL(file);
+        sounds.push({ id: ++idSeq, name: file.name, url, buffer: decoded, duration: decoded.duration });
+        toast(`Loaded sound: ${file.name}`);
+      } catch (e) { toast(`Could not decode ${file.name}`); }
+    }
+    renderSfxList();
+    renderSfxSelect();
+  }
+
+  function renderSfxList() {
+    el.sfxCount.textContent = sounds.length;
+    if (!sounds.length) { el.sfxList.innerHTML = '<li class="empty-note">Nothing here yet. Import sound files to build your SFX library.</li>'; return; }
+    el.sfxList.innerHTML = "";
+    sounds.forEach((s) => {
+      const li = document.createElement("li"); li.className = "sfx-item"; li.dataset.id = s.id;
+      li.innerHTML = `<span class="sfx-waveform">\u266A</span>` +
+        `<span class="sfx-meta"><span class="sfx-title">${s.name}</span><span class="sfx-sub">${s.duration.toFixed(2)}s</span></span>` +
+        `<span class="sfx-actions"><button data-act="preview">Play</button><button data-act="add" title="Add to first SFX track at playhead">+ Track</button><button data-act="del" class="danger">\u2715</button></span>`;
+      li.addEventListener("click", (e) => {
+        const act = e.target.dataset && e.target.dataset.act;
+        if (act === "preview") { previewSound(s); }
+        else if (act === "add") { addSoundToTimeline(s, "sfx1"); }
+        else if (act === "del") { removeSound(s); }
+        else { $$(".sfx-item").forEach((n) => n.classList.remove("selected")); li.classList.add("selected"); }
+      });
+      el.sfxList.appendChild(li);
+    });
+  }
+
+  function previewSound(s) {
+    if (!s || !s.buffer) return;
+    ensureCtx();
+    stopPreview();
+    previewGain = audio.ctx.createGain(); previewGain.gain.value = 1;
+    previewSource = audio.ctx.createBufferSource(); previewSource.buffer = s.buffer;
+    previewSource.connect(previewGain).connect(mixerBus.sfx);
+    previewSource.start(0);
+    toast(`Preview: ${s.name}`);
+    previewSource.onended = () => { previewSource = null; };
+  }
+  function stopPreview() { if (previewSource) { try { previewSource.stop(); } catch (e) {} previewSource = null; } }
+
+  function removeSound(s) {
+    // remove clips using this sound too
+    for (let i = audioClips.length - 1; i >= 0; i--) if (audioClips[i].soundId === s.id) audioClips.splice(i, 1);
+    const idx = sounds.indexOf(s); if (idx >= 0) sounds.splice(idx, 1);
+    if (s.url) URL.revokeObjectURL(s.url);
+    renderSfxList(); renderSfxSelect(); renderTimeline();
+  }
+
+  function renderSfxSelect() {
+    if (!el.attachSfxSel) return;
+    const cur = el.attachSfxSel.value;
+    el.attachSfxSel.innerHTML = '<option value="">Choose a sound…</option>' + sounds.map((s) => `<option value="${s.id}">${s.name}</option>`).join("");
+    if (cur && sounds.some((s) => s.id == cur)) el.attachSfxSel.value = cur;
+  }
+
+  function addSoundToTimeline(sound, track) {
+    const start = clamp(STATE.time, 0, STATE.duration - 0.05);
+    const dur = Math.min(sound.duration, Math.max(0.1, STATE.duration - start));
+    const clip = { id: ++idSeq, soundId: sound.id, track: track || "sfx1", start, duration: dur, volume: 1, muted: false, selected: false };
+    audioClips.push(clip);
+    renderTimeline();
+    selectAudioClip(clip);
+    toast(`Added ${sound.name} to ${track || "SFX 1"}`);
+    return clip;
+  }
+
+  /* ---- Playback scheduling ----
+     When playback starts, we schedule ALL currently-live audio clips
+     (including music, if loaded) whose time overlaps the playhead. Each
+     BufferSource is stopped on pause/seek/loop-restart. */
+  const playingSources = [];  // { source, clipId }
+  function stopAllAudioClipSources() {
+    playingSources.forEach(({ source }) => { try { source.stop(); } catch (e) {} });
+    playingSources.length = 0;
+  }
+  function schedulePlayback(fromTime) {
+    ensureCtx();
+    stopAllAudioClipSources();
+    const now = audio.ctx.currentTime + 0.02;
+    audioClips.forEach((clip) => {
+      if (clip.muted) return;
+      const sound = sounds.find((s) => s.id === clip.soundId); if (!sound) return;
+      const clipEnd = clip.start + clip.duration;
+      if (clipEnd <= fromTime) return;
+      const startDelay = Math.max(0, clip.start - fromTime);
+      const offset = Math.max(0, fromTime - clip.start);
+      const playDuration = Math.min(clip.duration - offset, sound.duration - offset);
+      if (playDuration <= 0.01) return;
+      try {
+        const src = audio.ctx.createBufferSource(); src.buffer = sound.buffer;
+        const g = audio.ctx.createGain(); g.gain.value = clip.volume;
+        src.connect(g).connect(trackBus(clip.track));
+        src.start(now + startDelay, offset, playDuration);
+        playingSources.push({ source: src, clipId: clip.id });
+        src.onended = () => { const i = playingSources.findIndex((p) => p.source === src); if (i >= 0) playingSources.splice(i, 1); };
+      } catch (e) {}
+    });
+  }
+
+  /* ---- BPM detection (simple, from recent beat spacing) ---- */
+  function updateBpm() {
+    if (!audio.beatTimes) audio.beatTimes = [];
+    if (audio.beatTimes.length < 4) { STATE.bpm = 0; return; }
+    // take median of intervals from last N beats
+    const recent = audio.beatTimes.slice(-16);
+    const ints = []; for (let i = 1; i < recent.length; i++) ints.push(recent[i] - recent[i - 1]);
+    ints.sort((a, b) => a - b);
+    const median = ints[Math.floor(ints.length / 2)];
+    if (median > 20 && median < 2000) STATE.bpm = Math.round(60000 / median);
+    if (el.bpmVal) el.bpmVal.textContent = STATE.bpm ? STATE.bpm + " BPM" : "—";
+  }
+
+  /* ---- Event clip creation ---- */
+  function createEventClip(fxKey, layer, startTime, duration) {
+    if (!layer) { toast("Select a layer first"); return null; }
+    const def = FX_EVENTS.find((f) => f.key === fxKey);
+    const dur = duration || (def ? def.defDur : 0.2);
+    let start = startTime != null ? startTime : STATE.time;
+    // clamp to layer window
+    start = clamp(start - layer.start, 0, Math.max(0, layer.duration - dur));
+    if (STATE.snapBeat && audio.beatTimes && audio.beatTimes.length > 2) start = snapTimeToBeat(start + layer.start) - layer.start;
+    const clip = { id: ++idSeq, fxKey, start, duration: dur };
+    layer.clips.push(clip);
+    // optional SFX attachment
+    if (STATE.attachSfx && STATE.attachSfxId) {
+      const s = sounds.find((x) => x.id == STATE.attachSfxId);
+      if (s) addSoundToTimeline(s, "sfx1");
+    }
+    renderTimeline();
+    return clip;
+  }
+  function autoEventFromPeak(sceneTime) {
+    if (!layers.length) return;
+    const target = selectedLayer || layers[Math.floor(Math.random() * layers.length)];
+    const keys = ["focusSnap", "signalInterrupt", "rgbSpike", "hardCutEvent"];
+    const key = keys[Math.floor(Math.random() * keys.length)];
+    // relative to layer start
+    const relStart = clamp(sceneTime - target.start, 0, Math.max(0, target.duration - 0.05));
+    const def = FX_EVENTS.find((f) => f.key === key);
+    target.clips.push({ id: ++idSeq, fxKey: key, start: relStart, duration: def.defDur });
+    renderTimeline();
+  }
+  function snapTimeToBeat(t) {
+    if (!audio.beatTimes || audio.beatTimes.length < 2) return t;
+    // convert playback-time-of-beat to scene time is not exact (we only
+    // have performance.now() timestamps). Fall back to nearest 60/BPM
+    // grid from bpm estimate.
+    if (STATE.bpm) { const step = 60 / STATE.bpm; return Math.round(t / step) * step; }
+    return t;
   }
 
   /* ============================================================ EFFECTS
@@ -567,6 +1005,50 @@
     hologramTilt(sig, t) { return { rotX: Math.sin(t * 0.7) * (7 + sig.mid * 8), rotY: Math.cos(t * 0.5) * (9 + sig.mid * 10) }; },
   };
 
+  /* ============================================================ EVENT EFFECTS
+     Short timeline events. Each takes `p` = progress (0..1) inside the
+     clip. They return the same delta shape as EFFECTS. Applied only when
+     the playhead is within the event clip.
+     ============================================================ */
+  const EVENT_EFFECTS = {
+    // Focus Snap: blur ramps up then snaps sharp on release.
+    focusSnap(p, sig) { const b = p < 0.6 ? p / 0.6 : (1 - p) / 0.4; return { blur: 6 * b, glow: 10 * b, opacity: 0.85 + 0.15 * b }; },
+    // Signal Interrupt: 1-3 frame opacity dropout with brief RGB kick.
+    signalInterrupt(p, sig) { const on = p < 0.85; return { opacity: on ? 0.02 : 1, rgb: on ? 6 : 0, flash: on ? "#000" : null, flashA: on ? 0.15 : 0 }; },
+    // Frame Hold: freeze (returns freeze:true; render loop keeps the previous frame).
+    frameHold(p, sig) { return { freeze: true, blur: 0.4 }; },
+    // RGB Spike: strong channel offset for a short window.
+    rgbSpike(p, sig) { const k = 1 - Math.abs(p - 0.5) * 2; return { rgb: 14 * k }; },
+    // Hard Cut event: single flash.
+    hardCutEvent(p, sig) { return { flash: p < 0.5 ? "#fff" : "#000", flashA: 0.5 * (1 - p) }; },
+    // Radar Sweep: horizontal scan bar (returns radarBar 0..1 as position).
+    radarSweep(p, sig) { return { radarBar: p, scanBoost: 0.3 + sig.high * 0.4 }; },
+    // Scan Reveal event: mask sweeps across the layer.
+    scanRevealEvent(p, sig) { return { scanMask: p, opacityWave: 0.9 + 0.1 * Math.sin(p * 20) }; },
+    // Coordinate Blink event: HUD flicker burst.
+    coordBlinkEvt(p, sig) { return { hud: true, hudFlicker: 0.3 + 0.7 * (Math.random() < 0.4 ? 0 : 1) }; },
+    // Data Break event: short breakup.
+    dataBreakEvent(p, sig) { return { breakup: 0.7 + sig.peak * 0.3, opacity: Math.random() < 0.25 ? 0.35 : 1, rgb: 4 }; },
+    // Path Energize: stroke-dash flow across the layer's paths.
+    pathEnergize(p, sig) { return { pathDraw: p, glow: 8 + 12 * (1 - Math.abs(p - 0.5) * 2) }; },
+    // Layer Swap: brief opacity drop plus color invert-like glow.
+    layerSwap(p, sig) { return { opacity: p < 0.5 ? 0.2 : 1, glow: 20 * (1 - p) }; },
+    // Text Replace: opacity blink (text swap handled at render if the
+    // layer contains <text>). Kept safe if not.
+    textReplace(p, sig) { return { textSwap: p, opacity: (p < 0.15 || p > 0.85) ? 1 : 0.65 }; },
+  };
+
+  // For each event key, which live layer field it modifies (used to
+  // reset state cleanly when the event ends).
+  function activeEventClipsAt(layer, t) {
+    if (!layer.clips || !layer.clips.length) return [];
+    const layerStart = layer.start;
+    return layer.clips.filter((c) => {
+      const s = layerStart + c.start, e = s + c.duration;
+      return t >= s && t <= e;
+    }).map((c) => ({ c, p: clamp01((t - (layerStart + c.start)) / Math.max(0.001, c.duration)) }));
+  }
+
   /* ---------------- RENDER LOOP ---------------- */
   let rafStart = performance.now();
   let hudLayer = null, flashOverlay = null;
@@ -575,7 +1057,18 @@
     analyzeAudio();
     if (!STATE.playing) { return; }
     const elapsed = (now - rafStart) / 1000;
+    let wrapped = false;
+    if (STATE.loop && STATE.duration > 0 && elapsed >= STATE.duration) {
+      // wrap: reset rafStart so we don't run away, mark for audio re-sched
+      rafStart = performance.now();
+      wrapped = true;
+    }
     STATE.time = STATE.loop ? (elapsed % STATE.duration) : Math.min(elapsed, STATE.duration);
+    if (wrapped) {
+      // restart music from start and re-schedule sfx from 0
+      if (audio.ready) { try { audio.el.currentTime = 0; audio.el.play().catch(() => {}); } catch (e) {} }
+      schedulePlayback(0);
+    }
     const t = STATE.time, sig = audioSignal();
     let sceneScan = STATE.scanline / 100, sceneNoise = STATE.noise / 100, anyHud = false, hudFlicker = 1, anyFlash = null, flashA = 0;
 
@@ -584,7 +1077,7 @@
       const active = layer.visible && t >= layer.start - 0.001 && t <= layer.start + layer.duration + 0.001;
       if (!active) { layer.wrap.style.opacity = "0"; return; }
       const lt = t - layer.start + layer.recipe.delay;
-      const r = composeLayer(layer, lt, sig);
+      const r = composeLayer(layer, lt, sig, t);
       if (r.hud) { anyHud = true; hudFlicker = r.hudFlicker; }
       if (r.flash) { anyFlash = r.flash; flashA = r.flashA; }
       if (r.scanBoost) sceneScan = Math.min(1, sceneScan + r.scanBoost * 0.3);
@@ -598,13 +1091,14 @@
     if (selectedLayer) updateSelectionBox();
   }
 
-  function composeLayer(layer, t, sig) {
+  function composeLayer(layer, t, sig, sceneTime) {
     const T = layer.transform;
     // static base transform (position/size/rotation set by user)
     let tx = 0, ty = 0, extraScale = 1, rot = 0, rotX = 0, rotY = 0, skew = 0;
     let opacity = T.opacity / 100, blur = 0, rgb = 0, glow = 0;
     let hud = false, hudFlicker = 1, flash = null, flashA = 0, scanBoost = 0, breakup = 0;
     let pathDraw = null, pathTrim = null;
+    let radarBar = null, scanMask = null, freeze = false;
     const allowT = layer.allowTransform;
 
     for (const key of layer.fx) {
@@ -630,11 +1124,41 @@
       // transform-only
       if (isT) { if (d.tx) tx += d.tx; if (d.ty) ty += d.ty; if (d.rot) rot += d.rot; if (d.rotX) rotX += d.rotX; if (d.rotY) rotY += d.rotY; }
     }
+
+    // --- Event clips: apply modules that are currently within their window ---
+    if (sceneTime !== undefined) {
+      const active = activeEventClipsAt(layer, sceneTime);
+      for (const { c, p } of active) {
+        const mod = EVENT_EFFECTS[c.fxKey]; if (!mod) continue;
+        const d = mod(p, sig) || {};
+        if (d.opacity !== undefined) opacity *= d.opacity;
+        if (d.opacityWave !== undefined) opacity *= d.opacityWave;
+        if (d.blur) blur += d.blur;
+        if (d.rgb) rgb = Math.max(rgb, d.rgb);
+        if (d.glow) glow = Math.max(glow, d.glow);
+        if (d.flash) { flash = d.flash; flashA = d.flashA; }
+        if (d.scanBoost) scanBoost = Math.max(scanBoost, d.scanBoost);
+        if (d.breakup) breakup = Math.max(breakup, d.breakup);
+        if (d.hud) { hud = true; hudFlicker = d.hudFlicker; }
+        if (d.pathDraw !== undefined) pathDraw = d.pathDraw;
+        if (d.pathTrim !== undefined) pathTrim = d.pathTrim;
+        if (d.radarBar !== undefined) radarBar = d.radarBar;
+        if (d.scanMask !== undefined) scanMask = d.scanMask;
+        if (d.freeze) freeze = true;
+      }
+    }
     blur += (STATE.blur / 100) * 2;
 
-    // SVG stroke-dash animation for Line Draw / Trim Paths
+    // SVG stroke-dash animation for Line Draw / Trim Paths / Path Energize
     if (layer.kind === "SVG" && (pathDraw !== null || pathTrim !== null)) applyPathDash(layer, pathDraw, pathTrim);
     else if (layer.kind === "SVG" && layer._dashApplied) clearPathDash(layer);
+
+    // Scan mask (event-only): reveal from left as p goes 0->1
+    if (scanMask !== null) { layer.wrap.style.clipPath = `inset(0 ${((1 - scanMask) * 100).toFixed(1)}% 0 0)`; layer._clipApplied = true; }
+    else if (layer._clipApplied) { layer.wrap.style.clipPath = ""; layer._clipApplied = false; }
+
+    // Frame Hold: skip transform update, keep whatever was on screen
+    if (freeze) return { hud, hudFlicker, flash, flashA, scanBoost, breakup, radarBar };
 
     // artboard-space placement: size in %, center offset in %
     const A = STATE.format;
@@ -651,7 +1175,7 @@
     layer.wrap.style.filter = `blur(${blur.toFixed(2)}px) ` + (rgb ? `drop-shadow(${rgb.toFixed(1)}px 0 0 rgba(255,60,80,0.5)) drop-shadow(${(-rgb).toFixed(1)}px 0 0 rgba(60,180,255,0.5)) ` : "") + (glow ? `drop-shadow(0 0 ${glow.toFixed(1)}px rgba(122,92,255,0.6))` : "");
 
     if (layer.kind === "SVG" && layer.subLayers && layer.subLayers.length) animateSubLayers(layer, t, sig, allowT);
-    return { hud, hudFlicker, flash, flashA, scanBoost, breakup };
+    return { hud, hudFlicker, flash, flashA, scanBoost, breakup, radarBar };
   }
 
   // Position a layer using ONLY its base transform — no effects, no scene
@@ -668,6 +1192,7 @@
     layer.wrap.style.transform = `rotate(${T.rot.toFixed(2)}deg)`;
     layer.wrap.style.opacity = clamp01(T.opacity / 100).toFixed(2);
     layer.wrap.style.filter = "none";
+    layer.wrap.style.clipPath = ""; layer._clipApplied = false;
     // reset any sublayer transforms so grouped/exposed SVGs sit still
     if (layer.subLayers) layer.subLayers.forEach((n) => { n.style.transform = ""; n.style.opacity = ""; });
     if (layer.kind === "SVG" && layer._dashApplied) clearPathDash(layer);
@@ -734,9 +1259,26 @@
     STATE.playing = !STATE.playing;
     const show = (i, p) => { if (i) i.style.display = STATE.playing ? "none" : "block"; if (p) p.style.display = STATE.playing ? "block" : "none"; };
     show(el.playIcon, el.pauseIcon); show(el.topPlayIcon, el.topPauseIcon);
-    if (STATE.playing) { rafStart = performance.now() - STATE.time * 1000; if (audio.ready) { if (audio.ctx.state === "suspended") audio.ctx.resume(); audio.el.play().catch(() => {}); } }
-    else { if (audio.ready) audio.el.pause(); renderStaticFrame(); }
+    if (STATE.playing) {
+      rafStart = performance.now() - STATE.time * 1000;
+      ensureCtx();
+      if (audio.ready) {
+        if (audio.ctx.state === "suspended") audio.ctx.resume();
+        try { audio.el.currentTime = STATE.time; } catch (e) {}
+        audio.el.play().catch(() => {});
+      }
+      // schedule all SFX/voice clips
+      schedulePlayback(STATE.time);
+    } else {
+      if (audio.ready) audio.el.pause();
+      stopAllAudioClipSources();
+      stopPreview();
+      renderStaticFrame();
+    }
   }
+  // Start playback only if not already playing (used when an effect/preset
+  // is applied). Never toggles off.
+  function startPlayback() { if (!STATE.playing) togglePlay(); }
   // Start playback only if not already playing (used when an effect/preset
   // is applied). Never toggles off.
   function startPlayback() { if (!STATE.playing) togglePlay(); }
@@ -769,43 +1311,93 @@
   function applyMotionAll() { if (!layers.length) { toast("Add layers first"); return; } applyPreset("Signal System", true); toast("Motion applied to all layers"); }
 
   /* ---------------- AI DIRECTOR ---------------- */
+  /* ---------------- AI DIRECTOR ----------------
+     Each rule pushes named changes into `changes[]` so we can display an
+     explicit "Detected → Applied" list. Rules modify STATE, layer.fx,
+     event clips, and (for reference-style prompts) create timeline events. */
+  function _rule(kw, name, fn) { return { kw, name, fn }; }
   const AI_RULES = [
-    { kw: ["cleaner", "clean", "minimal", "elegant"], apply: () => { set("glitch", 10); set("noise", 8); set("flicker", 14); bump("blur", -4); layerFxAll(["blurIn", "pulseGlow"]); }, say: "Cleaner" },
-    { kw: ["more aggressive", "aggressive", "harder", "intense", "harsh"], apply: () => { bump("glitch", 25); bump("rgbSplit", 20); bump("bassReaction", 20); bump("motionIntensity", 15); layerFxAll(["hardCut", "rgbOffset", "flickerBlocks", "dataBreakup", "pulseGlow"]); }, say: "More aggressive" },
-    { kw: ["synced to the beat", "more synced", "sync to the beat", "beat sync", "on beat"], apply: () => { bump("beatSensitivity", 25); bump("bassReaction", 25); bump("peakThreshold", -10); bump("syncTightness", 20); bump("motionIntensity", 15); STATE.audioReactive = true; if (el.audioReactiveToggle) el.audioReactiveToggle.checked = true; }, say: "Tighter beat sync" },
-    { kw: ["1:1 post", "square", "1080 x 1080", "post"], apply: () => { setFormat(1080, 1080, "Post 1:1"); }, say: "Square 1:1 post" },
-    { kw: ["ig reel", "instagram reel", "reel", "vertical", "9:16"], apply: () => { setFormat(1080, 1920, "Reel 9:16"); setDuration(8); }, say: "Reel-ready (1080\u00d71920)" },
-    { kw: ["portrait", "4:5"], apply: () => { setFormat(1080, 1350, "Portrait 4:5"); }, say: "Portrait 4:5" },
-    { kw: ["landscape", "16:9"], apply: () => { setFormat(1920, 1080, "Landscape 16:9"); }, say: "Landscape 16:9" },
-    { kw: ["transparent png", "transparent", "alpha", "no background"], apply: () => { setBackground("transparent"); EXPORTOPTS.transparent = true; if (el.optTransparent) el.optTransparent.checked = true; }, say: "Transparent output armed" },
-    { kw: ["export mp4", "mp4", "h.264", "h264"], apply: () => { openSheet(); }, say: "MP4 workflow — see Export" },
-    { kw: ["every layer different", "each layer different", "vary layers", "layers different"], apply: () => { layers.forEach((l, i) => { l.recipe = makeRecipe((l.id * 131 + Math.floor(Math.random() * 99999))); l.start = Math.min(STATE.duration * 0.5, i * 0.3); }); renderTimeline(); }, say: "Every layer differs" },
-    { kw: ["signal system", "interface motion", "hardware motion"], apply: () => applyPreset("Signal System", !selectedLayer), say: "Signal System" },
-    { kw: ["vector scan", "radar", "scanner"], apply: () => applyPreset("Vector Scan", !selectedLayer), say: "Vector Scan" },
-    { kw: ["signal loss"], apply: () => applyPreset("Signal Loss", !selectedLayer), say: "Signal Loss" },
-    { kw: ["data pulse", "data breakup", "corrupt"], apply: () => { applyPreset("Data Pulse", !selectedLayer); }, say: "Data Pulse" },
-    { kw: ["crt", "scanline", "scanlines"], apply: () => { bump("scanline", 30); applyPreset("CRT Monitor", !selectedLayer); }, say: "CRT scan" },
-    { kw: ["hud", "overlay", "coordinates", "labels"], apply: () => layerFxAdd("hudOverlay"), say: "HUD overlay" },
-    { kw: ["glow", "pulse"], apply: () => layerFxAdd("pulseGlow"), say: "Pulse glow" },
-    { kw: ["hologram", "tilt", "3d"], apply: () => { if (selectedLayer) { selectedLayer.allowTransform = true; el.allowTransform.checked = true; } layerFxAdd("hologramTilt"); }, say: "Hologram tilt (transform on)" },
-    { kw: ["shake"], apply: () => { if (selectedLayer) { selectedLayer.allowTransform = true; el.allowTransform.checked = true; } layerFxAdd("signalShake"); }, say: "Signal shake (transform on)" },
-    { kw: ["allow transform", "enable transform", "allow motion", "rotation", "zoom", "scale motion"], apply: () => { (selectedLayer ? [selectedLayer] : layers).forEach((l) => l.allowTransform = true); if (el.allowTransform) el.allowTransform.checked = true; renderInspector(); }, say: "Transform motion enabled" },
-    { kw: ["dark", "darker", "moody"], apply: () => { setBackground("custom", "#050506"); bump("scanline", 12); }, say: "Darker" },
-    { kw: ["slow", "slower", "calm"], apply: () => { set("speed", 25); bump("flicker", -12); }, say: "Slower" },
-    { kw: ["fast", "faster", "rapid"], apply: () => { set("speed", 82); bump("flicker", 12); }, say: "Faster" },
+    _rule(["no rotation", "no scale", "no zoom", "static", "still"], "Static layers", (ch) => {
+      layers.forEach((l) => { l.allowTransform = false; l.transform.rot = 0; });
+      if (el.allowTransform) el.allowTransform.checked = false;
+      renderInspector();
+      ch.push("transform motion disabled", "rotation reset to 0", "scale pulse disabled");
+    }),
+    _rule(["scanlines and rgb only", "scanline and rgb only", "scanlines only", "rgb only", "only opacity", "only appearance"], "Appearance only", (ch) => {
+      layerFxAll(["scanReveal", "rgbOffset", "flickerBlocks"]);
+      layers.forEach((l) => l.allowTransform = false);
+      ch.push("sustained fx set to scanReveal + rgbOffset + flickerBlocks", "transform motion disabled");
+    }),
+    _rule(["cleaner", "clean", "minimal", "elegant"], "Cleaner", (ch) => { set("glitch", 10); set("noise", 8); set("flicker", 14); bump("blur", -4); layerFxAll(["blurIn", "pulseGlow"]); ch.push("glitch/noise/flicker lowered", "layer fx = Blur-in + Pulse Glow"); }),
+    _rule(["more aggressive", "aggressive", "harder", "intense", "harsh"], "Aggressive", (ch) => { bump("glitch", 25); bump("rgbSplit", 20); bump("bassReaction", 20); bump("motionIntensity", 15); layerFxAll(["hardCut", "rgbOffset", "flickerBlocks", "dataBreakup", "pulseGlow"]); ch.push("glitch/RGB/bass reaction increased", "layer fx = hard cut + RGB + flicker + breakup + glow"); }),
+    _rule(["synced to the beat", "more synced", "sync to the beat", "beat sync", "on beat", "on peaks"], "Beat sync", (ch) => {
+      bump("beatSensitivity", 25); bump("bassReaction", 25); bump("peakThreshold", -10); bump("syncTightness", 20); bump("motionIntensity", 15);
+      STATE.audioReactive = true; if (el.audioReactiveToggle) el.audioReactiveToggle.checked = true;
+      STATE.autoKeyframes = true; if (el.autoKeyframes) el.autoKeyframes.checked = true;
+      ch.push("beat sensitivity increased", "peak threshold lowered", "auto peak events enabled (Focus Snap / Signal Interrupt / RGB Spike)");
+    }),
+    _rule(["1:1 post", "square post", "1080 x 1080", " post"], "Post 1:1", (ch) => { setFormat(1080, 1080, "Post 1:1"); ch.push("format = 1080\u00d71080"); }),
+    _rule(["ig reel", "instagram reel", "reel", "vertical", "9:16"], "Reel 9:16", (ch) => { setFormat(1080, 1920, "Reel 9:16"); setDuration(8); ch.push("format = 1080\u00d71920", "duration = 8s"); }),
+    _rule(["portrait", "4:5"], "Portrait 4:5", (ch) => { setFormat(1080, 1350, "Portrait 4:5"); ch.push("format = 1080\u00d71350"); }),
+    _rule(["landscape", "16:9"], "Landscape 16:9", (ch) => { setFormat(1920, 1080, "Landscape 16:9"); ch.push("format = 1920\u00d71080"); }),
+    _rule(["transparent png", "transparent", "alpha", "no background"], "Transparent", (ch) => { setBackground("transparent"); EXPORTOPTS.transparent = true; if (el.optTransparent) el.optTransparent.checked = true; ch.push("background = transparent", "PNG stills armed with alpha"); }),
+    _rule(["every layer different", "each layer different", "vary layers", "layers different"], "Vary layers", (ch) => {
+      const evtKeys = ["focusSnap", "signalInterrupt", "rgbSpike", "hardCutEvent"];
+      layers.forEach((l, i) => {
+        l.recipe = makeRecipe((l.id * 131 + Math.floor(Math.random() * 99999)));
+        l.start = Math.min(STATE.duration * 0.5, i * 0.3);
+        // add a unique event per layer at a staggered offset
+        const key = evtKeys[i % evtKeys.length], def = FX_EVENTS.find((f) => f.key === key);
+        const start = clamp(0.5 + i * 0.6, 0, l.duration - def.defDur);
+        l.clips.push({ id: ++idSeq, fxKey: key, start, duration: def.defDur });
+      });
+      renderTimeline();
+      ch.push("unique recipes per layer", "staggered starts", `unique event per layer (${layers.length} events created)`);
+    }),
+    _rule(["terrain scanner", "terrain"], "Terrain Scanner", (ch) => { applyPreset("Terrain Scanner", !selectedLayer); ch.push("preset = Terrain Scanner (Line Draw + Radar + Coord Blink + Scan Reveal + Data Stream)"); }),
+    _rule(["signal system"], "Signal System", (ch) => { applyPreset("Signal System", !selectedLayer); ch.push("preset = Signal System"); }),
+    _rule(["hardware motion"], "Hardware Motion", (ch) => { applyPreset("Hardware Motion", !selectedLayer); ch.push("preset = Hardware Motion"); }),
+    _rule(["interface motion", "interface intro"], "Interface Intro", (ch) => { applyPreset("Interface Intro", !selectedLayer); ch.push("preset = Interface Intro"); }),
+    _rule(["vector scan", "radar"], "Vector Scan", (ch) => { applyPreset("Vector Scan", !selectedLayer); ch.push("preset = Vector Scan"); }),
+    _rule(["signal loss"], "Signal Loss", (ch) => { applyPreset("Signal Loss", !selectedLayer); ch.push("preset = Signal Loss"); }),
+    _rule(["data pulse"], "Data Pulse", (ch) => { applyPreset("Data Pulse", !selectedLayer); ch.push("preset = Data Pulse"); }),
+    _rule(["crt", "scanline", "scanlines"], "CRT scan", (ch) => { bump("scanline", 30); applyPreset("CRT Monitor", !selectedLayer); ch.push("scanline level bumped", "preset = CRT Monitor"); }),
+    _rule(["detroit", "techno"], "Detroit Techno", (ch) => { applyPreset("Detroit Techno", !selectedLayer); ch.push("preset = Detroit Techno"); }),
+    _rule(["data terminal", "terminal"], "Data Terminal", (ch) => { applyPreset("Data Terminal", !selectedLayer); ch.push("preset = Data Terminal"); }),
+    _rule(["focus snap"], "Focus Snap event", (ch) => { const c = createEventClip("focusSnap", selectedLayer); if (c) ch.push(`Focus Snap event @ ${c.start.toFixed(2)}s (${c.duration}s)`); }),
+    _rule(["signal interrupt", "interrupt"], "Signal Interrupt event", (ch) => { const c = createEventClip("signalInterrupt", selectedLayer); if (c) ch.push(`Signal Interrupt @ ${c.start.toFixed(2)}s`); }),
+    _rule(["rgb spike"], "RGB Spike event", (ch) => { const c = createEventClip("rgbSpike", selectedLayer); if (c) ch.push(`RGB Spike @ ${c.start.toFixed(2)}s`); }),
+    _rule(["hud", "overlay", "coordinates", "labels"], "HUD overlay", (ch) => { layerFxAdd("hudOverlay"); ch.push("HUD Overlay added to layer fx"); }),
+    _rule(["glow", "pulse glow"], "Pulse glow", (ch) => { layerFxAdd("pulseGlow"); ch.push("Pulse Glow added"); }),
+    _rule(["hologram", "tilt", "3d card"], "Hologram tilt", (ch) => { if (selectedLayer) { selectedLayer.allowTransform = true; if (el.allowTransform) el.allowTransform.checked = true; } layerFxAdd("hologramTilt"); ch.push("transform motion enabled", "Hologram Tilt added"); }),
+    _rule(["shake"], "Signal shake", (ch) => { if (selectedLayer) { selectedLayer.allowTransform = true; if (el.allowTransform) el.allowTransform.checked = true; } layerFxAdd("signalShake"); ch.push("transform motion enabled", "Signal Shake added"); }),
+    _rule(["allow transform", "enable transform", "allow motion"], "Transform on", (ch) => { (selectedLayer ? [selectedLayer] : layers).forEach((l) => l.allowTransform = true); if (el.allowTransform) el.allowTransform.checked = true; renderInspector(); ch.push("Allow transform motion enabled on target layer(s)"); }),
+    _rule(["dark", "darker", "moody"], "Darker", (ch) => { setBackground("custom", "#050506"); bump("scanline", 12); ch.push("background darkened", "scanline level bumped"); }),
+    _rule(["slow", "slower", "calm"], "Slower", (ch) => { set("speed", 25); bump("flicker", -12); ch.push("speed lowered", "flicker lowered"); }),
+    _rule(["fast", "faster", "rapid"], "Faster", (ch) => { set("speed", 82); bump("flicker", 12); ch.push("speed raised", "flicker raised"); }),
+    _rule(["mp4", "h.264", "h264", "export"], "Export sheet", (ch) => { openSheet(); ch.push("opened export panel"); }),
   ];
   const bump = (k, d) => (STATE[k] = clampP(STATE[k] + d));
   const set = (k, v) => (STATE[k] = clampP(v));
   const clampP = (v) => Math.max(0, Math.min(100, v));
-  function layerFxAll(arr) { (selectedLayer ? [selectedLayer] : layers).forEach((l) => l.fx = arr.slice()); renderInspector(); }
-  function layerFxAdd(fx) { (selectedLayer ? [selectedLayer] : layers).forEach((l) => { if (!l.fx.includes(fx)) l.fx.push(fx); }); renderInspector(); }
+  function layerFxAll(arr) { (selectedLayer ? [selectedLayer] : layers).forEach((l) => l.fx = arr.slice()); renderInspector(); renderTimeline(); }
+  function layerFxAdd(fx) { (selectedLayer ? [selectedLayer] : layers).forEach((l) => { if (!l.fx.includes(fx)) l.fx.push(fx); }); renderInspector(); renderTimeline(); }
   function runAI() {
     const text = el.aiPrompt.value.toLowerCase().trim();
-    if (!text) { el.aiEcho.textContent = "Type a direction first, like \u201cmake it more synced to the beat.\u201d"; return; }
-    const hits = []; AI_RULES.forEach((r) => { if (r.kw.some((k) => text.includes(k))) { r.apply(); hits.push(r.say); } });
-    syncControls(); startPlayback();
-    el.aiEcho.textContent = hits.length ? hits.join(" \u00b7 ") : "No keywords matched. Try: cleaner, aggressive, synced to the beat, 1:1 post, IG reel, transparent PNG, every layer different, allow transform.";
+    if (!text) { el.aiEcho.innerHTML = 'Type a direction first, like <em>"make it more synced to the beat"</em>.'; return; }
+    const detected = [], changes = [];
+    AI_RULES.forEach((r) => {
+      if (r.kw.some((k) => text.includes(k))) { detected.push(r.name); r.fn(changes); }
+    });
+    syncControls();
+    if (changes.length) startPlayback();
+    if (!detected.length) {
+      el.aiEcho.innerHTML = 'No keywords matched. Try: <em>"cleaner"</em>, <em>"more aggressive"</em>, <em>"synced to the beat"</em>, <em>"no rotation, no scale, scanlines and RGB only"</em>, <em>"terrain scanner"</em>, <em>"every layer different"</em>, <em>"focus snap"</em>.';
+    } else {
+      el.aiEcho.innerHTML = `<strong>Detected:</strong> ${detected.map(escHtml).join(" \u00b7 ")}<br><strong>Applied:</strong> ${changes.map((c) => "\u2022 " + escHtml(c)).join("<br>")}`;
+    }
   }
+  function escHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 
   /* ---------------- CONTROLS ---------------- */
   function buildControls() {
@@ -1141,6 +1733,137 @@
     if (el.optTransparent) el.optTransparent.addEventListener("change", (e) => { EXPORTOPTS.transparent = e.target.checked; });
     if (el.optAudio) el.optAudio.addEventListener("change", (e) => { EXPORTOPTS.includeAudio = e.target.checked; });
 
+    // ---- SFX library: import, drag/drop, list actions ----
+    if (el.sfxDropzone && el.sfxInput) {
+      el.sfxDropzone.addEventListener("click", () => el.sfxInput.click());
+      el.sfxDropzone.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); el.sfxInput.click(); } });
+      el.sfxInput.addEventListener("change", (e) => handleSfxFiles(e.target.files));
+      ["dragenter", "dragover"].forEach((ev) => el.sfxDropzone.addEventListener(ev, (e) => { e.preventDefault(); el.sfxDropzone.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => el.sfxDropzone.addEventListener(ev, (e) => { e.preventDefault(); el.sfxDropzone.classList.remove("drag"); }));
+      el.sfxDropzone.addEventListener("drop", (e) => handleSfxFiles(e.dataTransfer.files));
+    }
+
+    // ---- Attach SFX toggle for event clips ----
+    if (el.attachSfx) {
+      el.attachSfx.addEventListener("change", (e) => {
+        STATE.attachSfx = e.target.checked;
+        el.attachSfxSel.style.display = e.target.checked ? "" : "none";
+      });
+    }
+    if (el.attachSfxSel) {
+      el.attachSfxSel.addEventListener("change", (e) => { STATE.attachSfxId = e.target.value; });
+    }
+
+    // ---- Audio mixer sliders + mute buttons ----
+    const mixHook = (id, key, valId) => {
+      const s = document.getElementById(id); if (!s) return;
+      s.addEventListener("input", (e) => {
+        const v = +e.target.value;
+        STATE[key] = v / 100;
+        const vEl = document.getElementById(valId); if (vEl) vEl.textContent = v;
+        refreshMixer();
+      });
+    };
+    mixHook("mix-master", "mixMaster", "val-mv");
+    mixHook("mix-music",  "mixMusic",  "val-mm");
+    mixHook("mix-sfx",    "mixSfx",    "val-msfx");
+    mixHook("mix-voice",  "mixVoice",  "val-mvoice");
+    ["mixMuteMusic", "mixMuteSfx", "mixMuteVoice", "mixMuteAll"].forEach((id) => {
+      const b = document.getElementById(id); if (!b) return;
+      b.addEventListener("click", () => {
+        const t = b.dataset.target;
+        if (t === "master") STATE.muteMaster = !STATE.muteMaster;
+        if (t === "music")  STATE.muteMusic  = !STATE.muteMusic;
+        if (t === "sfx")    STATE.muteSfx    = !STATE.muteSfx;
+        if (t === "voice")  STATE.muteVoice  = !STATE.muteVoice;
+        refreshMixer(); renderTimeline();
+        b.classList.toggle("active", STATE["mute" + t.charAt(0).toUpperCase() + t.slice(1)]);
+      });
+    });
+
+    // ---- Beat sync extras ----
+    if (el.snapBeat) el.snapBeat.addEventListener("change", (e) => { STATE.snapBeat = e.target.checked; });
+    if (el.autoKeyframes) el.autoKeyframes.addEventListener("change", (e) => { STATE.autoKeyframes = e.target.checked; });
+
+    // ---- Timeline zoom + marker button ----
+    if (el.tlZoom) el.tlZoom.addEventListener("input", (e) => { STATE.tlZoom = +e.target.value; renderTimeline(); });
+    if (el.markerBtn) el.markerBtn.addEventListener("click", () => {
+      const t = STATE.time;
+      const exists = markers.find((m) => m.type === "manual" && Math.abs(m.time - t) < 0.05);
+      if (exists) { markers.splice(markers.indexOf(exists), 1); toast("Marker removed"); }
+      else { markers.push({ type: "manual", time: t }); toast(`Marker @ ${t.toFixed(2)}s`); }
+      renderTimeline();
+    });
+
+    // Keyboard 'M' for marker
+    document.addEventListener("keydown", (e) => {
+      const typing = e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT";
+      if (e.key === "m" && !typing) { if (el.markerBtn) el.markerBtn.click(); }
+    });
+
+    // ---- Selected-clip inspector wiring ----
+    const bindClipSlider = (key, apply) => {
+      const s = document.getElementById(`ctl-${key}`), vv = document.getElementById(`val-${key}`);
+      if (!s) return;
+      s.addEventListener("input", (e) => {
+        const v = +e.target.value;
+        if (vv) vv.textContent = key === "cs" || key === "cd" ? v.toFixed(2) : Math.round(v);
+        apply(v);
+        renderTimeline();
+      });
+    };
+    bindClipSlider("cs", (v) => {
+      if (selectedEventClip) selectedEventClip.ec.start = clamp(v - selectedEventClip.layer.start, 0, Math.max(0, selectedEventClip.layer.duration - selectedEventClip.ec.duration));
+      else if (selectedAudioClip) selectedAudioClip.start = clamp(v, 0, Math.max(0, STATE.duration - selectedAudioClip.duration));
+    });
+    bindClipSlider("cd", (v) => {
+      if (selectedEventClip) selectedEventClip.ec.duration = clamp(v, 0.02, selectedEventClip.layer.duration - selectedEventClip.ec.start);
+      else if (selectedAudioClip) selectedAudioClip.duration = clamp(v, 0.05, STATE.duration - selectedAudioClip.start);
+    });
+    bindClipSlider("cv", (v) => { if (selectedAudioClip) selectedAudioClip.volume = v / 100; });
+    if (el.clipMute) el.clipMute.addEventListener("click", () => {
+      if (!selectedAudioClip) return;
+      selectedAudioClip.muted = !selectedAudioClip.muted;
+      el.clipMute.textContent = selectedAudioClip.muted ? "Unmute" : "Mute";
+      renderTimeline();
+    });
+    if (el.clipDup) el.clipDup.addEventListener("click", () => {
+      if (selectedEventClip) {
+        const src = selectedEventClip.ec, layer = selectedEventClip.layer;
+        const dup = { ...src, id: ++idSeq, start: clamp(src.start + src.duration + 0.05, 0, layer.duration - src.duration) };
+        layer.clips.push(dup);
+      } else if (selectedAudioClip) {
+        const src = selectedAudioClip;
+        const dup = { ...src, id: ++idSeq, start: clamp(src.start + src.duration + 0.05, 0, STATE.duration - src.duration), selected: false };
+        audioClips.push(dup);
+      }
+      renderTimeline();
+    });
+    if (el.clipDel) el.clipDel.addEventListener("click", () => {
+      if (selectedEventClip) {
+        const layer = selectedEventClip.layer;
+        const i = layer.clips.indexOf(selectedEventClip.ec); if (i >= 0) layer.clips.splice(i, 1);
+        selectedEventClip = null;
+      } else if (selectedAudioClip) {
+        const i = audioClips.indexOf(selectedAudioClip); if (i >= 0) audioClips.splice(i, 1);
+        selectedAudioClip = null;
+      }
+      renderClipInspector(); renderTimeline();
+    });
+    if (el.clipPreview) el.clipPreview.addEventListener("click", () => {
+      if (selectedAudioClip) { const s = sounds.find((x) => x.id === selectedAudioClip.soundId); if (s) previewSound(s); }
+    });
+
+    // ---- Click on timeline ruler seeks the playhead ----
+    if (el.tlRuler) el.tlRuler.addEventListener("click", (e) => {
+      const rect = el.tlRuler.getBoundingClientRect();
+      const t = clamp((e.clientX - rect.left) / TL.pxPerSec, 0, STATE.duration);
+      STATE.time = t; rafStart = performance.now() - t * 1000;
+      updatePlayheads(t);
+      if (STATE.playing) { stopAllAudioClipSources(); schedulePlayback(t); if (audio.ready) { try { audio.el.currentTime = t; } catch (err) {} } }
+      else { paintIfPaused(); }
+    });
+
     // resize -> refit + relayout timeline
     window.addEventListener("resize", () => { if (STATE.zoomMode === "fit") fitZoom(); renderTimeline(); });
   }
@@ -1160,6 +1883,9 @@
     setFormat(1080, 1080, "Post 1:1");
     setDuration(8);
     syncExportUI();
+    renderSfxList();
+    renderSfxSelect();
+    renderClipInspector();
     renderTimeline();
     wire();
     requestAnimationFrame(frame);
