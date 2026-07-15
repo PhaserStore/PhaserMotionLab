@@ -56,7 +56,14 @@
         <button class="zoom-btn" id="zoomOut" title="Zoom out">&#8722;</button>
         <span class="zoom-val" id="zoomVal">Fit</span>
         <button class="zoom-btn" id="zoomIn" title="Zoom in">+</button>
-        <button class="zoom-btn" id="zoomFit" title="Fit to window">Fit</button>
+        <div class="zoom-presets" id="zoomPresets">
+          <button class="zoom-btn" id="zoomFit" title="Fit to window">Fit</button>
+          <button class="zoom-btn" data-zoom="0.5">50%</button>
+          <button class="zoom-btn" data-zoom="0.75">75%</button>
+          <button class="zoom-btn" data-zoom="1">100%</button>
+          <button class="zoom-btn" data-zoom="1.5">150%</button>
+          <button class="zoom-btn" data-zoom="2">200%</button>
+        </div>
       </div>
       <button class="t-btn" id="topPlayBtn" title="Play / pause (Space)">
         <svg id="topPlayIcon" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 3l9 5-9 5V3z" fill="currentColor"/></svg>
@@ -115,7 +122,7 @@
           <div class="section-head"><span>Motion</span></div>
           <button class="btn-accent block" id="applyAll">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1l1.6 3.7L12.5 5 9.8 7.6 10.5 12 7 9.8 3.5 12l.7-4.4L1.5 5l3.9-.3L7 1z" fill="currentColor"/></svg>
-            Apply Motion to All Layers
+            Apply Signal Motion to All Layers
           </button>
           <p class="view-hint">Gives every layer a coherent interface-style animation with stagger and depth. No rotation or zoom unless transform motion is on.</p>
 
@@ -203,6 +210,7 @@
               <button class="mini-btn" id="tfCenter">Center</button>
               <button class="mini-btn" id="tfFit">Fit to canvas</button>
               <button class="mini-btn" id="tfFill">Fill canvas</button>
+              <button class="mini-btn" id="tfOriginal">Original size</button>
               <button class="mini-btn" id="tfReset">Reset</button>
             </div>
             <div class="btn-grid" style="margin-top:6px">
