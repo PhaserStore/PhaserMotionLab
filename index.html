@@ -8,15 +8,15 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
-  <!-- GSAP is optional (used only for a preset intro pop). App works without it. -->
+  <!-- GSAP optional (preset intro pop). App runs fully without it. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js" defer></script>
   <!-- ============================================================
        MP4 EXPORT (ffmpeg.wasm) — OPTIONAL, OFF BY DEFAULT
        Uncomment the two tags below to enable real H.264 MP4 encoding.
-       They add ~30MB, so they are left out of the default MVP. When
-       present, script.js auto-detects them and transcodes the recorded
-       WebM to phaser-motion-reel.mp4. When absent, MP4 export shows a
-       clear message and offers WebM instead (see exportMP4 in script.js).
+       ~30MB, so excluded from the default static build. When present,
+       script.js auto-detects them and transcodes the recorded WebM to
+       phaser-motion-*.mp4. When absent, MP4 shows a clear message and
+       offers WebM instead (see exportMP4 in script.js).
        ------------------------------------------------------------
   <script src="https://unpkg.com/@ffmpeg/[email protected]/dist/umd/ffmpeg.js"></script>
   <script src="https://unpkg.com/@ffmpeg/[email protected]/dist/umd/util.js"></script>
@@ -44,16 +44,18 @@
 
     <div class="topbar-center">
       <div class="format-pill" id="formatPill">
-        <button class="fmt active" data-w="1080" data-h="1920" data-label="Reel">Reel</button>
-        <button class="fmt" data-w="1080" data-h="1920" data-label="Story">Story</button>
-        <button class="fmt" data-w="1080" data-h="1080" data-label="Post">Post</button>
-        <button class="fmt" data-w="1080" data-h="1350" data-label="Portrait">Portrait</button>
+        <button class="fmt active" data-w="1080" data-h="1080" data-label="Post">Post 1:1</button>
+        <button class="fmt" data-w="1080" data-h="1920" data-label="Reel">Reel 9:16</button>
+        <button class="fmt" data-w="1080" data-h="1350" data-label="Portrait">Portrait 4:5</button>
         <button class="fmt" data-w="1920" data-h="1080" data-label="Landscape">Landscape</button>
       </div>
     </div>
 
     <div class="topbar-right">
-      <span class="save-hint" id="saveHint">Static · GitHub Pages ready</span>
+      <button class="t-btn" id="topPlayBtn" title="Play / pause (Space)">
+        <svg id="topPlayIcon" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 3l9 5-9 5V3z" fill="currentColor"/></svg>
+        <svg id="topPauseIcon" width="16" height="16" viewBox="0 0 16 16" fill="none" style="display:none"><rect x="4" y="3" width="3" height="10" rx="1" fill="currentColor"/><rect x="9" y="3" width="3" height="10" rx="1" fill="currentColor"/></svg>
+      </button>
       <button class="btn-accent" id="exportBtn">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v8M4 6l3 3 3-3M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
         Export
@@ -67,7 +69,7 @@
     <!-- ---- LEFT SIDEBAR ---- -->
     <aside class="panel-left">
       <nav class="rail" id="leftRail">
-        <button class="rail-tab active" data-tab="assets" title="Assets">
+        <button class="rail-tab active" data-tab="assets" title="Assets & import">
           <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="2.5" y="2.5" width="13" height="13" rx="2.5" stroke="currentColor" stroke-width="1.4"/><path d="M2.5 12l3.5-3.5 3 3 2.5-2.5 4 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.5" cy="6.5" r="1.3" fill="currentColor"/></svg>
         </button>
         <button class="rail-tab" data-tab="presets" title="Presets">
@@ -82,40 +84,41 @@
         <!-- ASSETS TAB -->
         <section class="tab-view active" data-view="assets">
           <div class="section-head"><span>Import</span></div>
-          <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Upload SVG or image">
+          <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Upload SVG or images">
             <div class="dz-glow"></div>
             <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M11 15V4M7 8l4-4 4 4" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 15v2a1 1 0 001 1h12a1 1 0 001-1v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-            <p class="dz-title">Drop a file or browse</p>
-            <p class="dz-sub">SVG, PNG, JPG, WebP</p>
-            <input type="file" id="fileInput" accept=".svg,image/svg+xml,image/png,image/jpeg,image/webp" hidden />
+            <p class="dz-title">Drop files or browse</p>
+            <p class="dz-sub">Multiple SVG, PNG, JPG, WebP</p>
+            <input type="file" id="fileInput" accept=".svg,image/svg+xml,image/png,image/jpeg,image/webp" multiple hidden />
           </div>
 
           <div class="section-head"><span>Assets</span><span class="count" id="assetCount">0</span></div>
           <div class="asset-grid" id="assetList">
-            <div class="empty-note">Nothing here yet. Add a file to start.</div>
+            <div class="empty-note">Nothing here yet. Add files to start.</div>
           </div>
+          <p class="view-hint">Click an asset to add it to the canvas as a new layer.</p>
         </section>
 
         <!-- PRESETS TAB -->
         <section class="tab-view" data-view="presets">
           <div class="section-head"><span>Ghost motion</span></div>
-          <button class="btn-accent block" id="generateGhost">
+          <button class="btn-accent block" id="applyGhostAll">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1l1.6 3.7L12.5 5 9.8 7.6 10.5 12 7 9.8 3.5 12l.7-4.4L1.5 5l3.9-.3L7 1z" fill="currentColor"/></svg>
-            Generate Ghost Motion
+            Apply Ghost Motion to All Layers
           </button>
-          <p class="view-hint">Assigns a unique ghost-software animation to every SVG layer.</p>
+          <p class="view-hint">Gives every layer a different but coherent ghost-software animation, with stagger and depth.</p>
 
           <div class="section-head"><span>Presets</span></div>
-          <p class="view-hint">One click applies a full animation style. Fine-tune it on the right.</p>
+          <p class="view-hint">Applies to the selected layer, or all layers if none is selected.</p>
           <div class="preset-list" id="presetGrid"></div>
         </section>
 
         <!-- LAYERS TAB -->
         <section class="tab-view" data-view="layers">
           <div class="section-head"><span>Layers</span><span class="count" id="layerCount">0</span></div>
-          <p class="view-hint">Elements inside the selected SVG. Each animates independently.</p>
-          <ul class="layer-list" id="layerList">
-            <li class="empty-note">Select an SVG to see its layers.</li>
+          <p class="view-hint">Top layer draws in front. Drag the handle to reorder.</p>
+          <ul class="layer-stack" id="layerStack">
+            <li class="empty-note">Add an asset to create a layer.</li>
           </ul>
         </section>
       </div>
@@ -125,21 +128,22 @@
     <main class="stage-col">
       <div class="stage" id="stage">
         <div class="canvas-frame" id="canvasFrame">
-          <div class="asset-host" id="assetHost">
-            <div class="stage-hint" id="stageHint">
-              <svg width="40" height="40" viewBox="0 0 40 40" fill="none"><rect x="6" y="6" width="28" height="28" rx="7" stroke="var(--border-strong)" stroke-width="1.5"/><circle cx="20" cy="20" r="7" stroke="var(--border-strong)" stroke-width="1.5"/></svg>
-              <p class="hint-title">Your canvas is empty</p>
-              <p class="hint-sub">Drop an SVG or image here to begin</p>
-            </div>
+          <div class="layer-host" id="layerHost"></div>
+          <div class="stage-hint" id="stageHint">
+            <svg width="40" height="40" viewBox="0 0 40 40" fill="none"><rect x="6" y="6" width="28" height="28" rx="7" stroke="var(--border-strong)" stroke-width="1.5"/><circle cx="20" cy="20" r="7" stroke="var(--border-strong)" stroke-width="1.5"/></svg>
+            <p class="hint-title">Empty canvas</p>
+            <p class="hint-sub">Import files, then click an asset to place it</p>
           </div>
           <div class="fx fx-scanlines" id="fxScanlines" aria-hidden="true"></div>
           <div class="fx fx-noise" id="fxNoise" aria-hidden="true"></div>
           <div class="fx fx-vignette" aria-hidden="true"></div>
         </div>
         <div class="stage-readout">
-          <span id="readoutFormat">1080 × 1920</span>
+          <span id="readoutFormat">1080 × 1080</span>
           <span class="dot">·</span>
-          <span id="readoutZoom">Fit</span>
+          <span id="readoutFps">30 fps</span>
+          <span class="dot">·</span>
+          <span id="readoutSel">No layer selected</span>
         </div>
       </div>
     </main>
@@ -149,10 +153,7 @@
       <div class="panel-scroll">
         <!-- AI DIRECTOR -->
         <section class="prop-group">
-          <div class="group-head">
-            <h3>Director</h3>
-            <span class="badge">Rule-based</span>
-          </div>
+          <div class="group-head"><h3>Director</h3><span class="badge">Rule-based</span></div>
           <p class="group-hint">Describe the look in plain words.</p>
           <div class="ai-field">
             <textarea id="aiPrompt" class="ai-input" rows="2" placeholder="Make it more synced to the beat…"></textarea>
@@ -161,10 +162,30 @@
           <div class="ai-echo" id="aiEcho" aria-live="polite"></div>
         </section>
 
-        <!-- ANIMATION -->
-        <section class="prop-group">
-          <div class="group-head"><h3>Animation</h3></div>
-          <div class="controls" data-group="animation"></div>
+        <!-- SELECTED LAYER -->
+        <section class="prop-group" id="layerProps">
+          <div class="group-head"><h3>Selected layer</h3></div>
+          <div id="layerPropsEmpty" class="group-hint">Select a layer to edit its transform, timing and effects.</div>
+          <div id="layerPropsBody" hidden>
+            <div class="control"><span class="ctl-label">Position X</span><span class="ctl-val" id="val-x">0</span>
+              <input type="range" min="-50" max="50" value="0" id="ctl-x"></div>
+            <div class="control"><span class="ctl-label">Position Y</span><span class="ctl-val" id="val-y">0</span>
+              <input type="range" min="-50" max="50" value="0" id="ctl-y"></div>
+            <div class="control"><span class="ctl-label">Scale</span><span class="ctl-val" id="val-lscale">100</span>
+              <input type="range" min="10" max="300" value="100" id="ctl-lscale"></div>
+            <div class="control"><span class="ctl-label">Rotation</span><span class="ctl-val" id="val-lrot">0</span>
+              <input type="range" min="-180" max="180" value="0" id="ctl-lrot"></div>
+            <div class="control"><span class="ctl-label">Opacity</span><span class="ctl-val" id="val-lop">100</span>
+              <input type="range" min="0" max="100" value="100" id="ctl-lop"></div>
+            <div class="layer-actions">
+              <button class="mini-btn" id="layerDup" title="Duplicate">Duplicate</button>
+              <button class="mini-btn" id="layerHide" title="Hide / show">Hide</button>
+              <button class="mini-btn danger" id="layerDel" title="Delete">Delete</button>
+            </div>
+
+            <div class="sub-head">Effects on this layer</div>
+            <div class="fx-toggle-grid" id="fxToggleGrid"></div>
+          </div>
         </section>
 
         <!-- BEAT SYNC -->
@@ -186,9 +207,9 @@
           <div class="controls" data-group="beatsync"></div>
         </section>
 
-        <!-- EFFECTS -->
+        <!-- GLOBAL EFFECTS / OVERLAY STRENGTH -->
         <section class="prop-group">
-          <div class="group-head"><h3>Effects</h3></div>
+          <div class="group-head"><h3>Scene effects</h3></div>
           <div class="controls" data-group="effects"></div>
         </section>
 
@@ -203,14 +224,14 @@
             </div>
           </div>
           <div class="bg-swatches">
-            <button class="bg-swatch" data-bg="black" title="Black"><span class="sw sw-black"></span>Black</button>
-            <button class="bg-swatch" data-bg="white" title="White"><span class="sw sw-white"></span>White</button>
-            <button class="bg-swatch" data-bg="transparent" title="Transparent (checkerboard is preview only)"><span class="sw sw-alpha"></span>Alpha</button>
-            <button class="bg-swatch active" data-bg="custom" title="Custom color"><span class="sw sw-custom"></span>Custom</button>
-            <button class="bg-swatch" data-bg="gradient" title="Gradient"><span class="sw sw-grad"></span>Gradient</button>
+            <button class="bg-swatch" data-bg="black"><span class="sw sw-black"></span>Black</button>
+            <button class="bg-swatch" data-bg="white"><span class="sw sw-white"></span>White</button>
+            <button class="bg-swatch" data-bg="transparent"><span class="sw sw-alpha"></span>Alpha</button>
+            <button class="bg-swatch active" data-bg="custom"><span class="sw sw-custom"></span>Custom</button>
+            <button class="bg-swatch" data-bg="gradient"><span class="sw sw-grad"></span>Gradient</button>
           </div>
           <div class="prop-row" style="margin-top:14px">
-            <label class="prop-label" for="scaleSeg">Export scale</label>
+            <label class="prop-label">Export scale</label>
             <div class="seg" id="scaleSeg">
               <button class="seg-btn active" data-scale="1">1×</button>
               <button class="seg-btn" data-scale="2">2×</button>
@@ -221,10 +242,10 @@
     </aside>
   </div>
 
-  <!-- ============ BOTTOM: TRANSPORT ============ -->
-  <footer class="transport">
-    <div class="transport-controls">
-      <button class="t-btn" id="audioBtn" title="Load audio">
+  <!-- ============ BOTTOM: TIMELINE ============ -->
+  <footer class="timeline">
+    <div class="tl-controls">
+      <button class="t-btn" id="audioBtn" title="Load MP3">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M4.5 6v4M11.5 6v4M2 7.5v1M14 7.5v1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
       </button>
       <div class="divider-v small"></div>
@@ -235,21 +256,26 @@
       <button class="t-btn active" id="loopBtn" data-on="true" title="Loop">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 6a5 5 0 018-1.5M13 10a5 5 0 01-8 1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M11 2.5V5H8.5M5 13.5V11h2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
-      <span class="timecode" id="timecode">0:00</span>
-    </div>
-
-    <div class="timeline-wrap">
-      <canvas id="waveform" class="waveform"></canvas>
-      <div class="wave-empty" id="waveEmpty">Load audio to drive the animation from its energy</div>
-      <div class="playhead" id="playhead"></div>
-    </div>
-
-    <div class="transport-right">
-      <div class="level-meter" title="Live audio energy">
-        <div class="level-fill" id="levelFill"></div>
+      <span class="timecode" id="timecode">0.0s</span>
+      <div class="divider-v small"></div>
+      <span class="tl-label">Duration</span>
+      <div class="seg" id="durSegTl">
+        <button class="seg-btn" data-dur="4">4s</button>
+        <button class="seg-btn active" data-dur="8">8s</button>
+        <button class="seg-btn" data-dur="15">15s</button>
+        <button class="seg-btn" data-dur="custom">Custom</button>
       </div>
+      <div class="level-meter" title="Live audio energy"><div class="level-fill" id="levelFill"></div></div>
       <span class="audio-name" id="audioName">No audio</span>
       <input type="file" id="audioInput" accept="audio/*" hidden />
+    </div>
+
+    <div class="tl-body" id="tlBody">
+      <div class="tl-ruler" id="tlRuler"></div>
+      <div class="tl-tracks" id="tlTracks">
+        <div class="tl-empty" id="tlEmpty">Layers appear here as tracks. Drag a clip to set when it starts and how long it lasts.</div>
+      </div>
+      <div class="tl-playhead" id="tlPlayhead"></div>
     </div>
   </footer>
 </div>
@@ -269,8 +295,8 @@
       <div class="es-row">
         <span class="es-label">Duration</span>
         <div class="seg es-seg" id="durSeg">
-          <button class="seg-btn active" data-dur="4">4s</button>
-          <button class="seg-btn" data-dur="8">8s</button>
+          <button class="seg-btn" data-dur="4">4s</button>
+          <button class="seg-btn active" data-dur="8">8s</button>
           <button class="seg-btn" data-dur="15">15s</button>
           <button class="seg-btn" data-dur="custom">Custom</button>
         </div>
@@ -321,7 +347,7 @@
     <div class="export-options">
       <button class="export-opt" id="exportMp4">
         <div class="eo-icon eo-primary">MP4</div>
-        <div class="eo-text"><strong>MP4 video · H.264</strong><span>Instagram Reel · selected background · audio</span></div>
+        <div class="eo-text"><strong>MP4 video · H.264</strong><span>Preferred · selected background · audio</span></div>
       </button>
       <button class="export-opt" id="exportWebm">
         <div class="eo-icon">WEBM</div>
@@ -334,7 +360,7 @@
     </div>
 
     <div class="export-status" id="exportStatus" data-kind="info">Ready</div>
-    <p class="sheet-note">*Transparent video depends on browser codec support and is not needed for Instagram. For compositing, prefer transparent PNG or transparent PNG sequence. MP4 uses ffmpeg.wasm when its scripts are loaded — see the integration note in index.html and script.js.</p>
+    <p class="sheet-note">*Transparent video depends on browser codec support and is not needed for Instagram. For compositing, prefer transparent PNG or transparent PNG sequence. MP4 uses ffmpeg.wasm when its scripts are loaded — see the note in index.html and script.js.</p>
   </div>
 </div>
 
