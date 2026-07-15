@@ -76,9 +76,16 @@
     { key: "hudOverlay",    label: "HUD Overlay",       transform: false },
     { key: "pulseGlow",     label: "Pulse Glow",        transform: false },
     { key: "symbolTrans",   label: "Symbol Transition", transform: false },
+    { key: "textFlicker",   label: "Text Flicker",      transform: false },
+    { key: "lineDraw",      label: "Line Draw",         transform: false },
+    { key: "trimPaths",     label: "Trim Paths",        transform: false },
+    { key: "radarSweep",    label: "Radar Sweep",       transform: false },
+    { key: "coordBlink",    label: "Coordinate Blink",  transform: false },
+    { key: "dataStream",    label: "Data Stream",       transform: false },
+    { key: "oscilloscope",  label: "Oscilloscope",      transform: false },
+    { key: "digitalWave",   label: "Digital Wave",      transform: false },
     { key: "signalShake",   label: "Signal Shake",      transform: true  },
     { key: "hologramTilt",  label: "Hologram Tilt",     transform: true  },
-    { key: "digitalWave",   label: "Digital Wave",      transform: false },
   ];
   const FX_TRANSFORM = new Set(FX_LIBRARY.filter((f) => f.transform).map((f) => f.key));
 
@@ -88,12 +95,13 @@
   const PRESETS = {
     "Signal System":       { fx: ["scanReveal","rgbOffset","hudOverlay","flickerBlocks","dataBreakup"], patch: { flicker: 38, rgbSplit: 32, scanline: 55, noise: 26 } },
     "Hardware Motion":     { fx: ["scanReveal","blurIn","hudOverlay","pulseGlow"], patch: { flicker: 26, scanline: 60, glow: 55, blur: 14 } },
-    "Vector Scan":         { fx: ["scanReveal","hudOverlay","flickerBlocks","pulseGlow"], patch: { flicker: 30, scanline: 75, glow: 45, noise: 16 } },
+    "Vector Scan":         { fx: ["scanReveal","radarSweep","hudOverlay","lineDraw"], patch: { flicker: 30, scanline: 75, glow: 45, noise: 16 } },
     "Signal Loss":         { fx: ["hardCut","dataBreakup","rgbOffset","flickerBlocks","scanReveal"], patch: { glitch: 60, flicker: 78, rgbSplit: 55, scanline: 62, noise: 55 } },
-    "Data Pulse":          { fx: ["pulseGlow","rgbOffset","scanReveal","hardCut"], patch: { glow: 70, rgbSplit: 40, scanline: 55, flicker: 30 } },
+    "Data Pulse":          { fx: ["pulseGlow","rgbOffset","dataStream","hardCut"], patch: { glow: 70, rgbSplit: 40, scanline: 55, flicker: 30 } },
     "Clean Motion Poster": { fx: ["blurIn","pulseGlow"], patch: { flicker: 10, blur: 16, scanline: 14, noise: 6, glow: 45 } },
-    "CRT Monitor":         { fx: ["scanReveal","dataBreakup","pulseGlow"], patch: { flicker: 28, blur: 10, scanline: 95, noise: 34, glow: 40 } },
-    "Interface Intro":     { fx: ["blurIn","scanReveal","hudOverlay","rgbOffset"], patch: { flicker: 26, scanline: 50, rgbSplit: 30, glow: 45 }, stagger: true },
+    "CRT Monitor":         { fx: ["scanReveal","dataBreakup","oscilloscope","pulseGlow"], patch: { flicker: 28, blur: 10, scanline: 95, noise: 34, glow: 40 } },
+    "Interface Intro":     { fx: ["blurIn","lineDraw","hudOverlay","rgbOffset"], patch: { flicker: 26, scanline: 50, rgbSplit: 30, glow: 45 }, stagger: true },
+    "Hardware Motion Intro":{ fx: ["blurIn","scanReveal","hudOverlay","coordBlink","trimPaths"], patch: { flicker: 24, scanline: 55, glow: 50, blur: 12 }, stagger: true },
   };
 
   /* ---------------- DOM ---------------- */
@@ -116,7 +124,7 @@
     // transform
     transformEmpty: $("#transformEmpty"), transformBody: $("#transformBody"),
     lockAspect: $("#lockAspect"),
-    tfCenter: $("#tfCenter"), tfFit: $("#tfFit"), tfFill: $("#tfFill"), tfReset: $("#tfReset"),
+    tfCenter: $("#tfCenter"), tfFit: $("#tfFit"), tfFill: $("#tfFill"), tfOriginal: $("#tfOriginal"), tfReset: $("#tfReset"),
     layerDup: $("#layerDup"), layerHide: $("#layerHide"), layerLock: $("#layerLock"), layerDel: $("#layerDel"),
     // color
     colorEmpty: $("#colorEmpty"), colorBody: $("#colorBody"), colorNote: $("#colorNote"),
@@ -230,9 +238,11 @@
     const wrap = document.createElement("div"); wrap.className = "layer-el"; wrap.appendChild(node);
     el.layerHost.appendChild(wrap);
 
-    // fit natural size into artboard (contain), as a fraction of artboard
+    // Default import sizing = Fit to Canvas (contain the whole artwork,
+    // preserving aspect ratio via viewBox), centered. No auto-scale-up
+    // past the artboard, no rotation.
     const A = STATE.format, nat = asset.meta;
-    const fit = Math.min(A.w / nat.natW, A.h / nat.natH) * 0.8; // 80% margin
+    const fit = Math.min(A.w / nat.natW, A.h / nat.natH); // contain, fills the smaller dimension
     const wPx = nat.natW * fit, hPx = nat.natH * fit;
 
     let subLayers = [];
@@ -251,14 +261,20 @@
     captureOriginalColors(layer);
     layers.push(layer);
     renderLayers(); renderTimeline(); selectLayer(layer); updateHintVisibility();
-    if (!STATE.playing) togglePlay();
+    // IMPORTANT: do NOT auto-play. Imported layers stay static until the
+    // user applies an effect/preset or presses Play. Render one static
+    // frame so the layer is visible in its resting position.
+    renderStaticFrame();
   }
 
   function extractSubLayers(node, id) {
-    const subs = Array.from(node.querySelectorAll("g, path, rect, circle, ellipse, line, polyline, polygon, text, use"))
-      .filter((n) => !(n.tagName.toLowerCase() === "g" && n.children.length === 0));
-    subs.forEach((s, i) => (s._recipe = makeRecipe(id * 97 + i)));
-    return subs.slice(0, 40); // safety cap
+    try {
+      const subs = Array.from(node.querySelectorAll("g, path, rect, circle, ellipse, line, polyline, polygon, text, use, symbol"))
+        .filter((n) => !(n.tagName.toLowerCase() === "g" && n.children.length === 0));
+      if (subs.length > 300) { toast("SVG is very complex — keeping it grouped as one layer"); return []; }
+      subs.forEach((s, i) => (s._recipe = makeRecipe(id * 97 + i)));
+      return subs.slice(0, 60);
+    } catch (e) { toast("SVG sublayer parsing was unstable — kept grouped"); return []; }
   }
 
   function makeRecipe(seed) {
@@ -277,16 +293,16 @@
     dup.transform = { ...layer.transform, cx: layer.transform.cx + 4, cy: layer.transform.cy + 4 };
     dup.fx = layer.fx.slice(); dup.allowTransform = layer.allowTransform;
     dup.start = layer.start; dup.duration = layer.duration;
-    renderLayers(); renderTimeline();
+    renderLayers(); renderTimeline(); paintIfPaused();
   }
   function deleteLayer(layer) {
     const i = layers.indexOf(layer); if (i < 0) return;
     if (layer.wrap && layer.wrap.parentNode) layer.wrap.parentNode.removeChild(layer.wrap);
     layers.splice(i, 1);
     if (selectedLayer === layer) selectedLayer = null;
-    renderLayers(); renderTimeline(); renderInspector(); updateHintVisibility(); updateSelectionBox();
+    renderLayers(); renderTimeline(); renderInspector(); updateHintVisibility(); updateSelectionBox(); paintIfPaused();
   }
-  function toggleLayerVisible(layer) { layer.visible = !layer.visible; layer.wrap.style.display = layer.visible ? "" : "none"; renderLayers(); }
+  function toggleLayerVisible(layer) { layer.visible = !layer.visible; layer.wrap.style.display = layer.visible ? "" : "none"; renderLayers(); paintIfPaused(); }
   function toggleLayerLock(layer) { layer.locked = !layer.locked; renderLayers(); renderInspector(); }
 
   /* ---------------- LAYER STACK ---------------- */
@@ -361,14 +377,14 @@
       b.addEventListener("click", () => {
         const i = selectedLayer.fx.indexOf(fx.key);
         if (i >= 0) selectedLayer.fx.splice(i, 1); else selectedLayer.fx.push(fx.key);
-        b.classList.toggle("on"); if (!STATE.playing) togglePlay();
+        b.classList.toggle("on"); if (selectedLayer.fx.length && !STATE.playing) startPlayback(); else if (!selectedLayer.fx.length) paintIfPaused();
       });
       el.fxToggleGrid.appendChild(b);
     });
     if (isSvg) { el.colorNote.hidden = !selectedLayer.complex; }
   }
   function initialWPct(layer) {
-    const A = STATE.format, fit = Math.min(A.w / layer.natW, A.h / layer.natH) * 0.8;
+    const A = STATE.format, fit = Math.min(A.w / layer.natW, A.h / layer.natH);
     return (layer.natW * fit / A.w) * 100 || 1;
   }
   function setSlider(key, val) {
@@ -389,13 +405,14 @@
   }
   function bindT(key, fn) {
     const input = document.getElementById(`ctl-${key}`); if (!input) return;
-    input.addEventListener("input", (e) => { if (!selectedLayer) return; fn(+e.target.value); setSlider(key, +e.target.value); if (!STATE.playing) togglePlay(); updateSelectionBox(); });
+    input.addEventListener("input", (e) => { if (!selectedLayer) return; fn(+e.target.value); setSlider(key, +e.target.value); updateSelectionBox(); paintIfPaused(); });
   }
 
-  function tfCenter() { if (!selectedLayer) return; selectedLayer.transform.cx = 0; selectedLayer.transform.cy = 0; renderInspector(); updateSelectionBox(); }
-  function tfFit() { if (!selectedLayer) return; const A = STATE.format, L = selectedLayer; const fit = Math.min(A.w / L.natW, A.h / L.natH); L.transform.wPct = (L.natW * fit / A.w) * 100; L.transform.hPct = (L.natH * fit / A.h) * 100; L.transform.cx = 0; L.transform.cy = 0; L.transform.rot = 0; renderInspector(); updateSelectionBox(); }
-  function tfFill() { if (!selectedLayer) return; const A = STATE.format, L = selectedLayer; const fill = Math.max(A.w / L.natW, A.h / L.natH); L.transform.wPct = (L.natW * fill / A.w) * 100; L.transform.hPct = (L.natH * fill / A.h) * 100; L.transform.cx = 0; L.transform.cy = 0; renderInspector(); updateSelectionBox(); }
-  function tfReset() { if (!selectedLayer) return; const A = STATE.format, L = selectedLayer; const fit = Math.min(A.w / L.natW, A.h / L.natH) * 0.8; L.transform = { cx: 0, cy: 0, wPct: (L.natW * fit / A.w) * 100, hPct: (L.natH * fit / A.h) * 100, rot: 0, opacity: 100 }; renderInspector(); updateSelectionBox(); }
+  function tfCenter() { if (!selectedLayer) return; selectedLayer.transform.cx = 0; selectedLayer.transform.cy = 0; renderInspector(); updateSelectionBox(); paintIfPaused(); }
+  function tfFit() { if (!selectedLayer) return; const A = STATE.format, L = selectedLayer; const fit = Math.min(A.w / L.natW, A.h / L.natH); L.transform.wPct = (L.natW * fit / A.w) * 100; L.transform.hPct = (L.natH * fit / A.h) * 100; L.transform.cx = 0; L.transform.cy = 0; L.transform.rot = 0; renderInspector(); updateSelectionBox(); paintIfPaused(); }
+  function tfFill() { if (!selectedLayer) return; const A = STATE.format, L = selectedLayer; const fill = Math.max(A.w / L.natW, A.h / L.natH); L.transform.wPct = (L.natW * fill / A.w) * 100; L.transform.hPct = (L.natH * fill / A.h) * 100; L.transform.cx = 0; L.transform.cy = 0; renderInspector(); updateSelectionBox(); paintIfPaused(); }
+  function tfOriginal() { if (!selectedLayer) return; const A = STATE.format, L = selectedLayer; L.transform.wPct = (L.natW / A.w) * 100; L.transform.hPct = (L.natH / A.h) * 100; L.transform.cx = 0; L.transform.cy = 0; renderInspector(); updateSelectionBox(); paintIfPaused(); }
+  function tfReset() { if (!selectedLayer) return; const A = STATE.format, L = selectedLayer; const fit = Math.min(A.w / L.natW, A.h / L.natH); L.transform = { cx: 0, cy: 0, wPct: (L.natW * fit / A.w) * 100, hPct: (L.natH * fit / A.h) * 100, rot: 0, opacity: 100 }; renderInspector(); updateSelectionBox(); paintIfPaused(); }
 
   /* ---------------- COLOR EDITING ---------------- */
   const COLOR_TARGET = "path, rect, circle, ellipse, line, polyline, polygon, text, tspan";
@@ -537,6 +554,13 @@
     hudOverlay(sig, t) { return { hud: true, hudFlicker: 0.6 + sig.mid * 0.4 }; },
     pulseGlow(sig, t) { const b = Math.sin(t * (1.4 + sig.bass * 2)) * 0.5 + 0.5; return { glow: 6 + b * 12 + sig.bass * 30, opacity: 0.85 + 0.15 * b }; },
     symbolTrans(sig, t) { const k = Math.sin(t * 0.8) * 0.5 + 0.5; return { blur: k * 3, opacity: 0.6 + 0.4 * k, scaleSafe: 1 }; },
+    textFlicker(sig, t) { const amt = STATE.flicker / 100; const cut = Math.random() < (0.05 + sig.mid * 0.2) * amt; return { textFlicker: amt, opacity: cut ? 0.4 : 1 }; },
+    lineDraw(sig, t) { const k = clamp01((t % 5) / 2.2); return { pathDraw: k }; },
+    trimPaths(sig, t) { const k = (Math.sin(t * 0.9) * 0.5 + 0.5); return { pathTrim: k }; },
+    radarSweep(sig, t) { return { radar: (t * (60 + sig.mid * 120)) % 360, glow: 4 + sig.mid * 14 }; },
+    coordBlink(sig, t) { return { hud: true, hudFlicker: 0.4 + 0.6 * (Math.random() < 0.1 ? 0 : 1) }; },
+    dataStream(sig, t) { return { scanBoost: 0.3 + sig.high * 0.8, opacityWave: 0.9 + 0.1 * Math.sin(t * 12) }; },
+    oscilloscope(sig, t) { return { oscilloscope: 0.5 + sig.level, scanBoost: 0.2 + sig.high * 0.5 }; },
     digitalWave(sig, t) { const w = Math.sin(t * (2 + sig.bass * 4)); return { skew: w * (1.2 + sig.bass * 2.5) }; },
     // transform effects (gated)
     signalShake(sig, t) { const s = (STATE.glitch / 100) * 1.5 + 0.6, impact = 1 + sig.bass * 3 + sig.beat * 2.5; return { tx: (Math.random() - 0.5) * s * impact, ty: (Math.random() - 0.5) * s * impact }; },
@@ -580,6 +604,7 @@
     let tx = 0, ty = 0, extraScale = 1, rot = 0, rotX = 0, rotY = 0, skew = 0;
     let opacity = T.opacity / 100, blur = 0, rgb = 0, glow = 0;
     let hud = false, hudFlicker = 1, flash = null, flashA = 0, scanBoost = 0, breakup = 0;
+    let pathDraw = null, pathTrim = null;
     const allowT = layer.allowTransform;
 
     for (const key of layer.fx) {
@@ -597,6 +622,8 @@
       if (d.flash) { flash = d.flash; flashA = d.flashA; }
       if (d.scanBoost) scanBoost = Math.max(scanBoost, d.scanBoost);
       if (d.breakup) breakup = Math.max(breakup, d.breakup);
+      if (d.pathDraw !== undefined) pathDraw = d.pathDraw;
+      if (d.pathTrim !== undefined) pathTrim = d.pathTrim;
       if (d.skew) { if (allowT) skew += d.skew; }
       // safe scale (blur-in 0.96->1) is allowed even without transform, it's tiny
       if (d.scaleSafe !== undefined) extraScale *= d.scaleSafe;
@@ -604,6 +631,10 @@
       if (isT) { if (d.tx) tx += d.tx; if (d.ty) ty += d.ty; if (d.rot) rot += d.rot; if (d.rotX) rotX += d.rotX; if (d.rotY) rotY += d.rotY; }
     }
     blur += (STATE.blur / 100) * 2;
+
+    // SVG stroke-dash animation for Line Draw / Trim Paths
+    if (layer.kind === "SVG" && (pathDraw !== null || pathTrim !== null)) applyPathDash(layer, pathDraw, pathTrim);
+    else if (layer.kind === "SVG" && layer._dashApplied) clearPathDash(layer);
 
     // artboard-space placement: size in %, center offset in %
     const A = STATE.format;
@@ -622,6 +653,62 @@
     if (layer.kind === "SVG" && layer.subLayers && layer.subLayers.length) animateSubLayers(layer, t, sig, allowT);
     return { hud, hudFlicker, flash, flashA, scanBoost, breakup };
   }
+
+  // Position a layer using ONLY its base transform — no effects, no scene
+  // blur, no motion. Used for the static resting state before playback.
+  function placeLayerStatic(layer) {
+    if (!layer.wrap) return;
+    const T = layer.transform, A = STATE.format;
+    const wPx = (T.wPct / 100) * A.w, hPx = (T.hPct / 100) * A.h;
+    const cxPx = (T.cx / 100) * A.w, cyPx = (T.cy / 100) * A.h;
+    layer.wrap.style.width = wPx + "px"; layer.wrap.style.height = hPx + "px";
+    layer.wrap.style.left = (A.w / 2 + cxPx - wPx / 2) + "px";
+    layer.wrap.style.top = (A.h / 2 + cyPx - hPx / 2) + "px";
+    layer.wrap.style.transformOrigin = "center center";
+    layer.wrap.style.transform = `rotate(${T.rot.toFixed(2)}deg)`;
+    layer.wrap.style.opacity = clamp01(T.opacity / 100).toFixed(2);
+    layer.wrap.style.filter = "none";
+    // reset any sublayer transforms so grouped/exposed SVGs sit still
+    if (layer.subLayers) layer.subLayers.forEach((n) => { n.style.transform = ""; n.style.opacity = ""; });
+    if (layer.kind === "SVG" && layer._dashApplied) clearPathDash(layer);
+  }
+
+  // Render one static frame (no animation) — every visible layer at rest,
+  // overlays cleared. Called on import, transform edits, format/zoom
+  // changes, etc. while paused.
+  function renderStaticFrame() {
+    if (STATE.playing) return;
+    layers.forEach((layer) => { if (!layer.wrap) return; if (!layer.visible) { layer.wrap.style.opacity = "0"; return; } placeLayerStatic(layer); });
+    el.artboard.style.setProperty("--scanline-op", 0);
+    el.artboard.style.setProperty("--noise-op", 0);
+    if (hudLayer) hudLayer.style.display = "none";
+    if (flashOverlay) flashOverlay.style.opacity = 0;
+    if (selectedLayer) updateSelectionBox();
+  }
+  function paintIfPaused() { if (!STATE.playing) renderStaticFrame(); }
+
+  // Line Draw / Trim Paths: animate stroke-dasharray/offset on SVG strokes.
+  function pathStrokes(layer) {
+    if (!layer._strokes) {
+      layer._strokes = Array.from(layer.node.querySelectorAll("path, line, polyline, polygon, circle, ellipse, rect")).map((n) => {
+        let len = 0; try { len = typeof n.getTotalLength === "function" ? n.getTotalLength() : 0; } catch (e) { len = 0; }
+        if (!len) { const bb = n.getBBox ? safeBBox(n) : null; len = bb ? (bb.width + bb.height) * 2 : 100; }
+        return { n, len };
+      });
+    }
+    return layer._strokes;
+  }
+  function safeBBox(n) { try { return n.getBBox(); } catch (e) { return null; } }
+  function applyPathDash(layer, draw, trim) {
+    pathStrokes(layer).forEach(({ n, len }) => {
+      if (!len) return;
+      n.style.strokeDasharray = len + "px";
+      if (draw !== null && draw !== undefined) n.style.strokeDashoffset = (len * (1 - clamp01(draw))) + "px";
+      else if (trim !== null && trim !== undefined) n.style.strokeDashoffset = (len * clamp01(trim)) + "px";
+    });
+    layer._dashApplied = true;
+  }
+  function clearPathDash(layer) { if (layer._strokes) layer._strokes.forEach(({ n }) => { n.style.strokeDasharray = ""; n.style.strokeDashoffset = ""; }); layer._dashApplied = false; }
 
   function animateSubLayers(layer, t, sig, allowT) {
     const fl = STATE.flicker / 100;
@@ -648,8 +735,11 @@
     const show = (i, p) => { if (i) i.style.display = STATE.playing ? "none" : "block"; if (p) p.style.display = STATE.playing ? "block" : "none"; };
     show(el.playIcon, el.pauseIcon); show(el.topPlayIcon, el.topPauseIcon);
     if (STATE.playing) { rafStart = performance.now() - STATE.time * 1000; if (audio.ready) { if (audio.ctx.state === "suspended") audio.ctx.resume(); audio.el.play().catch(() => {}); } }
-    else if (audio.ready) audio.el.pause();
+    else { if (audio.ready) audio.el.pause(); renderStaticFrame(); }
   }
+  // Start playback only if not already playing (used when an effect/preset
+  // is applied). Never toggles off.
+  function startPlayback() { if (!STATE.playing) togglePlay(); }
 
   /* ---------------- PRESETS ---------------- */
   function buildPresets() {
@@ -673,7 +763,7 @@
     });
     $$(".preset").forEach((c) => c.classList.toggle("active", c.textContent.trim() === name));
     renderTimeline(); renderInspector();
-    if (!STATE.playing) togglePlay();
+    startPlayback();
     toast(targets.length > 1 ? `Applied ${name} to ${targets.length} layers` : `Applied ${name}`);
   }
   function applyMotionAll() { if (!layers.length) { toast("Add layers first"); return; } applyPreset("Signal System", true); toast("Motion applied to all layers"); }
@@ -713,7 +803,7 @@
     const text = el.aiPrompt.value.toLowerCase().trim();
     if (!text) { el.aiEcho.textContent = "Type a direction first, like \u201cmake it more synced to the beat.\u201d"; return; }
     const hits = []; AI_RULES.forEach((r) => { if (r.kw.some((k) => text.includes(k))) { r.apply(); hits.push(r.say); } });
-    syncControls(); if (!STATE.playing) togglePlay();
+    syncControls(); startPlayback();
     el.aiEcho.textContent = hits.length ? hits.join(" \u00b7 ") : "No keywords matched. Try: cleaner, aggressive, synced to the beat, 1:1 post, IG reel, transparent PNG, every layer different, allow transform.";
   }
 
@@ -725,7 +815,7 @@
     const wrap = document.createElement("div"); wrap.className = "control";
     wrap.innerHTML = `<span class="ctl-label">${label}</span><span class="ctl-val" id="scv-${key}">${STATE[key]}</span><input type="range" min="0" max="100" value="${STATE[key]}" id="sc-${key}" style="--pct:${STATE[key]}%">`;
     container.appendChild(wrap);
-    wrap.querySelector("input").addEventListener("input", (e) => { STATE[key] = +e.target.value; document.getElementById(`scv-${key}`).textContent = STATE[key]; e.target.style.setProperty("--pct", STATE[key] + "%"); if (!STATE.playing) togglePlay(); });
+    wrap.querySelector("input").addEventListener("input", (e) => { STATE[key] = +e.target.value; document.getElementById(`scv-${key}`).textContent = STATE[key]; e.target.style.setProperty("--pct", STATE[key] + "%"); paintIfPaused(); });
   }
   function syncControls() { [...CONTROL_GROUPS.beatsync, ...CONTROL_GROUPS.scene].forEach(({ key }) => { const i = document.getElementById(`sc-${key}`), v = document.getElementById(`scv-${key}`); if (i) { i.value = STATE[key]; i.style.setProperty("--pct", STATE[key] + "%"); } if (v) v.textContent = STATE[key]; }); }
 
@@ -738,7 +828,8 @@
     el.artboard.style.setProperty("--frame-bg", mode === "transparent" ? "transparent" : css);
     if (el.bgColor && /^#/.test(STATE.bgColor)) el.bgColor.value = STATE.bgColor;
     if (el.bgHex) el.bgHex.textContent = mode === "transparent" ? "TRANSPARENT" : (mode === "gradient" ? "GRADIENT" : STATE.bgColor.toUpperCase());
-    $$(".bg-swatch").forEach((s) => s.classList.toggle("active", s.dataset.bg === mode));
+    $$(".bg-swatch").forEach((sw) => sw.classList.toggle("active", sw.dataset.bg === mode));
+    paintIfPaused();
   }
 
   /* ---------------- FORMAT + ZOOM ---------------- */
@@ -749,6 +840,7 @@
     el.readoutFormat.textContent = label;
     $$(".fmt").forEach((b) => b.classList.toggle("active", +b.dataset.w === w && +b.dataset.h === h));
     fitZoom(); setTimeout(renderTimeline, 30);
+    paintIfPaused();
   }
   function fitZoom() {
     const pad = 88, sw = el.stage.clientWidth || 800, sh = el.stage.clientHeight || 600;
@@ -758,9 +850,10 @@
   }
   function setZoom(z) { STATE.zoom = clamp(z, 0.05, 4); STATE.zoomMode = "manual"; applyZoom(); }
   function applyZoom() {
-    el.artboard.style.transform = `scale(${STATE.zoom})`;
+    el.artboardScaler.style.transform = `scale(${STATE.zoom})`;
     const label = STATE.zoomMode === "fit" ? "Fit" : Math.round(STATE.zoom * 100) + "%";
     el.zoomVal.textContent = label; el.readoutZoom.textContent = label;
+    $$("#zoomPresets [data-zoom]").forEach((b) => b.classList.toggle("active", STATE.zoomMode === "manual" && Math.abs(STATE.zoom - +b.dataset.zoom) < 0.001));
   }
 
   /* ============================================================ EXPORT ============================================================ */
@@ -989,13 +1082,14 @@
     el.tfFit.addEventListener("click", tfFit);
     el.tfFill.addEventListener("click", tfFill);
     el.tfReset.addEventListener("click", tfReset);
+    if (el.tfOriginal) el.tfOriginal.addEventListener("click", tfOriginal);
     el.layerDup.addEventListener("click", () => selectedLayer && duplicateLayer(selectedLayer));
     el.layerDel.addEventListener("click", () => selectedLayer && deleteLayer(selectedLayer));
     el.layerHide.addEventListener("click", () => { if (selectedLayer) { toggleLayerVisible(selectedLayer); renderInspector(); } });
     el.layerLock.addEventListener("click", () => selectedLayer && toggleLayerLock(selectedLayer));
 
     // allow transform toggle
-    el.allowTransform.addEventListener("change", (e) => { if (selectedLayer) { selectedLayer.allowTransform = e.target.checked; renderInspector(); if (!STATE.playing) togglePlay(); } });
+    el.allowTransform.addEventListener("change", (e) => { if (selectedLayer) { selectedLayer.allowTransform = e.target.checked; renderInspector(); paintIfPaused(); } });
 
     // color
     el.fillColor.addEventListener("input", (e) => { el.fillHex.textContent = e.target.value.toUpperCase(); });
@@ -1025,6 +1119,7 @@
     el.zoomIn.addEventListener("click", () => setZoom(STATE.zoom * 1.2));
     el.zoomOut.addEventListener("click", () => setZoom(STATE.zoom / 1.2));
     el.zoomFit.addEventListener("click", fitZoom);
+    $$("#zoomPresets [data-zoom]").forEach((b) => b.addEventListener("click", () => setZoom(+b.dataset.zoom)));
 
     // export modal
     el.exportBtn.addEventListener("click", openSheet);
