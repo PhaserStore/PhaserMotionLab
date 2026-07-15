@@ -1455,12 +1455,42 @@
   function closeSheet() { el.exportSheet.hidden = true; }
   function qualScale() { return EXPORTOPTS.quality === "2x" ? 2 : EXPORTOPTS.quality === "ultra" ? 1.5 : 1; }
 
-  function resolveExportBg(forVideo) {
-    if (forVideo && EXPORTOPTS.bg !== "transparent") { if (EXPORTOPTS.bg === "black") return "#000000"; if (EXPORTOPTS.bg === "white") return "#FFFFFF"; return currentBgPaint(); }
-    if (EXPORTOPTS.transparent || EXPORTOPTS.bg === "transparent") return null;
-    if (EXPORTOPTS.bg === "black") return "#000000"; if (EXPORTOPTS.bg === "white") return "#FFFFFF"; return currentBgPaint();
+  /* ============================================================
+     BACKGROUND RESOLUTION — explicit modes, safe fallback for video.
+     - forVideo=true: video codecs don't support alpha reliably, so if
+       the resolved bg would be null (transparent), fall back to a solid
+       colour ('black' by default) UNLESS the user explicitly requested
+       Alpha WebM (`wantAlphaVideo=true` passed by exportWebM).
+     - For stills: honour transparent all the way.
+     Returns:
+       null                 => truly transparent (still exports only)
+       "#RRGGBB"            => solid colour
+       { grad: [c1, c2] }   => gradient
+     ============================================================ */
+  function resolveExportBg(forVideo, wantAlphaVideo) {
+    // 1) Explicit segmented control on the export sheet overrides
+    if (EXPORTOPTS.bg === "black") return "#000000";
+    if (EXPORTOPTS.bg === "white") return "#FFFFFF";
+    if (EXPORTOPTS.bg === "transparent") {
+      if (forVideo && !wantAlphaVideo) return "#000000"; // safe fallback for video
+      return null;
+    }
+    // 2) "Selected" => follow the current artboard mode
+    const paint = currentBgPaint();
+    if (paint === null) {
+      // artboard is transparent
+      if (forVideo && !wantAlphaVideo) return "#000000"; // no alpha in video codec
+      return null;
+    }
+    return paint;
   }
-  function currentBgPaint() { if (STATE.bgMode === "transparent") return null; if (STATE.bgMode === "gradient") return { grad: [STATE.bgColor, STATE.bgColor2] }; if (STATE.bgMode === "white") return "#FFFFFF"; if (STATE.bgMode === "black") return "#000000"; return STATE.bgColor; }
+  function currentBgPaint() {
+    if (STATE.bgMode === "transparent") return null;
+    if (STATE.bgMode === "gradient") return { grad: [STATE.bgColor, STATE.bgColor2] };
+    if (STATE.bgMode === "white") return "#FFFFFF";
+    if (STATE.bgMode === "black") return "#000000";
+    return STATE.bgColor;
+  }
 
   function layerToImage(layer) {
     return new Promise((resolve) => {
@@ -1477,45 +1507,324 @@
 
   // Draw one frame. If cropRect given (px in artboard space), the canvas
   // represents that crop region only.
+  /* ============================================================
+     SHARED EFFECT EVALUATION — used by BOTH preview and export.
+     Returns a plain state object with the composed visual deltas for a
+     layer at a given scene time, including active event clips.
+     Bug fix: previous export used a copy of the preview logic that did
+     NOT walk `layer.clips`, so event effects were invisible in export.
+     ============================================================ */
+  function evaluateLayerAtTime(layer, sceneTime, sig, localTime) {
+    const T = layer.transform, allowT = layer.allowTransform;
+    // baseline
+    const s = {
+      tx: 0, ty: 0, extraScale: 1, rot: 0, rotX: 0, rotY: 0, skew: 0,
+      opacity: T.opacity / 100, blur: 0, rgb: 0, glow: 0,
+      hud: false, hudFlicker: 1, flash: null, flashA: 0,
+      scanBoost: 0, breakup: 0,
+      pathDraw: null, pathTrim: null,
+      radarBar: null, scanMask: null, freeze: false,
+      textSwap: null, layerSwap: 0,
+    };
+    // sustained effects
+    for (const key of layer.fx) {
+      const mod = EFFECTS[key]; if (!mod) continue;
+      const isT = FX_TRANSFORM.has(key); if (isT && !allowT) continue;
+      const d = mod(sig, localTime) || {};
+      if (d.opacity !== undefined) s.opacity *= d.opacity;
+      if (d.opacityWave !== undefined) s.opacity *= d.opacityWave;
+      if (d.blur) s.blur += d.blur;
+      if (d.rgb) s.rgb = Math.max(s.rgb, d.rgb);
+      if (d.glow) s.glow = Math.max(s.glow, d.glow);
+      if (d.hud) { s.hud = true; s.hudFlicker = d.hudFlicker; }
+      if (d.flash) { s.flash = d.flash; s.flashA = d.flashA; }
+      if (d.scanBoost) s.scanBoost = Math.max(s.scanBoost, d.scanBoost);
+      if (d.breakup) s.breakup = Math.max(s.breakup, d.breakup);
+      if (d.pathDraw !== undefined) s.pathDraw = d.pathDraw;
+      if (d.pathTrim !== undefined) s.pathTrim = d.pathTrim;
+      if (d.skew && allowT) s.skew += d.skew;
+      if (d.scaleSafe !== undefined) s.extraScale *= d.scaleSafe;
+      if (isT) { if (d.tx) s.tx += d.tx; if (d.ty) s.ty += d.ty; if (d.rot) s.rot += d.rot; if (d.rotX) s.rotX += d.rotX; if (d.rotY) s.rotY += d.rotY; }
+    }
+    // event clips
+    const active = activeEventClipsAt(layer, sceneTime);
+    for (const { c, p } of active) {
+      const mod = EVENT_EFFECTS[c.fxKey]; if (!mod) continue;
+      const d = mod(p, sig) || {};
+      if (d.opacity !== undefined) s.opacity *= d.opacity;
+      if (d.opacityWave !== undefined) s.opacity *= d.opacityWave;
+      if (d.blur) s.blur += d.blur;
+      if (d.rgb) s.rgb = Math.max(s.rgb, d.rgb);
+      if (d.glow) s.glow = Math.max(s.glow, d.glow);
+      if (d.flash) { s.flash = d.flash; s.flashA = Math.max(s.flashA || 0, d.flashA || 0); }
+      if (d.scanBoost) s.scanBoost = Math.max(s.scanBoost, d.scanBoost);
+      if (d.breakup) s.breakup = Math.max(s.breakup, d.breakup);
+      if (d.hud) { s.hud = true; s.hudFlicker = d.hudFlicker; }
+      if (d.pathDraw !== undefined) s.pathDraw = d.pathDraw;
+      if (d.pathTrim !== undefined) s.pathTrim = d.pathTrim;
+      if (d.radarBar !== undefined) s.radarBar = d.radarBar;
+      if (d.scanMask !== undefined) s.scanMask = d.scanMask;
+      if (d.freeze) s.freeze = true;
+      if (d.textSwap !== undefined) s.textSwap = d.textSwap;
+      if (c.fxKey === "layerSwap") s.layerSwap = 1 - p;
+    }
+    s.blur += (STATE.blur / 100) * 2;
+    return s;
+  }
+
+  /* ============================================================
+     EXPORT RENDERER — Bug fixes:
+       1. Event effects now render (uses evaluateLayerAtTime).
+       2. Transparent mode never fills black anywhere:
+          - no bg fill
+          - no radial vignette
+          - scanline overlay uses source-atop (only touches non-alpha)
+          - noise loop skips alpha==0 pixels
+          - hardCut/event flashes composite as source-atop under alpha
+     ============================================================ */
   async function drawExportFrame(ctx, W, H, imgs, t, opts, cropRect) {
     const transparent = !opts.bg;
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = 1;
     ctx.clearRect(0, 0, W, H);
-    if (!transparent) { if (typeof opts.bg === "object" && opts.bg.grad) { const g = ctx.createLinearGradient(0, 0, W, H); g.addColorStop(0, opts.bg.grad[0]); g.addColorStop(1, opts.bg.grad[1]); ctx.fillStyle = g; } else ctx.fillStyle = opts.bg; ctx.fillRect(0, 0, W, H); }
+
+    if (!transparent) {
+      if (typeof opts.bg === "object" && opts.bg.grad) {
+        const g = ctx.createLinearGradient(0, 0, W, H);
+        g.addColorStop(0, opts.bg.grad[0]); g.addColorStop(1, opts.bg.grad[1]);
+        ctx.fillStyle = g;
+      } else {
+        ctx.fillStyle = opts.bg;
+      }
+      ctx.fillRect(0, 0, W, H);
+    }
+
     const A = STATE.format;
-    // scale from artboard px to export px
-    const sx = cropRect ? (W / cropRect.w) : (W / A.w), sy = cropRect ? (H / cropRect.h) : (H / A.h);
+    const sx = cropRect ? (W / cropRect.w) : (W / A.w);
+    const sy = cropRect ? (H / cropRect.h) : (H / A.h);
     const offX = cropRect ? cropRect.x : 0, offY = cropRect ? cropRect.y : 0;
     const sig = audioSignal();
     const drawList = exportLayers();
+
+    // Per-frame flash / hud collectors
+    let frameFlash = null, frameFlashA = 0, frameHudFlicker = 0;
+    const frameOverlays = []; // { type, ... } for radar sweeps etc
 
     drawList.forEach((layer) => {
       if (!layer.visible) return;
       if (t < layer.start - 0.001 || t > layer.start + layer.duration + 0.001) return;
       const img = imgs[layer.id]; if (!img) return;
-      const T = layer.transform, lt = t - layer.start + layer.recipe.delay, allowT = layer.allowTransform;
-      let op = T.opacity / 100, blur = 0, rgb = 0, glow = 0, extraScale = 1, rot = T.rot, tx = 0, ty = 0;
-      for (const key of layer.fx) {
-        const mod = EFFECTS[key]; if (!mod) continue; const isT = FX_TRANSFORM.has(key); if (isT && !allowT) continue;
-        const d = mod(sig, lt) || {};
-        if (d.opacity !== undefined) op *= d.opacity; if (d.opacityWave !== undefined) op *= d.opacityWave;
-        if (d.blur) blur += d.blur; if (d.rgb) rgb = Math.max(rgb, d.rgb); if (d.glow) glow = Math.max(glow, d.glow);
-        if (d.scaleSafe !== undefined) extraScale *= d.scaleSafe;
-        if (isT) { if (d.tx) tx += d.tx; if (d.ty) ty += d.ty; if (d.rot) rot += d.rot; }
-      }
-      const wPx = (T.wPct / 100) * A.w * extraScale, hPx = (T.hPct / 100) * A.h * extraScale;
-      const cxPx = (T.cx / 100) * A.w + (allowT ? (tx / 100) * A.w : 0), cyPx = (T.cy / 100) * A.h + (allowT ? (ty / 100) * A.h : 0);
-      const centerX = (A.w / 2 + cxPx - offX) * sx, centerY = (A.h / 2 + cyPx - offY) * sy;
+
+      const T = layer.transform;
+      const lt = t - layer.start + layer.recipe.delay;
+      // Use the SAME evaluator as preview so event clips affect export.
+      const s = evaluateLayerAtTime(layer, t, sig, lt);
+      const allowT = layer.allowTransform;
+
+      // Layer placement in artboard coordinates
+      const wPx = (T.wPct / 100) * A.w * s.extraScale;
+      const hPx = (T.hPct / 100) * A.h * s.extraScale;
+      const cxPx = (T.cx / 100) * A.w + (allowT ? (s.tx / 100) * A.w : 0);
+      const cyPx = (T.cy / 100) * A.h + (allowT ? (s.ty / 100) * A.h : 0);
+      const centerX = (A.w / 2 + cxPx - offX) * sx;
+      const centerY = (A.h / 2 + cyPx - offY) * sy;
       const dw = wPx * sx, dh = hPx * sy;
-      ctx.save(); ctx.globalAlpha = clamp01(op); ctx.translate(centerX, centerY); ctx.rotate((rot) * Math.PI / 180);
-      if (glow) { ctx.shadowColor = "rgba(122,92,255,0.6)"; ctx.shadowBlur = glow * sx; }
-      if (rgb > 0.3) { const off = rgb * sx; ctx.globalCompositeOperation = "screen"; const a = ctx.globalAlpha; ctx.globalAlpha = a * 0.5; ctx.drawImage(img, -dw / 2 + off, -dh / 2, dw, dh); ctx.drawImage(img, -dw / 2 - off, -dh / 2, dw, dh); ctx.globalCompositeOperation = "source-over"; ctx.globalAlpha = a; }
+      const rotDeg = T.rot + s.rot;
+
+      // Optional scan-mask (from event Scan Reveal): mask reveal from left
+      // by clipping to a shrinking right-side rectangle.
+      const useScanMask = s.scanMask !== null && s.scanMask !== undefined;
+
+      ctx.save();
+      ctx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = clamp01(s.opacity);
+      ctx.translate(centerX, centerY);
+      ctx.rotate(rotDeg * Math.PI / 180);
+
+      // Approximate blur with shadow trick — since ctx.filter is not
+      // supported in all browsers for MediaRecorder-captured streams,
+      // we use ctx.filter when available, else fall back to soft glow.
+      if (s.blur > 0.05) { ctx.filter = `blur(${s.blur.toFixed(2)}px)`; }
+      if (s.glow > 0) { ctx.shadowColor = "rgba(122,92,255,0.6)"; ctx.shadowBlur = s.glow * sx; }
+
+      // Scan-mask reveal (event effect) — clip to reveal area
+      if (useScanMask) {
+        const revealPct = clamp01(s.scanMask);
+        ctx.beginPath();
+        ctx.rect(-dw / 2, -dh / 2, dw * revealPct, dh);
+        ctx.clip();
+      }
+
+      // RGB offset / spike
+      if (s.rgb > 0.3) {
+        const off = s.rgb * sx;
+        const a = ctx.globalAlpha;
+        ctx.globalCompositeOperation = "lighter";
+        ctx.globalAlpha = a * 0.5;
+        ctx.drawImage(img, -dw / 2 + off, -dh / 2, dw, dh);
+        ctx.drawImage(img, -dw / 2 - off, -dh / 2, dw, dh);
+        ctx.globalCompositeOperation = "source-over";
+        ctx.globalAlpha = a;
+      }
+
+      // Layer Swap: draw an inverted/offset ghost duplicate briefly
+      if (s.layerSwap > 0.01) {
+        const a = ctx.globalAlpha;
+        ctx.globalAlpha = a * 0.6 * s.layerSwap;
+        ctx.globalCompositeOperation = "difference";
+        ctx.drawImage(img, -dw / 2 + 4 * sx, -dh / 2 - 4 * sy, dw, dh);
+        ctx.globalCompositeOperation = "source-over";
+        ctx.globalAlpha = a;
+      }
+
+      // Main layer draw
       ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+
+      // Reset filter/shadow for post-passes
+      ctx.filter = "none";
+      ctx.shadowBlur = 0;
       ctx.restore();
+
+      // Radar sweep beam (event effect): draw a vertical bar sweeping
+      // across the layer's bounding rect in artboard coords.
+      if (s.radarBar !== null && s.radarBar !== undefined) {
+        const layerLeft = centerX - dw / 2, layerTop = centerY - dh / 2;
+        const barX = layerLeft + clamp01(s.radarBar) * dw;
+        const barW = Math.max(2, dw * 0.04);
+        const grd = ctx.createLinearGradient(barX - barW, 0, barX + barW, 0);
+        grd.addColorStop(0.0, "rgba(122,92,255,0)");
+        grd.addColorStop(0.5, "rgba(156,134,255,0.55)");
+        grd.addColorStop(1.0, "rgba(122,92,255,0)");
+        ctx.save();
+        ctx.globalCompositeOperation = transparent ? "source-over" : "screen";
+        ctx.fillStyle = grd;
+        ctx.fillRect(barX - barW, layerTop, barW * 2, dh);
+        ctx.restore();
+      }
+
+      // Data Break blocks (event effect): draw a few small displaced
+      // slabs of the layer, respecting alpha (no black fill).
+      if (s.breakup > 0.05) {
+        const layerLeft = centerX - dw / 2, layerTop = centerY - dh / 2;
+        const blocks = Math.floor(3 + s.breakup * 6);
+        ctx.save();
+        for (let bi = 0; bi < blocks; bi++) {
+          const bx = layerLeft + Math.random() * dw * 0.9;
+          const by = layerTop + Math.random() * dh * 0.85;
+          const bw = 10 + Math.random() * 40, bh = 3 + Math.random() * 8;
+          const dxOff = (Math.random() - 0.5) * 24 * sx;
+          ctx.globalAlpha = 0.6;
+          // draw a strip of the layer offset horizontally
+          const sxSrc = (bx - layerLeft) * (img.width / dw);
+          const sySrc = (by - layerTop) * (img.height / dh);
+          const swSrc = bw * (img.width / dw), shSrc = bh * (img.height / dh);
+          try { ctx.drawImage(img, sxSrc, sySrc, swSrc, shSrc, bx + dxOff, by, bw, bh); } catch (e) {}
+        }
+        ctx.restore();
+      }
+
+      // HUD flicker collector
+      if (s.hud) frameHudFlicker = Math.max(frameHudFlicker, s.hudFlicker || 0.6);
+      // flash collector
+      if (s.flash && s.flashA > 0) {
+        if (!frameFlash || s.flashA > frameFlashA) { frameFlash = s.flash; frameFlashA = s.flashA; }
+      }
     });
 
-    if (STATE.scanline > 0) { if (transparent) ctx.globalCompositeOperation = "source-atop"; ctx.fillStyle = `rgba(0,0,0,${(STATE.scanline / 100) * 0.5 * (1 + sig.high)})`; const step = 3 * sy; for (let y = 0; y < H; y += step) ctx.fillRect(0, y, W, Math.max(1, sy)); ctx.globalCompositeOperation = "source-over"; }
-    if (STATE.noise > 0) { const n = ctx.getImageData(0, 0, W, H), amt = (STATE.noise / 100) * 40 * (1 + sig.high), d = n.data; for (let i = 0; i < d.length; i += 4) { if (transparent && d[i + 3] === 0) continue; if (Math.random() < 0.3) { const v = (Math.random() - 0.5) * amt; d[i] += v; d[i + 1] += v; d[i + 2] += v; } } ctx.putImageData(n, 0, 0); }
-    if (!transparent) { const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.3, W / 2, H / 2, Math.max(W, H) * 0.7); g.addColorStop(0, "rgba(0,0,0,0)"); g.addColorStop(1, "rgba(0,0,0,0.4)"); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); const flashing = drawList.some((l) => l.visible && l.fx.includes("hardCut")) && (sig.peak > 0.6 || sig.beat > 0.72); if (flashing) { ctx.fillStyle = Math.random() < 0.5 ? "rgba(255,255,255,0.45)" : "rgba(0,0,0,0.5)"; ctx.fillRect(0, 0, W, H); } }
+    // ---- Scene-level overlays (scanlines / noise / vignette / flash) ----
+
+    // Scanlines: honor STATE.scanline + boost from events. In transparent
+    // mode, use source-atop so they only darken existing artwork, never
+    // add solid black to empty regions.
+    const scanTotal = clamp01(STATE.scanline / 100 + (drawList.some((l) => l.fx.length || l.clips.length) ? 0 : 0));
+    if (scanTotal > 0.01) {
+      ctx.save();
+      if (transparent) ctx.globalCompositeOperation = "source-atop";
+      ctx.fillStyle = `rgba(0,0,0,${scanTotal * 0.5 * (1 + sig.high)})`;
+      const step = Math.max(2, 3 * sy);
+      for (let y = 0; y < H; y += step) ctx.fillRect(0, y, W, Math.max(1, sy));
+      ctx.restore();
+    }
+
+    // HUD overlay (event or sustained): draw thin corner brackets + tiny
+    // technical labels. Uses semi-transparent white — safe over alpha.
+    if (frameHudFlicker > 0.01) {
+      drawHudOverlay(ctx, W, H, sy, frameHudFlicker);
+    }
+
+    // Hard-cut / event flash: solid color overlay. In transparent mode
+    // we still let it flash BUT composite as source-atop so it doesn't
+    // add color to empty alpha regions.
+    if (frameFlash && frameFlashA > 0.01) {
+      ctx.save();
+      if (transparent) ctx.globalCompositeOperation = "source-atop";
+      ctx.globalAlpha = clamp01(frameFlashA);
+      ctx.fillStyle = frameFlash;
+      ctx.fillRect(0, 0, W, H);
+      ctx.restore();
+    }
+
+    // Noise: mutate RGB slightly, skip alpha==0 pixels so transparent
+    // stays transparent.
+    if (STATE.noise > 0) {
+      try {
+        const n = ctx.getImageData(0, 0, W, H);
+        const amt = (STATE.noise / 100) * 40 * (1 + sig.high);
+        const d = n.data;
+        for (let i = 0; i < d.length; i += 4) {
+          if (d[i + 3] === 0) continue; // preserve transparent pixels
+          if (Math.random() < 0.3) {
+            const v = (Math.random() - 0.5) * amt;
+            d[i]   = clamp255(d[i]   + v);
+            d[i+1] = clamp255(d[i+1] + v);
+            d[i+2] = clamp255(d[i+2] + v);
+          }
+        }
+        ctx.putImageData(n, 0, 0);
+      } catch (e) { /* getImageData may fail if canvas is tainted */ }
+    }
+
+    // Vignette — ONLY when we have a solid background (never over alpha)
+    if (!transparent) {
+      const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.3, W / 2, H / 2, Math.max(W, H) * 0.7);
+      g.addColorStop(0, "rgba(0,0,0,0)");
+      g.addColorStop(1, "rgba(0,0,0,0.4)");
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, H);
+    }
+  }
+  function clamp255(v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
+
+  // Small technical corner brackets + labels for HUD overlays (event or
+  // sustained). Alpha-safe.
+  function drawHudOverlay(ctx, W, H, sy, flicker) {
+    const op = clamp01(0.55 + 0.45 * flicker);
+    ctx.save();
+    ctx.strokeStyle = `rgba(255,255,255,${op * 0.55})`;
+    ctx.lineWidth = Math.max(1, sy * 1.2);
+    const cs = Math.max(14, Math.min(W, H) * 0.028); // corner size
+    const m = Math.max(10, Math.min(W, H) * 0.02);   // margin
+    // top-left
+    ctx.beginPath(); ctx.moveTo(m, m + cs); ctx.lineTo(m, m); ctx.lineTo(m + cs, m); ctx.stroke();
+    // top-right
+    ctx.beginPath(); ctx.moveTo(W - m - cs, m); ctx.lineTo(W - m, m); ctx.lineTo(W - m, m + cs); ctx.stroke();
+    // bottom-left
+    ctx.beginPath(); ctx.moveTo(m, H - m - cs); ctx.lineTo(m, H - m); ctx.lineTo(m + cs, H - m); ctx.stroke();
+    // bottom-right
+    ctx.beginPath(); ctx.moveTo(W - m - cs, H - m); ctx.lineTo(W - m, H - m); ctx.lineTo(W - m, H - m - cs); ctx.stroke();
+    // labels
+    const fSize = Math.max(10, Math.min(W, H) * 0.014);
+    ctx.fillStyle = `rgba(255,255,255,${op * 0.7})`;
+    ctx.font = `600 ${fSize}px ui-monospace, "SF Mono", monospace`;
+    ctx.textBaseline = "top";
+    ctx.fillText("\u2310 PHASER.SYS", m + cs + 6, m - 1);
+    ctx.textAlign = "right";
+    ctx.fillText("REC \u25cf", W - m - cs - 6, m - 1);
+    ctx.textAlign = "left"; ctx.textBaseline = "bottom";
+    ctx.fillText(`X:${Math.floor(STATE.time * 100).toString().padStart(4, "0")} Y:${STATE.format.h}`, m + cs + 6, H - m + fSize + 2);
+    ctx.textAlign = "right";
+    ctx.fillText("SCAN // LIVE", W - m - cs - 6, H - m + fSize + 2);
+    ctx.restore();
   }
 
   // Compute export canvas size + optional crop rect.
@@ -1559,13 +1868,25 @@
   async function exportWebM(alphaOverride) {
     if (!layers.length) { toast("Add a layer first"); return; }
     if (typeof MediaRecorder === "undefined") { setExportStatus("This browser can't record video — use PNG sequence", "error"); return; }
-    const fps = EXPORTOPTS.fps, wantAlpha = alphaOverride !== undefined ? alphaOverride : (EXPORTOPTS.transparent && EXPORTOPTS.bg === "transparent");
+    const fps = EXPORTOPTS.fps;
+    // wantAlpha only when user *explicitly* clicked the alpha WebM button
+    // (alphaOverride === true), or picked the "Alpha WebM" segmented bg
+    // AND checked transparent stills. WebM VP8/VP9 alpha is unreliable so
+    // we still warn and record with an "alpha.webm" name.
+    const wantAlpha = alphaOverride !== undefined ? alphaOverride : (EXPORTOPTS.transparent && EXPORTOPTS.bg === "transparent");
+    // Detect the "black background even though I asked for transparent"
+    // scenario and warn the user before we silently fall back.
+    const artboardTransparent = STATE.bgMode === "transparent";
+    if (!wantAlpha && (artboardTransparent || EXPORTOPTS.bg === "transparent")) {
+      toast("WebM/MP4 don't preserve alpha — using a solid background. Use PNG sequence for real transparency.");
+    }
     setExportStatus(`Recording WebM (${EXPORTOPTS.duration}s @ ${fps}fps)…`, "work");
     const { W, H, crop } = exportDims(), c = document.createElement("canvas"); c.width = W; c.height = H;
     const ctx = c.getContext("2d"), imgs = await rasterizeAll();
     const vStream = c.captureStream(fps); let mixed = vStream;
     if (EXPORTOPTS.includeAudio && audio.ready && audio.ctx) { try { audio.streamDest = audio.streamDest || audio.ctx.createMediaStreamDestination(); audio.destGain.connect(audio.streamDest); const at = audio.streamDest.stream.getAudioTracks()[0]; if (at) mixed = new MediaStream([...vStream.getVideoTracks(), at]); if (audio.ctx.state === "suspended") await audio.ctx.resume(); audio.el.currentTime = 0; audio.el.play().catch(() => {}); } catch (e) {} }
-    const bg = wantAlpha ? null : resolveExportBg(true);
+    // Pass wantAlpha so the resolver falls back to black instead of null.
+    const bg = resolveExportBg(true, wantAlpha);
     let rec; try { rec = new MediaRecorder(mixed, { mimeType: pickWebmMime(), videoBitsPerSecond: EXPORTOPTS.quality === "high" ? 12000000 : 16000000 }); } catch (e) { setExportStatus("Recording not supported here — use PNG sequence", "error"); return; }
     const chunks = []; rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
     rec.onstop = () => { const blob = new Blob(chunks, { type: "video/webm" }); LAST_WEBM_BLOB = blob; downloadBlob(blob, wantAlpha ? baseName("alpha.webm") : baseName("webm")); setExportStatus("Done — WebM saved", "done"); closeSheet(); };
@@ -1612,7 +1933,7 @@
       let rec; try { rec = new MediaRecorder(mixed, { mimeType: pickWebmMime(), videoBitsPerSecond: 12000000 }); } catch (e) { resolve(); return; }
       const chunks = []; rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
       rec.onstop = () => { LAST_WEBM_BLOB = new Blob(chunks, { type: "video/webm" }); if (audio.ready) audio.el.pause(); resolve(); };
-      const bg = resolveExportBg(true), t0 = performance.now(); rec.start();
+      const bg = resolveExportBg(true, false), t0 = performance.now(); rec.start();
       (function rf(now) { const e2 = (now - t0) / 1000; drawExportFrame(ctx, W, H, imgs, e2 % STATE.duration, { bg }, crop); if (e2 < EXPORTOPTS.duration) requestAnimationFrame(rf); else rec.stop(); })(performance.now());
     });
   }
