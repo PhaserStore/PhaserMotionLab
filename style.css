@@ -64,6 +64,8 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; }
 .zoom-btn { min-width: 26px; height: 26px; padding: 0 7px; border-radius: var(--r-xs); font-size: 12px; font-weight: 600; color: var(--text-2); transition: all var(--fast); }
 .zoom-btn:hover { color: var(--text); background: var(--panel-3); }
 .zoom-val { font-size: 11px; color: var(--text-2); min-width: 40px; text-align: center; font-variant-numeric: tabular-nums; }
+.zoom-presets { display: flex; gap: 2px; margin-left: 4px; padding-left: 4px; border-left: 1px solid var(--border); }
+.zoom-presets .zoom-btn.active { background: var(--accent-soft); color: var(--accent-2); }
 
 .btn-accent { display: inline-flex; align-items: center; gap: 7px; padding: 8px 16px; border-radius: var(--r-sm); font-size: 13px; font-weight: 600; color: #fff; background: linear-gradient(180deg, var(--accent-2), var(--accent)); box-shadow: 0 2px 14px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.2); transition: transform var(--fast), box-shadow var(--fast), filter var(--fast); }
 .btn-accent:hover { filter: brightness(1.06); box-shadow: 0 4px 22px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.25); }
@@ -149,7 +151,7 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; }
 .stage::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(120% 90% at 50% 30%, transparent 55%, rgba(0,0,0,0.5) 100%); }
 
 /* The scaler centers the artboard and applies zoom via transform. */
-.artboard-scaler { position: relative; }
+.artboard-scaler { position: relative; transform-origin: center center; }
 /* The artboard is the REAL export area (width/height set in JS in px). */
 .artboard { position: relative; transform-origin: center center; overflow: hidden; border-radius: 2px;
   box-shadow: 0 0 0 1px var(--border), 0 0 70px 6px rgba(122,92,255,0.14), 0 40px 90px rgba(0,0,0,0.65); }
