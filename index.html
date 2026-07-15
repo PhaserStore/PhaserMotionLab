@@ -15,8 +15,8 @@
        Uncomment the two tags below to enable real H.264 MP4 encoding.
        ~30MB, so excluded from the default static build. When present,
        script.js auto-detects them and transcodes the recorded WebM to
-       phaser-motion-*.mp4. When absent, MP4 shows a clear message and
-       offers WebM instead (see exportMP4 in script.js).
+       an .mp4. When absent, MP4 shows a clear message and offers WebM
+       instead (see exportMP4 in script.js).
        ------------------------------------------------------------
   <script src="https://unpkg.com/@ffmpeg/[email protected]/dist/umd/ffmpeg.js"></script>
   <script src="https://unpkg.com/@ffmpeg/[email protected]/dist/umd/util.js"></script>
@@ -44,14 +44,20 @@
 
     <div class="topbar-center">
       <div class="format-pill" id="formatPill">
-        <button class="fmt active" data-w="1080" data-h="1080" data-label="Post">Post 1:1</button>
-        <button class="fmt" data-w="1080" data-h="1920" data-label="Reel">Reel 9:16</button>
-        <button class="fmt" data-w="1080" data-h="1350" data-label="Portrait">Portrait 4:5</button>
-        <button class="fmt" data-w="1920" data-h="1080" data-label="Landscape">Landscape</button>
+        <button class="fmt active" data-w="1080" data-h="1080" data-label="Post 1:1">Post 1:1</button>
+        <button class="fmt" data-w="1080" data-h="1920" data-label="Reel 9:16">Reel 9:16</button>
+        <button class="fmt" data-w="1080" data-h="1350" data-label="Portrait 4:5">Portrait 4:5</button>
+        <button class="fmt" data-w="1920" data-h="1080" data-label="Landscape 16:9">Landscape</button>
       </div>
     </div>
 
     <div class="topbar-right">
+      <div class="zoom-pill">
+        <button class="zoom-btn" id="zoomOut" title="Zoom out">&#8722;</button>
+        <span class="zoom-val" id="zoomVal">Fit</span>
+        <button class="zoom-btn" id="zoomIn" title="Zoom in">+</button>
+        <button class="zoom-btn" id="zoomFit" title="Fit to window">Fit</button>
+      </div>
       <button class="t-btn" id="topPlayBtn" title="Play / pause (Space)">
         <svg id="topPlayIcon" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 3l9 5-9 5V3z" fill="currentColor"/></svg>
         <svg id="topPauseIcon" width="16" height="16" viewBox="0 0 16 16" fill="none" style="display:none"><rect x="4" y="3" width="3" height="10" rx="1" fill="currentColor"/><rect x="9" y="3" width="3" height="10" rx="1" fill="currentColor"/></svg>
@@ -92,6 +98,11 @@
             <input type="file" id="fileInput" accept=".svg,image/svg+xml,image/png,image/jpeg,image/webp" multiple hidden />
           </div>
 
+          <div class="prop-row" style="margin-top:14px">
+            <label class="switch-inline" title="How SVG files are added"><input type="checkbox" id="exposeSubToggle"><span>Expose SVG sublayers</span></label>
+          </div>
+          <p class="view-hint">Default groups each SVG as one layer (safest for complex files). Turn on to split internal elements into sublayers where safe.</p>
+
           <div class="section-head"><span>Assets</span><span class="count" id="assetCount">0</span></div>
           <div class="asset-grid" id="assetList">
             <div class="empty-note">Nothing here yet. Add files to start.</div>
@@ -101,12 +112,12 @@
 
         <!-- PRESETS TAB -->
         <section class="tab-view" data-view="presets">
-          <div class="section-head"><span>Ghost motion</span></div>
-          <button class="btn-accent block" id="applyGhostAll">
+          <div class="section-head"><span>Motion</span></div>
+          <button class="btn-accent block" id="applyAll">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1l1.6 3.7L12.5 5 9.8 7.6 10.5 12 7 9.8 3.5 12l.7-4.4L1.5 5l3.9-.3L7 1z" fill="currentColor"/></svg>
-            Apply Ghost Motion to All Layers
+            Apply Motion to All Layers
           </button>
-          <p class="view-hint">Gives every layer a different but coherent ghost-software animation, with stagger and depth.</p>
+          <p class="view-hint">Gives every layer a coherent interface-style animation with stagger and depth. No rotation or zoom unless transform motion is on.</p>
 
           <div class="section-head"><span>Presets</span></div>
           <p class="view-hint">Applies to the selected layer, or all layers if none is selected.</p>
@@ -127,21 +138,32 @@
     <!-- ---- CENTER STAGE ---- -->
     <main class="stage-col">
       <div class="stage" id="stage">
-        <div class="canvas-frame" id="canvasFrame">
-          <div class="layer-host" id="layerHost"></div>
-          <div class="stage-hint" id="stageHint">
-            <svg width="40" height="40" viewBox="0 0 40 40" fill="none"><rect x="6" y="6" width="28" height="28" rx="7" stroke="var(--border-strong)" stroke-width="1.5"/><circle cx="20" cy="20" r="7" stroke="var(--border-strong)" stroke-width="1.5"/></svg>
-            <p class="hint-title">Empty canvas</p>
-            <p class="hint-sub">Import files, then click an asset to place it</p>
+        <div class="artboard-scaler" id="artboardScaler">
+          <!-- The artboard is the real export canvas. It is sized in real
+               pixels and scaled to fit via transform: scale(zoom). -->
+          <div class="artboard" id="artboard">
+            <div class="artboard-bg" id="artboardBg"></div>
+            <div class="layer-host" id="layerHost"></div>
+            <div class="fx fx-scanlines" id="fxScanlines" aria-hidden="true"></div>
+            <div class="fx fx-noise" id="fxNoise" aria-hidden="true"></div>
+            <div class="fx fx-vignette" id="fxVignette" aria-hidden="true"></div>
+            <!-- canvas frame = fixed artboard/export boundary -->
+            <div class="artboard-frame" id="artboardFrame" aria-hidden="true"></div>
+            <!-- selection box = selected layer only (different style) -->
+            <div class="selection-box" id="selectionBox" hidden aria-hidden="true"></div>
           </div>
-          <div class="fx fx-scanlines" id="fxScanlines" aria-hidden="true"></div>
-          <div class="fx fx-noise" id="fxNoise" aria-hidden="true"></div>
-          <div class="fx fx-vignette" aria-hidden="true"></div>
+        </div>
+        <div class="stage-hint" id="stageHint">
+          <svg width="40" height="40" viewBox="0 0 40 40" fill="none"><rect x="6" y="6" width="28" height="28" rx="7" stroke="var(--border-strong)" stroke-width="1.5"/><circle cx="20" cy="20" r="7" stroke="var(--border-strong)" stroke-width="1.5"/></svg>
+          <p class="hint-title">Empty canvas</p>
+          <p class="hint-sub">Import files, then click an asset to place it</p>
         </div>
         <div class="stage-readout">
-          <span id="readoutFormat">1080 × 1080</span>
+          <span>Canvas <b id="readoutCanvas">1080 × 1080</b></span>
           <span class="dot">·</span>
-          <span id="readoutFps">30 fps</span>
+          <span>Format <b id="readoutFormat">Post 1:1</b></span>
+          <span class="dot">·</span>
+          <span>Zoom <b id="readoutZoom">Fit</b></span>
           <span class="dot">·</span>
           <span id="readoutSel">No layer selected</span>
         </div>
@@ -162,28 +184,73 @@
           <div class="ai-echo" id="aiEcho" aria-live="polite"></div>
         </section>
 
-        <!-- SELECTED LAYER -->
-        <section class="prop-group" id="layerProps">
-          <div class="group-head"><h3>Selected layer</h3></div>
-          <div id="layerPropsEmpty" class="group-hint">Select a layer to edit its transform, timing and effects.</div>
-          <div id="layerPropsBody" hidden>
-            <div class="control"><span class="ctl-label">Position X</span><span class="ctl-val" id="val-x">0</span>
-              <input type="range" min="-50" max="50" value="0" id="ctl-x"></div>
-            <div class="control"><span class="ctl-label">Position Y</span><span class="ctl-val" id="val-y">0</span>
-              <input type="range" min="-50" max="50" value="0" id="ctl-y"></div>
-            <div class="control"><span class="ctl-label">Scale</span><span class="ctl-val" id="val-lscale">100</span>
-              <input type="range" min="10" max="300" value="100" id="ctl-lscale"></div>
-            <div class="control"><span class="ctl-label">Rotation</span><span class="ctl-val" id="val-lrot">0</span>
-              <input type="range" min="-180" max="180" value="0" id="ctl-lrot"></div>
-            <div class="control"><span class="ctl-label">Opacity</span><span class="ctl-val" id="val-lop">100</span>
-              <input type="range" min="0" max="100" value="100" id="ctl-lop"></div>
-            <div class="layer-actions">
-              <button class="mini-btn" id="layerDup" title="Duplicate">Duplicate</button>
-              <button class="mini-btn" id="layerHide" title="Hide / show">Hide</button>
-              <button class="mini-btn danger" id="layerDel" title="Delete">Delete</button>
+        <!-- TRANSFORM -->
+        <section class="prop-group" id="transformGroup">
+          <div class="group-head"><h3>Transform</h3></div>
+          <div id="transformEmpty" class="group-hint">Select a layer to edit its position, size and rotation.</div>
+          <div id="transformBody" hidden>
+            <div class="control"><span class="ctl-label">X position</span><span class="ctl-val" id="val-x">0</span><input type="range" min="-100" max="100" value="0" id="ctl-x"></div>
+            <div class="control"><span class="ctl-label">Y position</span><span class="ctl-val" id="val-y">0</span><input type="range" min="-100" max="100" value="0" id="ctl-y"></div>
+            <div class="control"><span class="ctl-label">Scale</span><span class="ctl-val" id="val-scale">100</span><input type="range" min="5" max="300" value="100" id="ctl-scale"></div>
+            <div class="control"><span class="ctl-label">Width</span><span class="ctl-val" id="val-w">100</span><input type="range" min="5" max="300" value="100" id="ctl-w"></div>
+            <div class="control"><span class="ctl-label">Height</span><span class="ctl-val" id="val-h">100</span><input type="range" min="5" max="300" value="100" id="ctl-h"></div>
+            <div class="control"><span class="ctl-label">Rotation</span><span class="ctl-val" id="val-rot">0</span><input type="range" min="-180" max="180" value="0" id="ctl-rot"></div>
+            <div class="control"><span class="ctl-label">Opacity</span><span class="ctl-val" id="val-op">100</span><input type="range" min="0" max="100" value="100" id="ctl-op"></div>
+            <div class="prop-row" style="margin-top:4px">
+              <label class="switch-inline"><input type="checkbox" id="lockAspect" checked><span>Lock aspect ratio</span></label>
             </div>
+            <div class="btn-grid">
+              <button class="mini-btn" id="tfCenter">Center</button>
+              <button class="mini-btn" id="tfFit">Fit to canvas</button>
+              <button class="mini-btn" id="tfFill">Fill canvas</button>
+              <button class="mini-btn" id="tfReset">Reset</button>
+            </div>
+            <div class="btn-grid" style="margin-top:6px">
+              <button class="mini-btn" id="layerDup">Duplicate</button>
+              <button class="mini-btn" id="layerHide">Hide</button>
+              <button class="mini-btn" id="layerLock">Lock</button>
+              <button class="mini-btn danger" id="layerDel">Delete</button>
+            </div>
+          </div>
+        </section>
 
-            <div class="sub-head">Effects on this layer</div>
+        <!-- COLOR (SVG) -->
+        <section class="prop-group" id="colorGroup">
+          <div class="group-head"><h3>Color</h3></div>
+          <div id="colorEmpty" class="group-hint">Select an SVG layer to edit its colors.</div>
+          <div id="colorBody" hidden>
+            <div class="prop-row">
+              <label class="prop-label" for="fillColor">Fill</label>
+              <div class="color-cell"><input type="color" id="fillColor" value="#7A5CFF" class="color-input"><span class="color-hex" id="fillHex">#7A5CFF</span></div>
+            </div>
+            <div class="prop-row" style="margin-top:10px">
+              <label class="prop-label" for="strokeColor">Stroke</label>
+              <div class="color-cell"><input type="color" id="strokeColor" value="#9C86FF" class="color-input"><span class="color-hex" id="strokeHex">#9C86FF</span></div>
+            </div>
+            <div class="control" style="margin-top:12px"><span class="ctl-label">Stroke width</span><span class="ctl-val" id="val-sw">100</span><input type="range" min="0" max="400" value="100" id="ctl-sw"></div>
+            <div class="btn-grid" style="margin-top:12px">
+              <button class="mini-btn" id="colApplyFill">Apply fill</button>
+              <button class="mini-btn" id="colApplyStroke">Apply stroke</button>
+              <button class="mini-btn" id="colApplyAll">All paths</button>
+              <button class="mini-btn" id="colRestore">Original</button>
+            </div>
+            <div class="btn-grid" style="margin-top:6px">
+              <button class="mini-btn" id="colMono">Monochrome</button>
+              <button class="mini-btn" id="colInvert">Invert</button>
+            </div>
+            <div class="color-note" id="colorNote" hidden>This SVG uses complex styling. Some color controls may not affect all elements.</div>
+          </div>
+        </section>
+
+        <!-- EFFECTS ON LAYER -->
+        <section class="prop-group" id="fxGroup">
+          <div class="group-head"><h3>Effects</h3></div>
+          <div id="fxEmpty" class="group-hint">Select a layer to toggle effects.</div>
+          <div id="fxBody" hidden>
+            <div class="prop-row">
+              <label class="switch-inline" title="Allow scale / rotation / large movement"><input type="checkbox" id="allowTransform"><span>Allow transform motion</span></label>
+            </div>
+            <p class="group-hint" style="margin-top:8px">Off by default: effects use opacity, blur, scanlines, RGB, noise, glow and strobe — no large scale or rotation.</p>
             <div class="fx-toggle-grid" id="fxToggleGrid"></div>
           </div>
         </section>
@@ -191,11 +258,8 @@
         <!-- BEAT SYNC -->
         <section class="prop-group" id="beatSyncGroup">
           <div class="group-head">
-            <h3>Beat sync</h3>
-            <label class="switch" title="Audio-reactive on/off">
-              <input type="checkbox" id="audioReactiveToggle" checked>
-              <span class="switch-track"><span class="switch-thumb"></span></span>
-            </label>
+            <h3>Audio sync</h3>
+            <label class="switch" title="Audio-reactive on/off"><input type="checkbox" id="audioReactiveToggle" checked><span class="switch-track"><span class="switch-thumb"></span></span></label>
           </div>
           <div id="beatMeter" class="beat-meter">
             <div class="m-row"><span>BASS</span><div class="m-bar m-bass"><i></i></div></div>
@@ -207,21 +271,18 @@
           <div class="controls" data-group="beatsync"></div>
         </section>
 
-        <!-- GLOBAL EFFECTS / OVERLAY STRENGTH -->
+        <!-- SCENE / OVERLAY STRENGTH -->
         <section class="prop-group">
-          <div class="group-head"><h3>Scene effects</h3></div>
-          <div class="controls" data-group="effects"></div>
+          <div class="group-head"><h3>Scene</h3></div>
+          <div class="controls" data-group="scene"></div>
         </section>
 
         <!-- OUTPUT -->
         <section class="prop-group">
-          <div class="group-head"><h3>Output</h3></div>
+          <div class="group-head"><h3>Background</h3></div>
           <div class="prop-row">
-            <label class="prop-label" for="bgColor">Background</label>
-            <div class="color-cell">
-              <input type="color" id="bgColor" value="#0B0B0F" class="color-input" />
-              <span class="color-hex" id="bgHex">#0B0B0F</span>
-            </div>
+            <label class="prop-label" for="bgColor">Color</label>
+            <div class="color-cell"><input type="color" id="bgColor" value="#0B0B0F" class="color-input"><span class="color-hex" id="bgHex">#0B0B0F</span></div>
           </div>
           <div class="bg-swatches">
             <button class="bg-swatch" data-bg="black"><span class="sw sw-black"></span>Black</button>
@@ -229,13 +290,6 @@
             <button class="bg-swatch" data-bg="transparent"><span class="sw sw-alpha"></span>Alpha</button>
             <button class="bg-swatch active" data-bg="custom"><span class="sw sw-custom"></span>Custom</button>
             <button class="bg-swatch" data-bg="gradient"><span class="sw sw-grad"></span>Gradient</button>
-          </div>
-          <div class="prop-row" style="margin-top:14px">
-            <label class="prop-label">Export scale</label>
-            <div class="seg" id="scaleSeg">
-              <button class="seg-btn active" data-scale="1">1×</button>
-              <button class="seg-btn" data-scale="2">2×</button>
-            </div>
           </div>
         </section>
       </div>
@@ -289,9 +343,23 @@
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       </button>
     </div>
-    <p class="sheet-sub">Stills export at the current canvas size. Video uses the selected background. Transparent output uses real alpha (PNG / PNG sequence / advanced WebM).</p>
+    <p class="sheet-sub">Exports use the real canvas resolution. Video uses the selected background. Transparent output uses real alpha (PNG / PNG sequence / advanced WebM).</p>
 
     <div class="export-settings">
+      <div class="es-row">
+        <span class="es-label">Target</span>
+        <div class="seg es-seg" id="targetSeg">
+          <button class="seg-btn active" data-target="comp">Whole composition</button>
+          <button class="seg-btn" data-target="layer">Selected layer</button>
+        </div>
+      </div>
+      <div class="es-row" id="layerModeRow" hidden>
+        <span class="es-label">Layer mode</span>
+        <div class="seg es-seg" id="layerModeSeg">
+          <button class="seg-btn active" data-lmode="canvas">Inside full canvas</button>
+          <button class="seg-btn" data-lmode="crop">Crop to layer</button>
+        </div>
+      </div>
       <div class="es-row">
         <span class="es-label">Duration</span>
         <div class="seg es-seg" id="durSeg">
@@ -306,6 +374,14 @@
         <div class="seg es-seg" id="fpsSeg">
           <button class="seg-btn active" data-fps="30">30 fps</button>
           <button class="seg-btn" data-fps="60">60 fps</button>
+        </div>
+      </div>
+      <div class="es-row">
+        <span class="es-label">Quality</span>
+        <div class="seg es-seg" id="qualSeg">
+          <button class="seg-btn active" data-qual="high">High</button>
+          <button class="seg-btn" data-qual="ultra">Ultra</button>
+          <button class="seg-btn" data-qual="2x">2×</button>
         </div>
       </div>
       <div class="es-row">
@@ -325,38 +401,17 @@
 
     <div class="export-group-label">Image</div>
     <div class="export-options">
-      <button class="export-opt" id="exportPng">
-        <div class="eo-icon">PNG</div>
-        <div class="eo-text"><strong>PNG still</strong><span>Current frame with background</span></div>
-      </button>
-      <button class="export-opt" id="exportPngT">
-        <div class="eo-icon eo-alpha">PNG</div>
-        <div class="eo-text"><strong>Transparent PNG</strong><span>Current frame, real alpha</span></div>
-      </button>
-      <button class="export-opt" id="exportSeq">
-        <div class="eo-icon">SEQ</div>
-        <div class="eo-text"><strong>PNG sequence</strong><span>Frames at chosen duration / fps</span></div>
-      </button>
-      <button class="export-opt" id="exportSeqT">
-        <div class="eo-icon eo-alpha">SEQ</div>
-        <div class="eo-text"><strong>Transparent sequence</strong><span>Alpha frames for compositing</span></div>
-      </button>
+      <button class="export-opt" id="exportPng"><div class="eo-icon">PNG</div><div class="eo-text"><strong>PNG still</strong><span>Current frame with background</span></div></button>
+      <button class="export-opt" id="exportPngT"><div class="eo-icon eo-alpha">PNG</div><div class="eo-text"><strong>Transparent PNG</strong><span>Current frame, real alpha</span></div></button>
+      <button class="export-opt" id="exportSeq"><div class="eo-icon">SEQ</div><div class="eo-text"><strong>PNG sequence</strong><span>Frames at chosen duration / fps</span></div></button>
+      <button class="export-opt" id="exportSeqT"><div class="eo-icon eo-alpha">SEQ</div><div class="eo-text"><strong>Transparent sequence</strong><span>Alpha frames for compositing</span></div></button>
     </div>
 
     <div class="export-group-label">Video</div>
     <div class="export-options">
-      <button class="export-opt" id="exportMp4">
-        <div class="eo-icon eo-primary">MP4</div>
-        <div class="eo-text"><strong>MP4 video · H.264</strong><span>Preferred · selected background · audio</span></div>
-      </button>
-      <button class="export-opt" id="exportWebm">
-        <div class="eo-icon">WEBM</div>
-        <div class="eo-text"><strong>WebM video</strong><span>Animated clip with audio</span></div>
-      </button>
-      <button class="export-opt" id="exportWebmA">
-        <div class="eo-icon eo-alpha">WEBM</div>
-        <div class="eo-text"><strong>Transparent WebM*</strong><span>Advanced · alpha if browser supports it</span></div>
-      </button>
+      <button class="export-opt" id="exportMp4"><div class="eo-icon eo-primary">MP4</div><div class="eo-text"><strong>MP4 video · H.264</strong><span>Preferred · selected background · audio</span></div></button>
+      <button class="export-opt" id="exportWebm"><div class="eo-icon">WEBM</div><div class="eo-text"><strong>WebM video</strong><span>Animated clip with audio</span></div></button>
+      <button class="export-opt" id="exportWebmA"><div class="eo-icon eo-alpha">WEBM</div><div class="eo-text"><strong>Transparent WebM*</strong><span>Advanced · alpha if browser supports it</span></div></button>
     </div>
 
     <div class="export-status" id="exportStatus" data-kind="info">Ready</div>
