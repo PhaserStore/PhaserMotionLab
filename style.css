@@ -361,6 +361,36 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; }
 .fx-event:hover { color: var(--text); border-color: var(--accent-2); background: var(--accent-soft); }
 .fx-event .fx-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 6px var(--accent-glow); flex-shrink: 0; }
 
+/* State: clip of this type exists on the selected layer AND is enabled */
+.fx-event.is-active {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(122,92,255,0.35);
+}
+.fx-event.is-active .fx-dot { background: #fff; box-shadow: 0 0 8px rgba(255,255,255,0.75); }
+.fx-event.is-active:hover { background: var(--accent-2); border-color: var(--accent-2); }
+
+/* State: clip exists but is disabled (muted look) */
+.fx-event.is-disabled {
+  opacity: 0.55;
+  background: transparent;
+  border: 1px dashed var(--text-3);
+  color: var(--text-3);
+  font-style: italic;
+}
+.fx-event.is-disabled .fx-dot { background: var(--text-3); box-shadow: none; }
+.fx-event.is-disabled:hover { opacity: 0.85; color: var(--text-2); border-color: var(--text-2); }
+
+/* State: this event's clip is the one selected in the timeline */
+.fx-event.is-selected {
+  box-shadow: 0 0 0 2px var(--accent-2), 0 4px 14px rgba(122,92,255,0.45);
+}
+.fx-event.is-active.is-selected {
+  box-shadow: 0 0 0 2px #fff, 0 4px 16px rgba(255,255,255,0.35);
+}
+
 /* Alignment mini grid */
 .align-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-top: 4px; }
 .align-btn { padding: 8px 0; font-weight: 700; letter-spacing: 0.05em; font-size: 11px; }
