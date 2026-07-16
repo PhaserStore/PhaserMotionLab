@@ -182,10 +182,13 @@
       // High-end effects have rich per-event parameter sets. Every field
       // listed here becomes an editable slider (or seg control) in the
       // Selected clip inspector — see EVENT_PARAM_SCHEMA below.
+      // Lost Signal — corruption anchored to the layer; NO global
+      // transform jitter (see anchorStability default 100).
       case "lostSignal":    return { ...base, intensity: 70, opacityMix: 100,
-        corruptionAmount: 65, sliceCount: 12, sliceDisplacement: 24,
-        rgbOffset: 4, echoAmount: 2, echoOpacity: 35,
-        tearStrength: 55, blinkCount: 3, recoverySpeed: 70, randomness: 60 };
+        rgbSeparation: 55, sliceCount: 14, sliceDisplacement: 24,
+        corruptionAmount: 65, corruptionDirection: "right", rightBias: 85,
+        dataLeakage: 55, leakageLength: 38, leakageDensity: 35,
+        randomness: 55, anchorStability: 100 };
       case "vectorBeam":    return { ...base, intensity: 75, opacityMix: 100,
         direction: "right", beamLength: 100, beamWidth: 8,
         trailCount: 4, trailOpacity: 55, trailSpread: 10,
@@ -202,16 +205,17 @@
      separately in renderClipInspector. */
   const EVENT_PARAM_SCHEMA = {
     lostSignal: [
-      ["corruptionAmount",  "Corruption",       0, 100],
+      // corruptionDirection handled as 3-way seg control below
+      ["rgbSeparation",     "RGB separation",   0, 100],
       ["sliceCount",        "Slice count",      2,  32, 1],
       ["sliceDisplacement", "Displacement",     0, 100],
-      ["rgbOffset",         "RGB offset",       0,  20],
-      ["echoAmount",        "Echoes",           0,   6, 1],
-      ["echoOpacity",       "Echo opacity",     0, 100],
-      ["tearStrength",      "Tear strength",    0, 100],
-      ["blinkCount",        "Blink count",      0,  10, 1],
-      ["recoverySpeed",     "Recovery speed",   0, 100],
+      ["corruptionAmount",  "Corruption",       0, 100],
+      ["rightBias",         "Right bias",       0, 100],
+      ["dataLeakage",       "Data leakage",     0, 100],
+      ["leakageLength",     "Leakage length",   0, 100],
+      ["leakageDensity",    "Leakage density",  0, 100],
       ["randomness",        "Randomness",       0, 100],
+      ["anchorStability",   "Anchor stability", 0, 100],
     ],
     vectorBeam: [
       // direction handled as 4-way seg control (right/left/up/down)
@@ -915,7 +919,11 @@
       el.clipVolRow.style.display = "none";
       // Ensure defaults exist for backward-compat clips
       if (selectedEventClip.ec.enabled === undefined) selectedEventClip.ec.enabled = true;
-      if (!selectedEventClip.ec.params) selectedEventClip.ec.params = defaultParamsFor(selectedEventClip.ec.fxKey);
+      // Merge missing defaults into `params` so old projects auto-gain
+      // any newly-added param keys (user values are preserved because
+      // Object.assign later sources win).
+      const defs = defaultParamsFor(selectedEventClip.ec.fxKey);
+      selectedEventClip.ec.params = Object.assign({}, defs, selectedEventClip.ec.params || {});
       // Enable/disable button
       if (enBtn) { enBtn.style.display = ""; enBtn.textContent = selectedEventClip.ec.enabled ? "Disable clip" : "Enable clip"; enBtn.classList.toggle("danger", !selectedEventClip.ec.enabled); }
       // Build params UI (intensity + opacityMix + optional direction)
@@ -923,22 +931,27 @@
         const p = selectedEventClip.ec.params;
         paramsHost.appendChild(makeParamSlider("intensity", "Intensity", p.intensity, 0, 100, (v) => { p.intensity = v; renderTimeline(); renderEventButtons(); paintIfPaused(); }));
         paramsHost.appendChild(makeParamSlider("opacityMix", "Opacity mix", p.opacityMix ?? 100, 0, 100, (v) => { p.opacityMix = v; renderTimeline(); renderEventButtons(); paintIfPaused(); }));
-        // Direction segmented control — 4-way for vectorBeam (right/left/
-        // up/down), 2-way (0/1) for legacy events.
-        if (p.direction !== undefined) {
+        // Direction segmented control — 4-way for vectorBeam, 3-way
+        // (right/left/both) for lostSignal, 2-way (0/1) for legacy events.
+        if (p.direction !== undefined || p.corruptionDirection !== undefined) {
           const isVector = selectedEventClip.ec.fxKey === "vectorBeam";
+          const isLostSignal = selectedEventClip.ec.fxKey === "lostSignal";
+          const paramKey = isLostSignal ? "corruptionDirection" : "direction";
           const options = isVector
             ? [["right","→"],["left","←"],["down","↓"],["up","↑"]]
-            : [["0","→"],["1","←"]];
+            : isLostSignal
+              ? [["right","→"],["left","←"],["both","↔"]]
+              : [["0","→"],["1","←"]];
+          const currentVal = p[paramKey];
           const row = document.createElement("div"); row.className = "prop-row";
           row.innerHTML = `<span class="prop-label">Direction</span>`;
           const btns = document.createElement("div"); btns.className = "seg-mini";
           options.forEach(([v, l]) => {
             const b = document.createElement("button");
-            b.className = "mini-btn" + (String(p.direction) === v ? " active" : "");
+            b.className = "mini-btn" + (String(currentVal) === v ? " active" : "");
             b.textContent = l;
             b.addEventListener("click", () => {
-              p.direction = isVector ? v : +v;
+              p[paramKey] = (isVector || isLostSignal) ? v : +v;
               renderClipInspector(); renderTimeline(); renderEventButtons(); paintIfPaused();
             });
             btns.appendChild(b);
@@ -1395,40 +1408,53 @@
        give the DOM preview a visible approximation while paused/playing
        — without a preview canvas overlay. */
 
-    // LOST SIGNAL — retro corruption, RGB desync, slice tear, terminal
-    // blink, recovery.  Marker.p and marker params drive drawExportFrame.
+    // LOST SIGNAL — local data corruption anchored to the layer.  The
+    // entire layer must NOT move / rotate / scale by default: at
+    // anchorStability=100 (the default) tx=ty=0 and there is zero
+    // whole-layer wiggle.  All distortion is local, applied per-slice by
+    // drawLostSignalLayer.  The DOM preview shows a chromatic-aberration
+    // hint via the rgb channel; the export/canvas render is the ground
+    // truth.
     lostSignal(p, sig, params) {
       const P = params || {};
       const intensity = (P.intensity ?? 70) / 100;
-      // Envelope: recovery ramps effect strength down toward end (0..1).
-      const recSpeed = (P.recoverySpeed ?? 70) / 100;
-      const recovery = clamp01(1 - Math.pow(p, 1 + recSpeed * 2));
-      const mag = intensity * recovery;
-      // Terminal-blink: alternating on/off through the clip window.
-      const blinkCount = P.blinkCount ?? 3;
-      const blinkOn = blinkCount > 0 && (Math.floor(p * blinkCount * 2) % 2 === 0);
-      const rand = (P.randomness ?? 60) / 100;
-      const jitterAmt = 3 * mag * rand;
+      // Envelope: fast attack, unstable middle, quick recovery.
+      let envelope;
+      if      (p < 0.12) envelope = p / 0.12;                  // attack
+      else if (p < 0.78) envelope = 1;                          // sustain
+      else               envelope = Math.max(0, 1 - (p - 0.78) / 0.22); // release
+      const mag = intensity * envelope;
+
+      // Anchor stability: 100 = zero global movement (default).  Only
+      // when the user explicitly lowers this do we allow *extremely
+      // subtle* horizontal wiggle — never vertical.
+      const anchor = clamp01((P.anchorStability ?? 100) / 100);
+      const wiggle = (1 - anchor) * mag;                        // 0..1
+
       return {
-        // Marker read by drawExportFrame:
+        // Marker consumed by drawLostSignalLayer (canvas render):
         lostSignal: {
-          p, intensity, recovery, mag,
-          corruption: (P.corruptionAmount ?? 65) / 100,
-          sliceCount: P.sliceCount ?? 12,
-          sliceDisp:  (P.sliceDisplacement ?? 24) / 100,
-          rgbOffset:  P.rgbOffset ?? 4,
-          echoAmount: P.echoAmount ?? 2,
-          echoOpacity:(P.echoOpacity ?? 35) / 100,
-          tearStr:    (P.tearStrength ?? 55) / 100,
-          blinkCount, blinkOn,
-          randomness: rand,
+          p, intensity, envelope, mag,
+          rgbSep:     clamp01((P.rgbSeparation ?? 55) / 100),
+          sliceCount: Math.max(2, Math.round(P.sliceCount ?? 14)),
+          sliceDisp:  clamp01((P.sliceDisplacement ?? 24) / 100),
+          corruption: clamp01((P.corruptionAmount ?? 65) / 100),
+          direction:  P.corruptionDirection ?? "right",
+          rightBias:  clamp01((P.rightBias ?? 85) / 100),
+          leakage:    clamp01((P.dataLeakage ?? 55) / 100),
+          leakageLen: clamp01((P.leakageLength ?? 38) / 100),
+          leakageDen: clamp01((P.leakageDensity ?? 35) / 100),
+          randomness: clamp01((P.randomness ?? 55) / 100),
+          anchor,
         },
-        // DOM-preview approximation channels:
-        tx: (Math.random() - 0.5) * jitterAmt,
-        ty: (Math.random() - 0.5) * jitterAmt * 0.3,
-        opacity: blinkOn && Math.random() < 0.4 * mag ? 0.15 : 1,
-        rgb: (P.rgbOffset ?? 4) * mag * 0.6,
-        blur: mag * 0.9,
+        // DOM preview: chromatic-aberration hint via the shared `rgb`
+        // channel (drop-shadow on layer.wrap — does NOT move the layer).
+        // We deliberately return NO tx/ty/blur/opacity so the layer's
+        // anchor stays visually locked while paused or playing.
+        rgb: clamp01((P.rgbSeparation ?? 55) / 100) * mag * 3,
+        // Optional horizontal wiggle only when anchorStability < 100.
+        // Uses seededRand so preview and export match at the same time.
+        tx: wiggle * (seededRand((p * 1000) | 0) - 0.5) * 0.6,
       };
     },
 
@@ -2364,66 +2390,173 @@
     return x / 4294967296;
   }
 
+  /* --- Per-image tinted-copy cache -----------------------------------
+     RGB separation needs red/cyan copies of the layer image.  We build
+     them once per (image, tint-color) pair and reuse them across every
+     slice AND every render frame.  Keyed on the source Image via
+     WeakMap so GC cleans up when the image goes away. */
+  const _tintCache = new WeakMap();
+  function getTintedImage(img, tintCss, cacheKey) {
+    let byImg = _tintCache.get(img);
+    if (!byImg) { byImg = {}; _tintCache.set(img, byImg); }
+    if (byImg[cacheKey]) return byImg[cacheKey];
+    const c = document.createElement("canvas");
+    c.width = img.width; c.height = img.height;
+    const cctx = c.getContext("2d");
+    cctx.drawImage(img, 0, 0);
+    // Tint opaque pixels only, preserve alpha shape:
+    cctx.globalCompositeOperation = "source-atop";
+    cctx.fillStyle = tintCss;
+    cctx.fillRect(0, 0, img.width, img.height);
+    byImg[cacheKey] = c;
+    return c;
+  }
+
   /* --- LOST SIGNAL layer render -------------------------------------
-     Draws a corrupted version of the layer.  Composition (bottom → top):
-       1. Ghost echoes (translucent offset copies)
-       2. RGB desync (two lighter-mode offset copies for chromatic ghosting)
-       3. The layer sliced into `sliceCount` horizontal bands, each band
-          conditionally offset horizontally by `sliceDisp` (corruption)
-          and further offset when `tearStr` fires.
-     Assumes ctx is already translated to the layer center and rotated. */
+     Local corruption anchored to the layer.  Assumes ctx is already
+     translated to the layer center and rotated (so all coordinates are
+     layer-local, centered at 0,0).  The LAYER ANCHOR IS STABLE — this
+     function never adds a whole-layer translate/rotate/scale.
+
+     Algorithm:
+       1. Walk the image top-to-bottom in `sliceCount` horizontal bands.
+       2. For each band, roll a seeded random against `corruption` to
+          decide if it's a corrupted slice.
+       3. Corrupted slices get an X-displacement whose sign follows
+          `direction` (right / left / both) weighted by `rightBias`.
+       4. Draw the corrupted slice at its displaced X (never at 0 —
+          so it does NOT double-up with a clean copy).
+       5. Uncorrupted slices draw at their normal position.
+       6. Around each corrupted slice, draw red-tinted + cyan-tinted
+          offset copies (per-slice chromatic aberration).
+       7. Sparse vertical colour columns start from corrupted-slice tops
+          and extend down by `leakageLength`.
+     Deterministic: same clipId + time-bucket + slice index → same
+     pattern in both preview and export. */
   function drawLostSignalLayer(ctx, img, dw, dh, sx, sy, LS, clipId, t) {
-    // Time bucket ~30Hz so patterns hold for ~1 frame at 30fps but still
-    // evolve across the clip window.  Multiplied by randomness so a
-    // higher randomness dial makes the pattern churn faster.
-    const bucketRate = 20 + LS.randomness * 40;
-    const bucket = Math.floor(t * bucketRate);
-    const baseSeed = (clipId | 0) * 9973 + bucket;
     const mag = LS.mag;
     if (mag < 0.001) { ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh); return; }
+    // Scene-level ctx.filter (e.g. the tiny STATE.blur applied by the
+    // export renderer) and shadowBlur must be cleared for our slice
+    // draws — otherwise the tiny blur can smear thin slices to nothing.
+    // The caller's ctx.save()/restore() pair still isolates our changes
+    // from the rest of the frame; we also restore the previous values
+    // at the bottom of this function so anything drawn afterward
+    // (in the same save block) picks up the same state.
+    const prevFilter = ctx.filter;
+    const prevShadowBlur = ctx.shadowBlur;
+    ctx.filter = "none";
+    ctx.shadowBlur = 0;
 
-    // 1. Ghost echoes behind
-    const echoes = Math.max(0, Math.round(LS.echoAmount));
-    for (let e = 1; e <= echoes; e++) {
-      const ex = e * 4 * sx * mag;
-      const ey = e * 2 * sy * mag;
-      const a = ctx.globalAlpha;
-      ctx.globalAlpha = a * LS.echoOpacity * (1 - (e - 1) / (echoes + 1)) * mag;
-      ctx.drawImage(img, -dw / 2 + ex, -dh / 2 + ey, dw, dh);
-      ctx.globalAlpha = a;
-    }
-    // 2. RGB desync (two offset copies via lighter composite → cheap chromatic ghosting)
-    const rgbOff = LS.rgbOffset * sx * mag;
-    if (rgbOff > 0.4) {
-      const a = ctx.globalAlpha;
-      const prevComp = ctx.globalCompositeOperation;
-      ctx.globalCompositeOperation = "lighter";
-      ctx.globalAlpha = a * 0.4 * mag;
-      ctx.drawImage(img, -dw / 2 + rgbOff, -dh / 2, dw, dh);
-      ctx.drawImage(img, -dw / 2 - rgbOff, -dh / 2, dw, dh);
-      ctx.globalCompositeOperation = prevComp;
-      ctx.globalAlpha = a;
-    }
-    // 3. Main layer as displaced slices
-    const slices = Math.max(2, Math.round(LS.sliceCount));
+    // 1. Draw the CLEAN base layer.  The spec says "the original white
+    //    artwork stays readable" and "layer's visual center should
+    //    remain stable during the entire effect".  So the base is
+    //    always drawn at its anchored position, and corruption is added
+    //    on top.
+    ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+
+    // Randomness dial → bucket rate.  Higher randomness = pattern churns
+    // faster (finer time buckets).  Lower randomness = slower churn.
+    const bucketRate = 8 + LS.randomness * 48;
+    const bucket = Math.floor(t * bucketRate);
+    const baseSeed = (clipId | 0) * 9973 + bucket;
+
+    // Max slice displacement in pixels, scaled by intensity envelope.
+    const maxDisp = LS.sliceDisp * 100 * sx * mag;
+
+    const slices = LS.sliceCount;
     const sliceH = dh / slices;
     const srcSliceH = img.height / slices;
-    const maxDisp = LS.sliceDisp * 100 * sx * mag;  // sliceDisp is already 0..1
+
+    // Probability that a corrupted slice's offset goes RIGHT (positive
+    // X) vs LEFT (negative X).  Encodes direction + rightBias together.
+    let pRight;
+    if      (LS.direction === "right") pRight = LS.rightBias;
+    else if (LS.direction === "left")  pRight = 1 - LS.rightBias;
+    else /* both */                    pRight = 0.5;
+
+    // Pre-tinted images for per-slice RGB separation (built lazily
+    // per source image and cached).
+    const redImg  = getTintedImage(img, "#ff2244", "ls-red");
+    const cyanImg = getTintedImage(img, "#22e0ff", "ls-cyan");
+
+    const corruptedRows = [];
+
+    // 2. For each CORRUPTED slice: draw an offset copy (creating the
+    //    displaced-slice glitch look), plus red/cyan RGB fringes.
+    //    Uncorrupted slices are already fully covered by the base draw,
+    //    so we do nothing extra for them — matching "some strips should
+    //    remain untouched".
     for (let i = 0; i < slices; i++) {
       const rSeed = baseSeed + i * 1301;
-      const r1 = seededRand(rSeed);
-      const r2 = seededRand(rSeed + 1);
-      const corrupted = r1 < LS.corruption;
-      const teared    = r2 < LS.tearStr * 0.35;
-      let disp = 0;
-      if (corrupted) disp = (seededRand(rSeed + 2) - 0.5) * maxDisp * 2;
-      if (teared)    disp *= 2.5;
+      const isCorrupt = seededRand(rSeed) < LS.corruption * mag;
+      if (!isCorrupt) continue;
+
+      const sign = seededRand(rSeed + 1) < pRight ? 1 : -1;
+      // Power-curve magnitude: most slices shift a little, a few shift a lot.
+      const mag01 = Math.pow(seededRand(rSeed + 2), 1.6);
+      const disp = sign * mag01 * maxDisp;
+      const yDst = -dh / 2 + i * sliceH;
+
+      // Per-slice RGB separation.  Only runs when rgbSep is meaningful.
+      const rgbOff = LS.rgbSep * 14 * sx * (0.5 + seededRand(rSeed + 3) * 0.5) * mag;
+      if (rgbOff > 0.4) {
+        const a = ctx.globalAlpha;
+        const prevComp = ctx.globalCompositeOperation;
+        ctx.globalCompositeOperation = "lighter";
+        ctx.globalAlpha = a * 0.75;
+        ctx.drawImage(redImg,
+          0, i * srcSliceH, img.width, srcSliceH,
+          -dw / 2 + disp + rgbOff, yDst, dw, sliceH);
+        ctx.drawImage(cyanImg,
+          0, i * srcSliceH, img.width, srcSliceH,
+          -dw / 2 + disp - rgbOff, yDst, dw, sliceH);
+        ctx.globalCompositeOperation = prevComp;
+        ctx.globalAlpha = a;
+      }
+
+      // Displaced copy of the slice — the glitch itself.  Drawn ON TOP
+      // of the base, so the corrupted band appears as a duplicate at
+      // the new position while the original band is still visible from
+      // the base draw — "signal damage" look from the reference.
       ctx.drawImage(
         img,
         0, i * srcSliceH, img.width, srcSliceH,
-        -dw / 2 + disp, -dh / 2 + i * sliceH, dw, sliceH
-      );
+        -dw / 2 + disp, yDst, dw, sliceH);
+
+      corruptedRows.push({ i, disp, yTop: yDst });
     }
+
+    // 3. Sparse vertical data leakage — colored columns starting at
+    //    corrupted-slice tops and bleeding downward.  Only draws when
+    //    dataLeakage > 0 and there ARE corrupted rows, so it's tied
+    //    to the corruption instead of blanket over the layer.
+    if (LS.leakage > 0 && corruptedRows.length > 0) {
+      const LEAK_COLORS = ["#ff2244", "#22ff88", "#22ccff", "#ff22cc", "#ffff44", "#ffffff"];
+      const totalCols = Math.floor(LS.leakageDen * 8 * corruptedRows.length * mag);
+      const maxLeakPx = LS.leakageLen * dh;
+      for (let k = 0; k < totalCols; k++) {
+        const row = corruptedRows[Math.floor(seededRand(baseSeed + 500 + k) * corruptedRows.length)];
+        const color = LEAK_COLORS[Math.floor(seededRand(baseSeed + 600 + k) * LEAK_COLORS.length)];
+        const colX = -dw / 2 + seededRand(baseSeed + 700 + k) * dw + row.disp;
+        const colW = Math.max(1, (0.8 + seededRand(baseSeed + 800 + k) * 1.6) * sx);
+        const colH = maxLeakPx * (0.25 + seededRand(baseSeed + 900 + k) * 0.75);
+        const maxY = dh / 2;
+        const drawH = Math.min(colH, maxY - row.yTop);
+        if (drawH <= 0) continue;
+        const a = ctx.globalAlpha;
+        const prevComp = ctx.globalCompositeOperation;
+        ctx.globalCompositeOperation = "lighter";
+        ctx.globalAlpha = a * LS.leakage * 0.7 * mag;
+        ctx.fillStyle = color;
+        ctx.fillRect(colX, row.yTop, colW, drawH);
+        ctx.globalCompositeOperation = prevComp;
+        ctx.globalAlpha = a;
+      }
+    }
+    // Restore whatever ctx.filter / shadowBlur the caller had set.
+    ctx.filter = prevFilter;
+    ctx.shadowBlur = prevShadowBlur;
   }
 
   /* --- VECTOR BEAM render -------------------------------------------
