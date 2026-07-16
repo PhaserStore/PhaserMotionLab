@@ -520,18 +520,87 @@
         events.forEach((fx) => {
           const b = document.createElement("button");
           b.className = "fx-event";
+          b.dataset.eventKey = fx.key;
           b.innerHTML = `<span class="fx-dot"></span>${fx.label}`;
-          b.title = `Add a ${fx.label} event clip at the playhead (default ${fx.defDur.toFixed(2)}s)`;
-          b.addEventListener("click", () => {
-            const c = createEventClip(fx.key, selectedLayer);
-            if (c) { toast(`+ ${fx.label} @ ${(selectedLayer.start + c.start).toFixed(2)}s`); startPlayback(); selectEventClip(selectedLayer, c); }
-          });
+          b.title = `Toggle a ${fx.label} clip on the selected layer at the playhead. Click again to disable / enable it.`;
+          b.addEventListener("click", () => toggleEventClipOnLayer(fx.key, fx.label));
           wrap.appendChild(b);
         });
         el.fxEventGrid.appendChild(wrap);
       });
     }
+    // Update visual state to reflect existing clips on the selected layer
+    renderEventButtons();
     if (isSvg) { el.colorNote.hidden = !selectedLayer.complex; }
+  }
+
+  /* Reflects each Event Clip button's state against the selected layer:
+     - .is-active   : an enabled clip of that type exists on the layer
+     - .is-disabled : a clip of that type exists but is disabled
+     - .is-selected : the currently selected clip is of that type
+     Called after any change to layer.clips / selectedEventClip. */
+  function renderEventButtons() {
+    if (!el.fxEventGrid) return;
+    const btns = el.fxEventGrid.querySelectorAll(".fx-event");
+    btns.forEach((btn) => {
+      const key = btn.dataset.eventKey;
+      let hasEnabled = false, hasAny = false, isSel = false;
+      if (selectedLayer && selectedLayer.clips) {
+        for (const c of selectedLayer.clips) {
+          if (c.fxKey !== key) continue;
+          hasAny = true;
+          if (c.enabled !== false) hasEnabled = true;
+          if (selectedEventClip && selectedEventClip.layer === selectedLayer && selectedEventClip.ec === c) isSel = true;
+        }
+      }
+      btn.classList.toggle("is-active",   hasEnabled);
+      btn.classList.toggle("is-disabled", hasAny && !hasEnabled);
+      btn.classList.toggle("is-selected", isSel);
+    });
+  }
+
+  /* Click behaviour for an Event Clip button:
+     - No layer selected → toast a hint.
+     - No clip of this type on layer → create a new one at the playhead.
+     - Existing clip(s) of this type → toggle enabled/disabled on the
+       most-relevant one (selected clip of that type if any; otherwise the
+       clip closest to the current playhead).
+     Never blindly creates duplicates. */
+  function toggleEventClipOnLayer(fxKey, label) {
+    if (!selectedLayer) { toast("Select a layer first"); return; }
+    const layer = selectedLayer;
+    const candidates = (layer.clips || []).filter((c) => c.fxKey === fxKey);
+    let target = null;
+    if (candidates.length) {
+      // Prefer the currently-selected clip if it matches
+      if (selectedEventClip && selectedEventClip.layer === layer && candidates.includes(selectedEventClip.ec)) {
+        target = selectedEventClip.ec;
+      } else {
+        // Otherwise pick the clip whose midpoint is closest to the playhead
+        const pt = STATE.time - layer.start;
+        target = candidates.reduce((best, c) => {
+          const dc = Math.abs((c.start + c.duration / 2) - pt);
+          if (!best) return c;
+          const db = Math.abs((best.start + best.duration / 2) - pt);
+          return dc < db ? c : best;
+        }, null);
+      }
+    }
+    if (target) {
+      target.enabled = target.enabled === false ? true : false;
+      toast(`${label} ${target.enabled ? "enabled" : "disabled"}`);
+      // If we disabled it, keep selection; if we re-enabled it while
+      // paused, refresh the preview.
+      renderTimeline(); renderEventButtons(); renderClipInspector(); paintIfPaused();
+      return;
+    }
+    // No existing clip → create a fresh one
+    const c = createEventClip(fxKey, layer);
+    if (c) {
+      toast(`+ ${label} @ ${(layer.start + c.start).toFixed(2)}s`);
+      selectEventClip(layer, c);
+      startPlayback();
+    }
   }
   function initialWPct(layer) {
     const A = STATE.format, fit = Math.min(A.w / layer.natW, A.h / layer.natH);
@@ -540,7 +609,11 @@
   function setSlider(key, val) {
     const input = document.getElementById(`ctl-${key}`), out = document.getElementById(`val-${key}`);
     if (input) { input.value = val; const min = +input.min, max = +input.max; input.style.setProperty("--pct", ((val - min) / (max - min) * 100) + "%"); }
-    if (out) out.textContent = Math.round(val);
+    if (out) {
+      // Time sliders (start / duration in seconds) need decimal precision;
+      // integer sliders (px, %, etc.) don't.
+      out.textContent = (key === "cs" || key === "cd") ? (+val).toFixed(2) : Math.round(val);
+    }
   }
 
   // Transform slider bindings
@@ -757,12 +830,22 @@
   function selectEventClip(layer, ec) {
     selectedAudioClip = null;
     selectedEventClip = { layer, ec };
-    renderTimeline(); renderClipInspector();
+    // Auto-seek the playhead into the clip window so users can see the
+    // event fire while editing intensity / duration / start.  Only seek
+    // if we're currently OUTSIDE the clip; if we're already inside, keep
+    // the user's position so scrubbing stays intuitive.
+    const clipStart = layer.start + ec.start, clipEnd = clipStart + ec.duration;
+    if (STATE.time < clipStart || STATE.time > clipEnd) {
+      STATE.time = clipStart + ec.duration * 0.5;
+      rafStart = performance.now() - STATE.time * 1000;
+      updatePlayheads(STATE.time);
+    }
+    renderTimeline(); renderClipInspector(); renderEventButtons(); paintIfPaused();
   }
   function selectAudioClip(ac) {
     selectedEventClip = null;
     selectedAudioClip = ac;
-    renderTimeline(); renderClipInspector();
+    renderTimeline(); renderClipInspector(); renderEventButtons();
   }
   function renderClipInspector() {
     const hasEvt = !!selectedEventClip, hasAud = !!selectedAudioClip;
@@ -790,8 +873,8 @@
       // Build params UI (intensity + opacityMix + optional direction)
       if (paramsHost) {
         const p = selectedEventClip.ec.params;
-        paramsHost.appendChild(makeParamSlider("intensity", "Intensity", p.intensity, 0, 100, (v) => { p.intensity = v; paintIfPaused(); }));
-        paramsHost.appendChild(makeParamSlider("opacityMix", "Opacity mix", p.opacityMix ?? 100, 0, 100, (v) => { p.opacityMix = v; paintIfPaused(); }));
+        paramsHost.appendChild(makeParamSlider("intensity", "Intensity", p.intensity, 0, 100, (v) => { p.intensity = v; renderTimeline(); renderEventButtons(); paintIfPaused(); }));
+        paramsHost.appendChild(makeParamSlider("opacityMix", "Opacity mix", p.opacityMix ?? 100, 0, 100, (v) => { p.opacityMix = v; renderTimeline(); renderEventButtons(); paintIfPaused(); }));
         if (p.direction !== undefined) {
           const row = document.createElement("div"); row.className = "prop-row";
           row.innerHTML = `<span class="prop-label">Direction</span>`;
@@ -1391,7 +1474,40 @@
     if (flashOverlay) flashOverlay.style.opacity = 0;
     if (selectedLayer) updateSelectionBox();
   }
-  function paintIfPaused() { if (!STATE.playing) renderStaticFrame(); }
+  /* Renders exactly ONE animated frame at the current STATE.time — used
+     while the timeline is paused but the user is editing an event clip's
+     parameters, so intensity / duration / start slider changes visibly
+     update the preview when the playhead is inside an event window. */
+  function renderOneAnimatedFrame() {
+    const t = STATE.time, sig = audioSignal();
+    let sceneScan = STATE.scanline / 100, sceneNoise = STATE.noise / 100;
+    let anyHud = false, hudFlicker = 1, anyFlash = null, flashA = 0;
+    layers.forEach((layer) => {
+      if (!layer.wrap) return;
+      const active = layer.visible && t >= layer.start - 0.001 && t <= layer.start + layer.duration + 0.001;
+      if (!active) { layer.wrap.style.opacity = "0"; return; }
+      const lt = t - layer.start + layer.recipe.delay;
+      const r = composeLayer(layer, lt, sig, t);
+      if (r.hud) { anyHud = true; hudFlicker = r.hudFlicker; }
+      if (r.flash) { anyFlash = r.flash; flashA = r.flashA; }
+      if (r.scanBoost) sceneScan = Math.min(1, sceneScan + r.scanBoost * 0.3);
+      if (r.breakup) sceneNoise = Math.min(1, sceneNoise + r.breakup);
+    });
+    el.artboard.style.setProperty("--scanline-op", sceneScan);
+    el.artboard.style.setProperty("--noise-op", sceneNoise);
+    updateHud(anyHud, hudFlicker, t); updateFlash(anyFlash, flashA);
+    if (selectedLayer) updateSelectionBox();
+  }
+  function paintIfPaused() {
+    if (STATE.playing) return;
+    // If there's a layer that has an event clip active at the current
+    // playhead, paint an animated frame so event params visibly affect
+    // the preview. Otherwise fall back to the plain static frame.
+    const t = STATE.time;
+    const hasActiveEvent = layers.some((L) => activeEventClipsAt(L, t).length > 0);
+    if (hasActiveEvent) renderOneAnimatedFrame();
+    else renderStaticFrame();
+  }
 
   // Line Draw / Trim Paths: animate stroke-dasharray/offset on SVG strokes.
   function pathStrokes(layer) {
@@ -2486,23 +2602,39 @@
     });
 
     // ---- Selected-clip inspector wiring ----
+    // Every slider input performs the update THEN triggers the full
+    // refresh chain: renderTimeline (clip position/width visible),
+    // renderEventButtons (right-panel active dot), and paintIfPaused
+    // (preview shows the change immediately when an event is active).
+    const MIN_CLIP_DUR = 0.05;
     const bindClipSlider = (key, apply) => {
       const s = document.getElementById(`ctl-${key}`), vv = document.getElementById(`val-${key}`);
       if (!s) return;
       s.addEventListener("input", (e) => {
         const v = +e.target.value;
-        if (vv) vv.textContent = key === "cs" || key === "cd" ? v.toFixed(2) : Math.round(v);
+        if (vv) vv.textContent = (key === "cs" || key === "cd") ? v.toFixed(2) : Math.round(v);
         apply(v);
-        renderTimeline();
+        renderTimeline(); renderEventButtons(); paintIfPaused();
       });
     };
     bindClipSlider("cs", (v) => {
-      if (selectedEventClip) selectedEventClip.ec.start = clamp(v - selectedEventClip.layer.start, 0, Math.max(0, selectedEventClip.layer.duration - selectedEventClip.ec.duration));
-      else if (selectedAudioClip) selectedAudioClip.start = clamp(v, 0, Math.max(0, STATE.duration - selectedAudioClip.duration));
+      if (selectedEventClip) {
+        const L = selectedEventClip.layer, ec = selectedEventClip.ec;
+        // slider value is scene time; store layer-relative
+        ec.start = clamp(v - L.start, 0, Math.max(0, L.duration - ec.duration));
+      } else if (selectedAudioClip) {
+        selectedAudioClip.start = clamp(v, 0, Math.max(0, STATE.duration - selectedAudioClip.duration));
+      }
     });
     bindClipSlider("cd", (v) => {
-      if (selectedEventClip) selectedEventClip.ec.duration = clamp(v, 0.02, selectedEventClip.layer.duration - selectedEventClip.ec.start);
-      else if (selectedAudioClip) selectedAudioClip.duration = clamp(v, 0.05, STATE.duration - selectedAudioClip.start);
+      if (selectedEventClip) {
+        const L = selectedEventClip.layer, ec = selectedEventClip.ec;
+        // Minimum 0.05s so tiny events like Hard Cut (default 0.08) stay
+        // usable; previous 0.02 was too permissive and showed as "0.00".
+        ec.duration = clamp(v, MIN_CLIP_DUR, Math.max(MIN_CLIP_DUR, L.duration - ec.start));
+      } else if (selectedAudioClip) {
+        selectedAudioClip.duration = clamp(v, MIN_CLIP_DUR, Math.max(MIN_CLIP_DUR, STATE.duration - selectedAudioClip.start));
+      }
     });
     bindClipSlider("cv", (v) => { if (selectedAudioClip) selectedAudioClip.volume = v / 100; });
     if (el.clipMute) el.clipMute.addEventListener("click", () => {
@@ -2514,14 +2646,17 @@
     if (el.clipDup) el.clipDup.addEventListener("click", () => {
       if (selectedEventClip) {
         const src = selectedEventClip.ec, layer = selectedEventClip.layer;
-        const dup = { ...src, id: ++idSeq, start: clamp(src.start + src.duration + 0.05, 0, layer.duration - src.duration) };
+        // Deep-copy params so the duplicate is independent
+        const dup = { ...src, id: ++idSeq, params: { ...(src.params || {}) },
+          start: clamp(src.start + src.duration + 0.05, 0, Math.max(0, layer.duration - src.duration)) };
         layer.clips.push(dup);
+        selectEventClip(layer, dup); // select the new duplicate so user can edit it
       } else if (selectedAudioClip) {
         const src = selectedAudioClip;
-        const dup = { ...src, id: ++idSeq, start: clamp(src.start + src.duration + 0.05, 0, STATE.duration - src.duration), selected: false };
+        const dup = { ...src, id: ++idSeq, start: clamp(src.start + src.duration + 0.05, 0, Math.max(0, STATE.duration - src.duration)), selected: false };
         audioClips.push(dup);
       }
-      renderTimeline();
+      renderTimeline(); renderEventButtons();
     });
     if (el.clipDel) el.clipDel.addEventListener("click", () => {
       if (selectedEventClip) {
@@ -2532,10 +2667,21 @@
         const i = audioClips.indexOf(selectedAudioClip); if (i >= 0) audioClips.splice(i, 1);
         selectedAudioClip = null;
       }
-      renderClipInspector(); renderTimeline();
+      renderClipInspector(); renderTimeline(); renderEventButtons(); paintIfPaused();
     });
     if (el.clipPreview) el.clipPreview.addEventListener("click", () => {
-      if (selectedAudioClip) { const s = sounds.find((x) => x.id === selectedAudioClip.soundId); if (s) previewSound(s); }
+      // For an audio clip: play its buffer once.
+      // For an event clip: seek playhead to just before the clip start
+      // and play so the event fires visibly.
+      if (selectedAudioClip) { const s = sounds.find((x) => x.id === selectedAudioClip.soundId); if (s) previewSound(s); return; }
+      if (selectedEventClip) {
+        const L = selectedEventClip.layer, ec = selectedEventClip.ec;
+        STATE.time = Math.max(0, L.start + ec.start - 0.05);
+        rafStart = performance.now() - STATE.time * 1000;
+        updatePlayheads(STATE.time);
+        startPlayback();
+        toast(`Previewing ${ec.fxKey}`);
+      }
     });
 
     // ---- Click on timeline ruler seeks the playhead ----
@@ -2634,7 +2780,7 @@
     if (enBtn) enBtn.addEventListener("click", () => {
       if (!selectedEventClip) return;
       selectedEventClip.ec.enabled = !(selectedEventClip.ec.enabled !== false);
-      renderClipInspector(); renderTimeline(); paintIfPaused();
+      renderClipInspector(); renderTimeline(); renderEventButtons(); paintIfPaused();
     });
 
     window.addEventListener("resize", () => { if (STATE.zoomMode === "fit") fitZoom(); renderTimeline(); });
