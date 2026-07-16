@@ -141,6 +141,9 @@
     { key: "noiseGate",       label: "Noise Gate",       defDur: 0.30, group: "signal" },
     { key: "ghostFrame",      label: "Ghost Frame",      defDur: 0.25, group: "signal" },
     { key: "coordShift",      label: "Coordinate Shift", defDur: 0.30, group: "motion" },
+    // --- HIGH-END micrographic presets ---
+    { key: "lostSignal",      label: "Lost Signal",      defDur: 0.45, group: "signal" },
+    { key: "vectorBeam",      label: "Vector Beam",      defDur: 0.35, group: "motion" },
   ];
   const FX_EVENT_KEYS = new Set(FX_EVENTS.map((f) => f.key));
   const FX_EVENT_GROUPS = [
@@ -176,9 +179,54 @@
       case "terminalBlink": return { ...base, intensity: 55 };
       case "frequencyJump": return { ...base, intensity: 65 };
       case "vectorLock":    return { ...base, intensity: 50 };
+      // High-end effects have rich per-event parameter sets. Every field
+      // listed here becomes an editable slider (or seg control) in the
+      // Selected clip inspector — see EVENT_PARAM_SCHEMA below.
+      case "lostSignal":    return { ...base, intensity: 70, opacityMix: 100,
+        corruptionAmount: 65, sliceCount: 12, sliceDisplacement: 24,
+        rgbOffset: 4, echoAmount: 2, echoOpacity: 35,
+        tearStrength: 55, blinkCount: 3, recoverySpeed: 70, randomness: 60 };
+      case "vectorBeam":    return { ...base, intensity: 75, opacityMix: 100,
+        direction: "right", beamLength: 100, beamWidth: 8,
+        trailCount: 4, trailOpacity: 55, trailSpread: 10,
+        glowStrength: 20, flickerAmount: 25, freezeDuration: 0.08,
+        sourceFlash: 45, growthEasing: "hard" };
       default: return { ...base };
     }
   }
+
+  /* Per-event slider schema — the inspector shows intensity + opacityMix
+     for every event; if a schema entry exists for the event key, its
+     extra params render as sliders below.  Format: [key, label, min, max,
+     step?].  Segmented controls (direction / growthEasing) are handled
+     separately in renderClipInspector. */
+  const EVENT_PARAM_SCHEMA = {
+    lostSignal: [
+      ["corruptionAmount",  "Corruption",       0, 100],
+      ["sliceCount",        "Slice count",      2,  32, 1],
+      ["sliceDisplacement", "Displacement",     0, 100],
+      ["rgbOffset",         "RGB offset",       0,  20],
+      ["echoAmount",        "Echoes",           0,   6, 1],
+      ["echoOpacity",       "Echo opacity",     0, 100],
+      ["tearStrength",      "Tear strength",    0, 100],
+      ["blinkCount",        "Blink count",      0,  10, 1],
+      ["recoverySpeed",     "Recovery speed",   0, 100],
+      ["randomness",        "Randomness",       0, 100],
+    ],
+    vectorBeam: [
+      // direction handled as 4-way seg control (right/left/up/down)
+      ["beamLength",     "Beam length",   0, 200],
+      ["beamWidth",      "Beam width",    1,  40, 1],
+      ["trailCount",     "Trails",        0,   8, 1],
+      ["trailOpacity",   "Trail opacity", 0, 100],
+      ["trailSpread",    "Trail spread",  0,  40],
+      ["glowStrength",   "Glow",          0,  60],
+      ["flickerAmount",  "Flicker",       0, 100],
+      ["freezeDuration", "Freeze (s)",    0,   1, 0.01],
+      ["sourceFlash",    "Source flash",  0, 100],
+      // growthEasing handled as hard/ease seg control
+    ],
+  };
 
   /* ---------------- PRESETS (public names, no private refs) ----------------
      fx: effect keys. patch: scene params. transform stays off unless the
@@ -875,11 +923,55 @@
         const p = selectedEventClip.ec.params;
         paramsHost.appendChild(makeParamSlider("intensity", "Intensity", p.intensity, 0, 100, (v) => { p.intensity = v; renderTimeline(); renderEventButtons(); paintIfPaused(); }));
         paramsHost.appendChild(makeParamSlider("opacityMix", "Opacity mix", p.opacityMix ?? 100, 0, 100, (v) => { p.opacityMix = v; renderTimeline(); renderEventButtons(); paintIfPaused(); }));
+        // Direction segmented control — 4-way for vectorBeam (right/left/
+        // up/down), 2-way (0/1) for legacy events.
         if (p.direction !== undefined) {
+          const isVector = selectedEventClip.ec.fxKey === "vectorBeam";
+          const options = isVector
+            ? [["right","→"],["left","←"],["down","↓"],["up","↑"]]
+            : [["0","→"],["1","←"]];
           const row = document.createElement("div"); row.className = "prop-row";
           row.innerHTML = `<span class="prop-label">Direction</span>`;
           const btns = document.createElement("div"); btns.className = "seg-mini";
-          [["0","→"],["1","←"]].forEach(([v,l]) => { const b=document.createElement("button"); b.className="mini-btn"+(String(p.direction)===v?" active":""); b.textContent=l; b.addEventListener("click",()=>{ p.direction=+v; renderClipInspector(); paintIfPaused(); }); btns.appendChild(b); });
+          options.forEach(([v, l]) => {
+            const b = document.createElement("button");
+            b.className = "mini-btn" + (String(p.direction) === v ? " active" : "");
+            b.textContent = l;
+            b.addEventListener("click", () => {
+              p.direction = isVector ? v : +v;
+              renderClipInspector(); renderTimeline(); renderEventButtons(); paintIfPaused();
+            });
+            btns.appendChild(b);
+          });
+          row.appendChild(btns); paramsHost.appendChild(row);
+        }
+        // Event-specific extra params (Lost Signal / Vector Beam).
+        const schema = EVENT_PARAM_SCHEMA[selectedEventClip.ec.fxKey];
+        if (schema) {
+          schema.forEach((spec) => {
+            const [key, label, min, max, step] = spec;
+            if (p[key] === undefined) return;
+            paramsHost.appendChild(makeParamSlider(key, label, p[key], min, max, (v) => {
+              p[key] = v; renderTimeline(); renderEventButtons(); paintIfPaused();
+            }, step));
+          });
+        }
+        // Vector Beam growth easing seg (hard/ease) — separate from
+        // direction because it uses different labels/values.
+        if (selectedEventClip.ec.fxKey === "vectorBeam") {
+          const row = document.createElement("div"); row.className = "prop-row";
+          row.innerHTML = `<span class="prop-label">Growth</span>`;
+          const btns = document.createElement("div"); btns.className = "seg-mini";
+          [["hard","Hard"],["ease","Ease"]].forEach(([v, l]) => {
+            const b = document.createElement("button");
+            b.className = "mini-btn" + ((p.growthEasing ?? "hard") === v ? " active" : "");
+            b.textContent = l;
+            b.addEventListener("click", () => {
+              p.growthEasing = v;
+              renderClipInspector(); renderTimeline(); renderEventButtons(); paintIfPaused();
+            });
+            btns.appendChild(b);
+          });
           row.appendChild(btns); paramsHost.appendChild(row);
         }
       }
@@ -902,10 +994,19 @@
     const cdEl = document.getElementById("ctl-cd"); if (cdEl) cdEl.max = STATE.duration;
   }
 
-  function makeParamSlider(key, label, value, min, max, onInput) {
+  /* Param slider — `step` is optional; when < 1 the label formats with 2
+     decimals so slow controls like Freeze (s) don't display as "0". */
+  function makeParamSlider(key, label, value, min, max, onInput, step) {
+    step = step || 1;
+    const decimals = step < 1 ? 2 : 0;
     const wrap = document.createElement("div"); wrap.className = "control";
-    wrap.innerHTML = `<span class="ctl-label">${label}</span><span class="ctl-val" id="pv-${key}">${Math.round(value)}</span><input type="range" min="${min}" max="${max}" step="1" value="${value}" data-p="${key}">`;
-    wrap.querySelector("input").addEventListener("input", (e) => { const v = +e.target.value; wrap.querySelector("#pv-" + key).textContent = Math.round(v); onInput(v); });
+    const disp = decimals ? (+value).toFixed(decimals) : Math.round(value);
+    wrap.innerHTML = `<span class="ctl-label">${label}</span><span class="ctl-val" id="pv-${key}">${disp}</span><input type="range" min="${min}" max="${max}" step="${step}" value="${value}" data-p="${key}">`;
+    wrap.querySelector("input").addEventListener("input", (e) => {
+      const v = +e.target.value;
+      wrap.querySelector("#pv-" + key).textContent = decimals ? v.toFixed(decimals) : Math.round(v);
+      onInput(v);
+    });
     return wrap;
   }
   function setDuration(sec) { STATE.duration = sec; layers.forEach((l) => { l.start = clamp(l.start, 0, sec); l.duration = clamp(l.duration, 0.2, sec - l.start); }); EXPORTOPTS.duration = sec; syncDurationUI(); renderTimeline(); }
@@ -1286,6 +1387,84 @@
     ghostFrame(p, sig, params) { const k = (params?.intensity ?? 50) / 50; return { ghost: 0.5 * k * (1 - Math.abs(p - 0.5) * 2), opacity: 1 }; },
     // Coordinate Shift: small stepped position shift with HUD readout blink.
     coordShift(p, sig, params) { const k = (params?.intensity ?? 50) / 50; const dir = (params?.direction ?? 0) === 0 ? 1 : -1; return { tx: 2 * k * dir * Math.sign(Math.sin(p * Math.PI * 2)), hud: true, hudFlicker: 0.8 }; },
+
+    /* ---- HIGH-END EVENTS ---------------------------------------------
+       These return both a MARKER object (lostSignal / vectorBeam) that
+       drawExportFrame reads to run its full pixel-accurate render, AND
+       lightweight generic channels (tx/ty/opacity/rgb/flash/glow) that
+       give the DOM preview a visible approximation while paused/playing
+       — without a preview canvas overlay. */
+
+    // LOST SIGNAL — retro corruption, RGB desync, slice tear, terminal
+    // blink, recovery.  Marker.p and marker params drive drawExportFrame.
+    lostSignal(p, sig, params) {
+      const P = params || {};
+      const intensity = (P.intensity ?? 70) / 100;
+      // Envelope: recovery ramps effect strength down toward end (0..1).
+      const recSpeed = (P.recoverySpeed ?? 70) / 100;
+      const recovery = clamp01(1 - Math.pow(p, 1 + recSpeed * 2));
+      const mag = intensity * recovery;
+      // Terminal-blink: alternating on/off through the clip window.
+      const blinkCount = P.blinkCount ?? 3;
+      const blinkOn = blinkCount > 0 && (Math.floor(p * blinkCount * 2) % 2 === 0);
+      const rand = (P.randomness ?? 60) / 100;
+      const jitterAmt = 3 * mag * rand;
+      return {
+        // Marker read by drawExportFrame:
+        lostSignal: {
+          p, intensity, recovery, mag,
+          corruption: (P.corruptionAmount ?? 65) / 100,
+          sliceCount: P.sliceCount ?? 12,
+          sliceDisp:  (P.sliceDisplacement ?? 24) / 100,
+          rgbOffset:  P.rgbOffset ?? 4,
+          echoAmount: P.echoAmount ?? 2,
+          echoOpacity:(P.echoOpacity ?? 35) / 100,
+          tearStr:    (P.tearStrength ?? 55) / 100,
+          blinkCount, blinkOn,
+          randomness: rand,
+        },
+        // DOM-preview approximation channels:
+        tx: (Math.random() - 0.5) * jitterAmt,
+        ty: (Math.random() - 0.5) * jitterAmt * 0.3,
+        opacity: blinkOn && Math.random() < 0.4 * mag ? 0.15 : 1,
+        rgb: (P.rgbOffset ?? 4) * mag * 0.6,
+        blur: mag * 0.9,
+      };
+    },
+
+    // VECTOR BEAM — directional beam projected from the layer edge,
+    // trails, glow, hard freeze.  Marker read by drawExportFrame.
+    vectorBeam(p, sig, params) {
+      const P = params || {};
+      const intensity = (P.intensity ?? 75) / 100;
+      // Growth/freeze split: last 15% of window holds a locked beam.
+      const growthEnd = 0.85;
+      let growth;
+      if (p < growthEnd) {
+        const t = p / growthEnd;
+        growth = (P.growthEasing === "ease") ? (1 - Math.pow(1 - t, 3)) : t;
+      } else { growth = 1; }
+      // Ignition flash: brief full-canvas white burst at start (~0.15).
+      const flashP = clamp01((0.15 - p) / 0.15);
+      const flashAmt = (P.sourceFlash ?? 45) / 100;
+      return {
+        vectorBeam: {
+          p, intensity, growth,
+          direction:   P.direction   ?? "right",
+          beamLength:  (P.beamLength ?? 100) / 100,
+          beamWidth:   P.beamWidth   ?? 8,
+          trailCount:  P.trailCount  ?? 4,
+          trailOpacity:(P.trailOpacity ?? 55) / 100,
+          trailSpread: P.trailSpread ?? 10,
+          glowStrength:P.glowStrength?? 20,
+          flickerAmt:  (P.flickerAmount ?? 25) / 100,
+        },
+        // DOM-preview approximation: ignition flash + short layer glow.
+        flash: flashP > 0 ? "#fff" : null,
+        flashA: flashP * flashAmt * 0.18,
+        glow: intensity * (0.5 + flashP * 0.5) * 14,
+      };
+    },
   };
 
   // For each event key, which live layer field it modifies (used to
@@ -1409,6 +1588,11 @@
         if (d.tear !== undefined) layer._tear = d.tear; else if (layer._tear !== undefined) layer._tear = 0;
         if (d.targetPing !== undefined) layer._targetPing = d.targetPing; else if (layer._targetPing !== undefined) layer._targetPing = null;
         if (d.ghost !== undefined) layer._ghost = d.ghost; else if (layer._ghost !== undefined) layer._ghost = 0;
+        // High-end effect markers — the DOM preview can't render slices
+        // or beams, so the base layer stays as-is here and the markers
+        // are only consumed by the export/canvas renderer.
+        if (d.lostSignal) layer._lostSignal = d.lostSignal;   else if (layer._lostSignal) layer._lostSignal = null;
+        if (d.vectorBeam) layer._vectorBeam = d.vectorBeam;   else if (layer._vectorBeam) layer._vectorBeam = null;
       }
     }
     blur += (STATE.blur / 100) * 2;
@@ -1873,6 +2057,10 @@
       if (d.tear !== undefined) s.tear = d.tear;
       if (d.targetPing !== undefined) s.targetPing = d.targetPing;
       if (d.ghost !== undefined) s.ghost = d.ghost;
+      // High-end effect markers — read by drawExportFrame's dedicated
+      // draw routines (drawLostSignalLayer / drawVectorBeam).
+      if (d.lostSignal) s.lostSignal = d.lostSignal;
+      if (d.vectorBeam) s.vectorBeam = d.vectorBeam;
       if (c.fxKey === "layerSwap") s.layerSwap = 1 - p;
     }
     s.blur += (STATE.blur / 100) * 2;
@@ -1994,7 +2182,12 @@
 
       // Digital Tear: split the layer horizontally into a few slabs
       // and offset alternate slabs horizontally.
-      if (s.tear && s.tear > 0.02) {
+      if (s.lostSignal) {
+        // LOST SIGNAL — replaces the normal layer draw entirely with a
+        // corrupted rendering: echoes behind, RGB desync ghosts, then
+        // the layer as displaced horizontal slices with random tears.
+        drawLostSignalLayer(ctx, img, dw, dh, sx, sy, s.lostSignal, layer.id, t);
+      } else if (s.tear && s.tear > 0.02) {
         const slabs = 8;
         const slabH = dh / slabs;
         const srcSlabH = img.height / slabs;
@@ -2010,7 +2203,7 @@
         }
         ctx.restore();
       } else {
-        // Main layer draw (default path; tear replaces it when active)
+        // Main layer draw (default path; tear / lostSignal replace it when active)
         ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
       }
 
@@ -2018,6 +2211,14 @@
       ctx.filter = "none";
       ctx.shadowBlur = 0;
       ctx.restore();
+
+      // VECTOR BEAM — projected beam extending from the layer edge in
+      // the chosen direction, with trails and glow.  Drawn AFTER the
+      // ctx.restore() above so it renders in artboard-space (not the
+      // layer's rotated local space).
+      if (s.vectorBeam) {
+        drawVectorBeam(ctx, W, H, sx, sy, s.vectorBeam, centerX, centerY, dw, dh, transparent);
+      }
 
       // Target Ping: expanding ring centered on the layer.
       if (s.targetPing !== undefined && s.targetPing !== null) {
@@ -2151,6 +2352,153 @@
     }
   }
   function clamp255(v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
+
+  /* Deterministic pseudo-random: hashes an integer seed to a value in
+     [0,1).  Used by drawLostSignalLayer so slice offsets stay stable
+     across preview and export at the same time bucket. */
+  function seededRand(n) {
+    let x = ((n | 0) * 2654435761) | 0;
+    x = (x ^ (x >>> 15)) * 2246822507 | 0;
+    x = (x ^ (x >>> 13)) * 3266489909 | 0;
+    x = (x ^ (x >>> 16)) >>> 0;
+    return x / 4294967296;
+  }
+
+  /* --- LOST SIGNAL layer render -------------------------------------
+     Draws a corrupted version of the layer.  Composition (bottom → top):
+       1. Ghost echoes (translucent offset copies)
+       2. RGB desync (two lighter-mode offset copies for chromatic ghosting)
+       3. The layer sliced into `sliceCount` horizontal bands, each band
+          conditionally offset horizontally by `sliceDisp` (corruption)
+          and further offset when `tearStr` fires.
+     Assumes ctx is already translated to the layer center and rotated. */
+  function drawLostSignalLayer(ctx, img, dw, dh, sx, sy, LS, clipId, t) {
+    // Time bucket ~30Hz so patterns hold for ~1 frame at 30fps but still
+    // evolve across the clip window.  Multiplied by randomness so a
+    // higher randomness dial makes the pattern churn faster.
+    const bucketRate = 20 + LS.randomness * 40;
+    const bucket = Math.floor(t * bucketRate);
+    const baseSeed = (clipId | 0) * 9973 + bucket;
+    const mag = LS.mag;
+    if (mag < 0.001) { ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh); return; }
+
+    // 1. Ghost echoes behind
+    const echoes = Math.max(0, Math.round(LS.echoAmount));
+    for (let e = 1; e <= echoes; e++) {
+      const ex = e * 4 * sx * mag;
+      const ey = e * 2 * sy * mag;
+      const a = ctx.globalAlpha;
+      ctx.globalAlpha = a * LS.echoOpacity * (1 - (e - 1) / (echoes + 1)) * mag;
+      ctx.drawImage(img, -dw / 2 + ex, -dh / 2 + ey, dw, dh);
+      ctx.globalAlpha = a;
+    }
+    // 2. RGB desync (two offset copies via lighter composite → cheap chromatic ghosting)
+    const rgbOff = LS.rgbOffset * sx * mag;
+    if (rgbOff > 0.4) {
+      const a = ctx.globalAlpha;
+      const prevComp = ctx.globalCompositeOperation;
+      ctx.globalCompositeOperation = "lighter";
+      ctx.globalAlpha = a * 0.4 * mag;
+      ctx.drawImage(img, -dw / 2 + rgbOff, -dh / 2, dw, dh);
+      ctx.drawImage(img, -dw / 2 - rgbOff, -dh / 2, dw, dh);
+      ctx.globalCompositeOperation = prevComp;
+      ctx.globalAlpha = a;
+    }
+    // 3. Main layer as displaced slices
+    const slices = Math.max(2, Math.round(LS.sliceCount));
+    const sliceH = dh / slices;
+    const srcSliceH = img.height / slices;
+    const maxDisp = LS.sliceDisp * 100 * sx * mag;  // sliceDisp is already 0..1
+    for (let i = 0; i < slices; i++) {
+      const rSeed = baseSeed + i * 1301;
+      const r1 = seededRand(rSeed);
+      const r2 = seededRand(rSeed + 1);
+      const corrupted = r1 < LS.corruption;
+      const teared    = r2 < LS.tearStr * 0.35;
+      let disp = 0;
+      if (corrupted) disp = (seededRand(rSeed + 2) - 0.5) * maxDisp * 2;
+      if (teared)    disp *= 2.5;
+      ctx.drawImage(
+        img,
+        0, i * srcSliceH, img.width, srcSliceH,
+        -dw / 2 + disp, -dh / 2 + i * sliceH, dw, sliceH
+      );
+    }
+  }
+
+  /* --- VECTOR BEAM render -------------------------------------------
+     Draws a directional beam extending from the layer's edge, with N
+     trails and optional glow, in artboard-space (not layer-local).
+     centerX/centerY/dw/dh describe the layer's on-canvas bounds. */
+  function drawVectorBeam(ctx, W, H, sx, sy, VB, centerX, centerY, dw, dh, transparent) {
+    const dir = VB.direction;
+    // Origin at the edge of the layer bounding box in the beam direction.
+    let originX, originY;
+    if (dir === "right")     { originX = centerX + dw / 2; originY = centerY; }
+    else if (dir === "left") { originX = centerX - dw / 2; originY = centerY; }
+    else if (dir === "down") { originX = centerX;          originY = centerY + dh / 2; }
+    else /* "up" */          { originX = centerX;          originY = centerY - dh / 2; }
+    // Beam length = % of the AVAILABLE space between the layer edge and
+    // the canvas edge in the beam direction.  This keeps the beam inside
+    // the canvas regardless of layer size ("Beam must respect canvas
+    // boundaries" in the spec).
+    let availableLen;
+    if (dir === "right")     availableLen = Math.max(0, W - originX);
+    else if (dir === "left") availableLen = Math.max(0, originX);
+    else if (dir === "down") availableLen = Math.max(0, H - originY);
+    else /* up */            availableLen = Math.max(0, originY);
+    const targetLen = availableLen * VB.beamLength * VB.intensity;
+    const currentLen = targetLen * VB.growth;
+    if (currentLen < 1) return;
+    const beamWidthPx = Math.max(1, VB.beamWidth * sx);
+    // Flicker envelope (multiplicative on alpha, hard-edged)
+    const flick = 1 - VB.flickerAmt * Math.abs(Math.sin(VB.p * 40));
+
+    // Rect helpers (position, size) for direction-independent drawing
+    // of a beam of given length + width + lateral offset.
+    function beamRect(len, width, offAxis) {
+      if (dir === "right") return [originX,             originY - width / 2 + offAxis, len,   width];
+      if (dir === "left")  return [originX - len,       originY - width / 2 + offAxis, len,   width];
+      if (dir === "down")  return [originX - width / 2 + offAxis, originY,             width, len  ];
+      /* up */              return [originX - width / 2 + offAxis, originY - len,       width, len  ];
+    }
+
+    // ---- Glow layer (wider, softer) ----
+    if (VB.glowStrength > 0) {
+      ctx.save();
+      // Screen-composite when we have solid bg; safe alpha otherwise.
+      ctx.globalCompositeOperation = transparent ? "source-over" : "screen";
+      ctx.globalAlpha = 0.35 * VB.intensity * flick;
+      ctx.shadowColor = "rgba(255,255,255,0.85)";
+      ctx.shadowBlur = VB.glowStrength * sx;
+      ctx.fillStyle = "#ffffff";
+      const [x, y, w, h] = beamRect(currentLen, beamWidthPx + VB.glowStrength * sx * 0.4, 0);
+      ctx.fillRect(x, y, w, h);
+      ctx.restore();
+    }
+
+    // ---- Trails (below main, staggered laterally + shorter) ----
+    const trails = Math.max(0, Math.round(VB.trailCount));
+    for (let ti = 1; ti <= trails; ti++) {
+      ctx.save();
+      ctx.globalAlpha = VB.trailOpacity * (1 - ti / (trails + 1)) * flick;
+      ctx.fillStyle = "#ffffff";
+      const trailLen = currentLen * (1 - ti * 0.08);
+      const sign = (ti % 2 === 0) ? 1 : -1;
+      const off = sign * ti * VB.trailSpread * sx;
+      const [x, y, w, h] = beamRect(trailLen, beamWidthPx * 0.55, off);
+      ctx.fillRect(x, y, w, h);
+      ctx.restore();
+    }
+
+    // ---- Main crisp beam ----
+    ctx.save();
+    ctx.globalAlpha = VB.intensity * flick;
+    ctx.fillStyle = "#ffffff";
+    const [x, y, w, h] = beamRect(currentLen, beamWidthPx, 0);
+    ctx.fillRect(x, y, w, h);
+    ctx.restore();
+  }
 
   // Small technical corner brackets + labels for HUD overlays (event or
   // sustained). Alpha-safe.
