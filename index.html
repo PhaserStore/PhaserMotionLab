@@ -244,6 +244,26 @@
           </div>
         </section>
 
+        <!-- ALIGNMENT -->
+        <section class="prop-group" id="alignGroup">
+          <div class="group-head"><h3>Alignment</h3></div>
+          <div class="align-grid">
+            <button class="mini-btn align-btn" id="alignLeft"   title="Align left edge to canvas left">L</button>
+            <button class="mini-btn align-btn" id="alignCH"     title="Center horizontally">C</button>
+            <button class="mini-btn align-btn" id="alignRight"  title="Align right edge to canvas right">R</button>
+            <button class="mini-btn align-btn" id="alignTop"    title="Align top edge to canvas top">T</button>
+            <button class="mini-btn align-btn" id="alignCV"     title="Center vertically">M</button>
+            <button class="mini-btn align-btn" id="alignBottom" title="Align bottom edge to canvas bottom">B</button>
+          </div>
+          <div class="btn-grid" style="margin-top:8px">
+            <button class="mini-btn" id="alignDistH" title="Distribute horizontally (centers single layer)">Distribute H</button>
+            <button class="mini-btn" id="alignDistV" title="Distribute vertically (centers single layer)">Distribute V</button>
+            <button class="mini-btn" id="alignCenter">Center to canvas</button>
+            <button class="mini-btn" id="alignFit">Fit to canvas</button>
+            <button class="mini-btn" id="alignFill">Fill canvas</button>
+          </div>
+        </section>
+
         <!-- COLOR (SVG) -->
         <section class="prop-group" id="colorGroup">
           <div class="group-head"><h3>Color</h3></div>
@@ -272,21 +292,19 @@
           </div>
         </section>
 
-        <!-- EFFECTS ON LAYER -->
+        <!-- EVENT CLIPS ON LAYER -->
         <section class="prop-group" id="fxGroup">
-          <div class="group-head"><h3>Effects</h3></div>
-          <div id="fxEmpty" class="group-hint">Select a layer to toggle effects or add event clips.</div>
+          <div class="group-head"><h3>Event clips</h3></div>
+          <div id="fxEmpty" class="group-hint">Select a layer to add event clips.</div>
           <div id="fxBody" hidden>
             <div class="prop-row">
               <label class="switch-inline" title="Allow scale / rotation / large movement"><input type="checkbox" id="allowTransform"><span>Allow transform motion</span></label>
             </div>
-            <p class="group-hint" style="margin-top:8px">Sustained effects apply for the whole layer duration. Event clips are short timeline events (Focus Snap, Signal Interrupt, RGB Spike, etc.) placed at the current playhead.</p>
+            <p class="group-hint" style="margin-top:8px">Click any event below to drop a short animation clip on the selected layer at the current playhead. Adjust its parameters, timing, and duration in <em>Selected clip</em> below.</p>
 
-            <div class="sub-head">Sustained</div>
-            <div class="fx-toggle-grid" id="fxToggleGrid"></div>
+            <!-- Legacy sustained-fx grid — kept in DOM but hidden. AI Director / presets still use it internally. -->
+            <div class="fx-toggle-grid" id="fxToggleGrid" hidden></div>
 
-            <div class="sub-head">Event clips</div>
-            <p class="group-hint" style="margin-top:-4px">Click to drop a short event on the selected layer at the current time.</p>
             <div class="fx-event-grid" id="fxEventGrid"></div>
 
             <div class="prop-row" style="margin-top:14px">
@@ -308,7 +326,9 @@
             <div class="control"><span class="ctl-label">Start</span><span class="ctl-val" id="val-cs">0.0</span><input type="range" min="0" max="20" step="0.05" value="0" id="ctl-cs"></div>
             <div class="control"><span class="ctl-label">Duration</span><span class="ctl-val" id="val-cd">1.0</span><input type="range" min="0.05" max="20" step="0.05" value="1" id="ctl-cd"></div>
             <div class="control" id="clipVolRow"><span class="ctl-label">Volume</span><span class="ctl-val" id="val-cv">100</span><input type="range" min="0" max="120" value="100" id="ctl-cv"></div>
+            <div id="clipParams"></div>
             <div class="btn-grid">
+              <button class="mini-btn" id="clipEnable">Disable clip</button>
               <button class="mini-btn" id="clipMute">Mute</button>
               <button class="mini-btn" id="clipDup">Duplicate</button>
               <button class="mini-btn danger" id="clipDel">Delete</button>
@@ -334,6 +354,9 @@
           <div class="controls" data-group="beatsync"></div>
           <div class="prop-row" style="margin-top:12px">
             <label class="switch-inline" title="Snap timeline clips to detected beats"><input type="checkbox" id="snapBeat"><span>Snap to beat</span></label>
+          </div>
+          <div class="prop-row">
+            <label class="switch-inline" title="Snap timeline clip edges to the nearest video frame"><input type="checkbox" id="snapFrame"><span>Snap to frame</span></label>
           </div>
           <div class="prop-row">
             <label class="switch-inline" title="Auto-create Focus Snap / Signal Interrupt clips at detected peaks"><input type="checkbox" id="autoKeyframes"><span>Auto events from peaks</span></label>
@@ -494,6 +517,10 @@
         <label class="switch-inline"><input type="checkbox" id="optTransparent"><span>Transparent stills</span></label>
         <label class="switch-inline"><input type="checkbox" id="optAudio" checked><span>Include audio</span></label>
       </div>
+      <div class="es-row" id="estSizeRow">
+        <span class="es-label">Estimated video size</span>
+        <span class="est-size" id="estSize">—</span>
+      </div>
     </div>
 
     <div class="export-group-label">Image</div>
@@ -506,7 +533,7 @@
 
     <div class="export-group-label">Video</div>
     <div class="export-options">
-      <button class="export-opt" id="exportMp4"><div class="eo-icon eo-primary">MP4</div><div class="eo-text"><strong>MP4 video · H.264 <span class="exp-badge">Experimental</span></strong><span>Uses ffmpeg.wasm when its scripts are loaded (~30 MB). Otherwise saves WebM.</span></div></button>
+      <button class="export-opt" id="exportMp4"><div class="eo-icon eo-primary">MP4</div><div class="eo-text"><strong>MP4 video · H.264 <span class="exp-badge">Experimental</span></strong><span>Optional ffmpeg.wasm library (~30 MB one-time load) transcodes to H.264. Video file size depends on your duration + quality, not on that library.</span></div></button>
       <button class="export-opt" id="exportWebm"><div class="eo-icon">WEBM</div><div class="eo-text"><strong>WebM video</strong><span>Animated clip with audio</span></div></button>
       <button class="export-opt" id="exportWebmA"><div class="eo-icon eo-alpha">WEBM</div><div class="eo-text"><strong>Transparent WebM*</strong><span>Advanced · alpha if browser supports it</span></div></button>
     </div>
