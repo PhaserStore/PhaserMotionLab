@@ -101,21 +101,84 @@
   // Event-only effects: short timeline events, not sustained toggles.
   // Reference-style hits — brief signal interruptions rather than
   // permanent visual effects.
+  //
+  // Grouped for UI display. Each event has a stable key, human label,
+  // default duration, and a `group` tag ("core" | "signal" | "motion" |
+  // "overlay"). New events (Micro Jitter through Coordinate Shift) are
+  // added to give a richer micrographic vocabulary.
   const FX_EVENTS = [
-    { key: "focusSnap",      label: "Focus Snap",       defDur: 0.20 },
-    { key: "signalInterrupt",label: "Signal Interrupt", defDur: 0.10 },
-    { key: "frameHold",      label: "Frame Hold",       defDur: 0.16 },
-    { key: "rgbSpike",       label: "RGB Spike",        defDur: 0.12 },
-    { key: "hardCutEvent",   label: "Hard Cut Event",   defDur: 0.08 },
-    { key: "radarSweep",     label: "Radar Sweep",      defDur: 1.50 },
-    { key: "scanRevealEvent",label: "Scan Reveal",      defDur: 0.90 },
-    { key: "coordBlinkEvt",  label: "Coordinate Blink", defDur: 0.30 },
-    { key: "dataBreakEvent", label: "Data Break",       defDur: 0.18 },
-    { key: "pathEnergize",   label: "Path Energize",    defDur: 1.20 },
-    { key: "layerSwap",      label: "Layer Swap",       defDur: 0.10 },
-    { key: "textReplace",    label: "Text Replace",     defDur: 0.30 },
+    // --- CORE 12 (kept from v5) ---
+    { key: "focusSnap",       label: "Focus Snap",       defDur: 0.20, group: "core" },
+    { key: "signalInterrupt", label: "Signal Interrupt", defDur: 0.10, group: "core" },
+    { key: "frameHold",       label: "Frame Hold",       defDur: 0.16, group: "core" },
+    { key: "rgbSpike",        label: "RGB Spike",        defDur: 0.12, group: "core" },
+    { key: "hardCutEvent",    label: "Hard Cut Event",   defDur: 0.08, group: "core" },
+    { key: "radarSweep",      label: "Radar Sweep",      defDur: 1.50, group: "core" },
+    { key: "scanRevealEvent", label: "Scan Reveal",      defDur: 0.90, group: "core" },
+    { key: "coordBlinkEvt",   label: "Coordinate Blink", defDur: 0.30, group: "core" },
+    { key: "dataBreakEvent",  label: "Data Break",       defDur: 0.18, group: "core" },
+    { key: "pathEnergize",    label: "Path Energize",    defDur: 1.20, group: "core" },
+    { key: "layerSwap",       label: "Layer Swap",       defDur: 0.10, group: "core" },
+    { key: "textReplace",     label: "Text Replace",     defDur: 0.30, group: "core" },
+    // --- 20 NEW micrographic presets ---
+    { key: "microJitter",     label: "Micro Jitter",     defDur: 0.30, group: "motion" },
+    { key: "hudPulse",        label: "HUD Pulse",        defDur: 0.40, group: "overlay" },
+    { key: "gridFlash",       label: "Grid Flash",       defDur: 0.20, group: "overlay" },
+    { key: "terminalBlink",   label: "Terminal Blink",   defDur: 0.35, group: "signal" },
+    { key: "signalDrop",      label: "Signal Drop",      defDur: 0.18, group: "signal" },
+    { key: "magneticSnap",    label: "Magnetic Snap",    defDur: 0.15, group: "motion" },
+    { key: "phaseShift",      label: "Phase Shift",      defDur: 0.50, group: "signal" },
+    { key: "dataScramble",    label: "Data Scramble",    defDur: 0.30, group: "signal" },
+    { key: "lineTrace",       label: "Line Trace",       defDur: 1.20, group: "overlay" },
+    { key: "vectorLock",      label: "Vector Lock",      defDur: 0.25, group: "motion" },
+    { key: "targetPing",      label: "Target Ping",      defDur: 0.60, group: "overlay" },
+    { key: "frequencyJump",   label: "Frequency Jump",   defDur: 0.25, group: "signal" },
+    { key: "waveformBurst",   label: "Waveform Burst",   defDur: 0.35, group: "overlay" },
+    { key: "microZoomPop",    label: "Micro Zoom Pop",   defDur: 0.20, group: "motion" },
+    { key: "digitalTear",     label: "Digital Tear",     defDur: 0.18, group: "signal" },
+    { key: "syncFlash",       label: "Sync Flash",       defDur: 0.08, group: "signal" },
+    { key: "scanlineSurge",   label: "Scanline Surge",   defDur: 0.60, group: "overlay" },
+    { key: "noiseGate",       label: "Noise Gate",       defDur: 0.30, group: "signal" },
+    { key: "ghostFrame",      label: "Ghost Frame",      defDur: 0.25, group: "signal" },
+    { key: "coordShift",      label: "Coordinate Shift", defDur: 0.30, group: "motion" },
   ];
   const FX_EVENT_KEYS = new Set(FX_EVENTS.map((f) => f.key));
+  const FX_EVENT_GROUPS = [
+    { id: "core",    label: "Core" },
+    { id: "signal",  label: "Signal / Glitch" },
+    { id: "motion",  label: "Motion" },
+    { id: "overlay", label: "Overlay / HUD" },
+  ];
+
+  // Per-event default parameters. Kept minimal: intensity is the universal
+  // strength dial (0-100), other params are per-event where meaningful.
+  // The event handler in EVENT_EFFECTS reads these off the second arg.
+  function defaultParamsFor(key) {
+    const base = { intensity: 50, opacityMix: 100 };
+    switch (key) {
+      case "microJitter":   return { ...base, intensity: 40 };
+      case "hudPulse":      return { ...base, intensity: 60 };
+      case "digitalTear":   return { ...base, intensity: 55, direction: 0 };
+      case "targetPing":    return { ...base, intensity: 60 };
+      case "microZoomPop":  return { ...base, intensity: 40 };
+      case "magneticSnap":  return { ...base, intensity: 60, direction: 0 };
+      case "coordShift":    return { ...base, intensity: 45, direction: 0 };
+      case "phaseShift":    return { ...base, intensity: 50 };
+      case "waveformBurst": return { ...base, intensity: 55 };
+      case "lineTrace":     return { ...base, intensity: 70 };
+      case "signalDrop":    return { ...base, intensity: 65 };
+      case "dataScramble":  return { ...base, intensity: 55 };
+      case "noiseGate":     return { ...base, intensity: 50 };
+      case "ghostFrame":    return { ...base, intensity: 50 };
+      case "syncFlash":     return { ...base, intensity: 70 };
+      case "scanlineSurge": return { ...base, intensity: 55 };
+      case "gridFlash":     return { ...base, intensity: 60 };
+      case "terminalBlink": return { ...base, intensity: 55 };
+      case "frequencyJump": return { ...base, intensity: 65 };
+      case "vectorLock":    return { ...base, intensity: 50 };
+      default: return { ...base };
+    }
+  }
 
   /* ---------------- PRESETS (public names, no private refs) ----------------
      fx: effect keys. patch: scene params. transform stays off unless the
@@ -427,36 +490,45 @@
     el.layerLock.textContent = selectedLayer.locked ? "Unlock" : "Lock";
     el.layerLock.classList.toggle("active", selectedLayer.locked);
     el.allowTransform.checked = selectedLayer.allowTransform;
-    // fx toggles
+    // Legacy sustained-fx toggle grid — kept in the DOM for backward
+    // compatibility (AI Director / presets still write to layer.fx), but
+    // hidden from the primary UI. See CSS `.fx-toggle-grid { display:none }`.
     el.fxToggleGrid.innerHTML = "";
     FX_LIBRARY.forEach((fx) => {
       const isT = FX_TRANSFORM.has(fx.key);
       const b = document.createElement("button");
-      b.className = "fx-toggle" + (selectedLayer.fx.includes(fx.key) ? " on" : "") + (isT ? " fx-transform" : "") + (isT && selectedLayer.allowTransform ? " enabled" : "");
+      b.className = "fx-toggle" + (selectedLayer.fx.includes(fx.key) ? " on" : "") + (isT ? " fx-transform" : "");
       b.innerHTML = `<span class="fx-dot"></span>${fx.label}`;
-      b.title = isT ? "Transform effect — needs 'Allow transform motion'" : "";
       b.addEventListener("click", () => {
         const i = selectedLayer.fx.indexOf(fx.key);
         if (i >= 0) selectedLayer.fx.splice(i, 1); else selectedLayer.fx.push(fx.key);
-        b.classList.toggle("on");
-        renderTimeline();
+        b.classList.toggle("on"); renderTimeline();
         if (selectedLayer.fx.length && !STATE.playing) startPlayback(); else if (!selectedLayer.fx.length) paintIfPaused();
       });
       el.fxToggleGrid.appendChild(b);
     });
-    // event-clip buttons
+    // ---- PRIMARY UI: Event Clip grid, grouped by category ----
     if (el.fxEventGrid) {
       el.fxEventGrid.innerHTML = "";
-      FX_EVENTS.forEach((fx) => {
-        const b = document.createElement("button");
-        b.className = "fx-event";
-        b.innerHTML = `<span class="fx-dot"></span>${fx.label}`;
-        b.title = `Add a ${fx.label} event clip at the current time (${fx.defDur.toFixed(2)}s)`;
-        b.addEventListener("click", () => {
-          const c = createEventClip(fx.key, selectedLayer);
-          if (c) { toast(`+ ${fx.label} @ ${(selectedLayer.start + c.start).toFixed(2)}s`); startPlayback(); }
+      FX_EVENT_GROUPS.forEach((grp) => {
+        const events = FX_EVENTS.filter((e) => e.group === grp.id);
+        if (!events.length) return;
+        const hd = document.createElement("div");
+        hd.className = "fx-event-group-hd"; hd.textContent = grp.label;
+        el.fxEventGrid.appendChild(hd);
+        const wrap = document.createElement("div"); wrap.className = "fx-event-grid-inner";
+        events.forEach((fx) => {
+          const b = document.createElement("button");
+          b.className = "fx-event";
+          b.innerHTML = `<span class="fx-dot"></span>${fx.label}`;
+          b.title = `Add a ${fx.label} event clip at the playhead (default ${fx.defDur.toFixed(2)}s)`;
+          b.addEventListener("click", () => {
+            const c = createEventClip(fx.key, selectedLayer);
+            if (c) { toast(`+ ${fx.label} @ ${(selectedLayer.start + c.start).toFixed(2)}s`); startPlayback(); selectEventClip(selectedLayer, c); }
+          });
+          wrap.appendChild(b);
         });
-        el.fxEventGrid.appendChild(b);
+        el.fxEventGrid.appendChild(wrap);
       });
     }
     if (isSvg) { el.colorNote.hidden = !selectedLayer.complex; }
@@ -491,6 +563,24 @@
   function tfFill() { if (!selectedLayer) return; const A = STATE.format, L = selectedLayer; const fill = Math.max(A.w / L.natW, A.h / L.natH); L.transform.wPct = (L.natW * fill / A.w) * 100; L.transform.hPct = (L.natH * fill / A.h) * 100; L.transform.cx = 0; L.transform.cy = 0; renderInspector(); updateSelectionBox(); paintIfPaused(); }
   function tfOriginal() { if (!selectedLayer) return; const A = STATE.format, L = selectedLayer; L.transform.wPct = (L.natW / A.w) * 100; L.transform.hPct = (L.natH / A.h) * 100; L.transform.cx = 0; L.transform.cy = 0; renderInspector(); updateSelectionBox(); paintIfPaused(); }
   function tfReset() { if (!selectedLayer) return; const A = STATE.format, L = selectedLayer; const fit = Math.min(A.w / L.natW, A.h / L.natH); L.transform = { cx: 0, cy: 0, wPct: (L.natW * fit / A.w) * 100, hPct: (L.natH * fit / A.h) * 100, rot: 0, opacity: 100 }; renderInspector(); updateSelectionBox(); paintIfPaused(); }
+
+  /* ---------------- ALIGNMENT ----------------
+     cx / cy are stored as % offset from canvas center. wPct / hPct are
+     % of canvas size. So layer left edge sits at cx - wPct/2 (relative to
+     center, in %) and canvas left edge is at -50. Simple algebra.
+     Multi-layer distribute is designed for a future multi-select mode;
+     for now with a single selection it centers the layer on that axis. */
+  function alignLeft()   { if (!selectedLayer) return notice(); selectedLayer.transform.cx = (selectedLayer.transform.wPct - 100) / 2; postAlign(); }
+  function alignCenterH(){ if (!selectedLayer) return notice(); selectedLayer.transform.cx = 0; postAlign(); }
+  function alignRight()  { if (!selectedLayer) return notice(); selectedLayer.transform.cx = (100 - selectedLayer.transform.wPct) / 2; postAlign(); }
+  function alignTop()    { if (!selectedLayer) return notice(); selectedLayer.transform.cy = (selectedLayer.transform.hPct - 100) / 2; postAlign(); }
+  function alignMiddle() { if (!selectedLayer) return notice(); selectedLayer.transform.cy = 0; postAlign(); }
+  function alignBottom() { if (!selectedLayer) return notice(); selectedLayer.transform.cy = (100 - selectedLayer.transform.hPct) / 2; postAlign(); }
+  function centerToCanvas() { if (!selectedLayer) return notice(); selectedLayer.transform.cx = 0; selectedLayer.transform.cy = 0; postAlign(); }
+  function distributeH() { if (!selectedLayer) return notice(); selectedLayer.transform.cx = 0; postAlign(); }
+  function distributeV() { if (!selectedLayer) return notice(); selectedLayer.transform.cy = 0; postAlign(); }
+  function postAlign() { renderInspector(); updateSelectionBox(); paintIfPaused(); }
+  function notice() { toast("Select a layer first"); }
 
   /* ---------------- COLOR EDITING ---------------- */
   const COLOR_TARGET = "path, rect, circle, ellipse, line, polyline, polygon, text, tspan";
@@ -561,7 +651,7 @@
       track.appendChild(clip);
       // event clips
       layer.clips.forEach((c) => {
-        const ec = document.createElement("div"); ec.className = "tl-clip event"; ec.dataset.eid = c.id;
+        const ec = document.createElement("div"); ec.className = "tl-clip event" + (c.enabled === false ? " disabled" : "") + (selectedEventClip && selectedEventClip.ec === c ? " selected" : ""); ec.dataset.eid = c.id;
         ec.style.left = ((layer.start + c.start) * TL.pxPerSec) + "px";
         ec.style.width = Math.max(6, c.duration * TL.pxPerSec) + "px";
         const def = FX_EVENTS.find((f) => f.key === c.fxKey);
@@ -617,7 +707,7 @@
     if (TL.mode === "move") layer.start = clamp(o.start + dx, 0, Math.max(0, D - layer.duration));
     else if (TL.mode === "trim-left") { const ns = clamp(o.start + dx, 0, o.start + o.duration - 0.2); layer.duration = o.duration - (ns - o.start); layer.start = ns; }
     else if (TL.mode === "trim-right") layer.duration = clamp(o.duration + dx, 0.2, D - layer.start);
-    if (STATE.snapBeat) layer.start = snapTimeToBeat(layer.start);
+    layer.start = applySnap(layer.start);
     const c = TL.dragClip.clip; c.style.left = (layer.start * TL.pxPerSec) + "px"; c.style.width = Math.max(14, layer.duration * TL.pxPerSec) + "px";
   }
   function endClipDrag() { if (TL.dragClip) TL.dragClip.clip.classList.remove("dragging"); TL.dragClip = null; document.removeEventListener("mousemove", onClipDrag); document.removeEventListener("mouseup", endClipDrag); }
@@ -635,7 +725,7 @@
     if (D.mode === "move") D.ec.start = clamp(D.orig.start + dx, 0, Math.max(0, layerDur - D.ec.duration));
     else if (D.mode === "trim-left") { const ns = clamp(D.orig.start + dx, 0, D.orig.start + D.orig.duration - 0.02); D.ec.duration = D.orig.duration - (ns - D.orig.start); D.ec.start = ns; }
     else if (D.mode === "trim-right") D.ec.duration = clamp(D.orig.duration + dx, 0.02, layerDur - D.ec.start);
-    if (STATE.snapBeat) D.ec.start = snapTimeToBeat(D.ec.start + D.layer.start) - D.layer.start;
+    D.ec.start = applySnap(D.ec.start + D.layer.start) - D.layer.start;
     D.node.style.left = ((D.layer.start + D.ec.start) * TL.pxPerSec) + "px";
     D.node.style.width = Math.max(6, D.ec.duration * TL.pxPerSec) + "px";
     renderClipInspector();
@@ -655,7 +745,7 @@
     if (D.mode === "move") D.ac.start = clamp(D.orig.start + dx, 0, Math.max(0, dur - D.ac.duration));
     else if (D.mode === "trim-left") { const ns = clamp(D.orig.start + dx, 0, D.orig.start + D.orig.duration - 0.05); D.ac.duration = D.orig.duration - (ns - D.orig.start); D.ac.start = ns; }
     else if (D.mode === "trim-right") D.ac.duration = clamp(D.orig.duration + dx, 0.05, dur - D.ac.start);
-    if (STATE.snapBeat) D.ac.start = snapTimeToBeat(D.ac.start);
+    D.ac.start = applySnap(D.ac.start);
     D.node.style.left = (D.ac.start * TL.pxPerSec) + "px";
     D.node.style.width = Math.max(14, D.ac.duration * TL.pxPerSec) + "px";
     renderClipInspector();
@@ -679,6 +769,11 @@
     const hasAny = hasEvt || hasAud;
     if (!el.clipEmpty || !el.clipBody) return;
     el.clipEmpty.hidden = hasAny; el.clipBody.hidden = !hasAny;
+    // Params rows visibility
+    const paramsHost = document.getElementById("clipParams");
+    if (paramsHost) paramsHost.innerHTML = "";
+    // Enable-toggle button label
+    const enBtn = document.getElementById("clipEnable");
     if (!hasAny) return;
     let type = "—", track = "—", start = 0, dur = 0, vol = 100, muted = false;
     if (hasEvt) {
@@ -687,6 +782,24 @@
       track = "Visual · " + selectedEventClip.layer.name;
       start = selectedEventClip.ec.start; dur = selectedEventClip.ec.duration;
       el.clipVolRow.style.display = "none";
+      // Ensure defaults exist for backward-compat clips
+      if (selectedEventClip.ec.enabled === undefined) selectedEventClip.ec.enabled = true;
+      if (!selectedEventClip.ec.params) selectedEventClip.ec.params = defaultParamsFor(selectedEventClip.ec.fxKey);
+      // Enable/disable button
+      if (enBtn) { enBtn.style.display = ""; enBtn.textContent = selectedEventClip.ec.enabled ? "Disable clip" : "Enable clip"; enBtn.classList.toggle("danger", !selectedEventClip.ec.enabled); }
+      // Build params UI (intensity + opacityMix + optional direction)
+      if (paramsHost) {
+        const p = selectedEventClip.ec.params;
+        paramsHost.appendChild(makeParamSlider("intensity", "Intensity", p.intensity, 0, 100, (v) => { p.intensity = v; paintIfPaused(); }));
+        paramsHost.appendChild(makeParamSlider("opacityMix", "Opacity mix", p.opacityMix ?? 100, 0, 100, (v) => { p.opacityMix = v; paintIfPaused(); }));
+        if (p.direction !== undefined) {
+          const row = document.createElement("div"); row.className = "prop-row";
+          row.innerHTML = `<span class="prop-label">Direction</span>`;
+          const btns = document.createElement("div"); btns.className = "seg-mini";
+          [["0","→"],["1","←"]].forEach(([v,l]) => { const b=document.createElement("button"); b.className="mini-btn"+(String(p.direction)===v?" active":""); b.textContent=l; b.addEventListener("click",()=>{ p.direction=+v; renderClipInspector(); paintIfPaused(); }); btns.appendChild(b); });
+          row.appendChild(btns); paramsHost.appendChild(row);
+        }
+      }
     } else if (hasAud) {
       const s = sounds.find((x) => x.id === selectedAudioClip.soundId);
       type = "Audio · " + (s ? s.name : "sound");
@@ -697,12 +810,20 @@
       const csvi = document.getElementById("ctl-cv"); if (csvi) csvi.value = vol;
       const cvvi = document.getElementById("val-cv"); if (cvvi) cvvi.textContent = vol;
       el.clipMute.textContent = muted ? "Unmute" : "Mute";
+      if (enBtn) enBtn.style.display = "none";
     }
     el.clipType.textContent = type; el.clipTrack.textContent = track;
     setSlider("cs", start); setSlider("cd", dur);
     // dynamic max on start/dur
     const csEl = document.getElementById("ctl-cs"); if (csEl) csEl.max = STATE.duration;
     const cdEl = document.getElementById("ctl-cd"); if (cdEl) cdEl.max = STATE.duration;
+  }
+
+  function makeParamSlider(key, label, value, min, max, onInput) {
+    const wrap = document.createElement("div"); wrap.className = "control";
+    wrap.innerHTML = `<span class="ctl-label">${label}</span><span class="ctl-val" id="pv-${key}">${Math.round(value)}</span><input type="range" min="${min}" max="${max}" step="1" value="${value}" data-p="${key}">`;
+    wrap.querySelector("input").addEventListener("input", (e) => { const v = +e.target.value; wrap.querySelector("#pv-" + key).textContent = Math.round(v); onInput(v); });
+    return wrap;
   }
   function setDuration(sec) { STATE.duration = sec; layers.forEach((l) => { l.start = clamp(l.start, 0, sec); l.duration = clamp(l.duration, 0.2, sec - l.start); }); EXPORTOPTS.duration = sec; syncDurationUI(); renderTimeline(); }
   function syncDurationUI() { [el.durSegTl, document.getElementById("durSeg")].forEach((seg) => { if (!seg) return; seg.querySelectorAll("[data-dur]").forEach((b) => b.classList.toggle("active", b.dataset.dur == STATE.duration || (b.dataset.dur === "custom" && ![4, 8, 15].includes(STATE.duration)))); }); }
@@ -946,8 +1067,8 @@
     let start = startTime != null ? startTime : STATE.time;
     // clamp to layer window
     start = clamp(start - layer.start, 0, Math.max(0, layer.duration - dur));
-    if (STATE.snapBeat && audio.beatTimes && audio.beatTimes.length > 2) start = snapTimeToBeat(start + layer.start) - layer.start;
-    const clip = { id: ++idSeq, fxKey, start, duration: dur };
+    start = applySnap(start + layer.start) - layer.start;
+    const clip = { id: ++idSeq, fxKey, start, duration: dur, enabled: true, params: defaultParamsFor(fxKey) };
     layer.clips.push(clip);
     // optional SFX attachment
     if (STATE.attachSfx && STATE.attachSfxId) {
@@ -965,15 +1086,19 @@
     // relative to layer start
     const relStart = clamp(sceneTime - target.start, 0, Math.max(0, target.duration - 0.05));
     const def = FX_EVENTS.find((f) => f.key === key);
-    target.clips.push({ id: ++idSeq, fxKey: key, start: relStart, duration: def.defDur });
+    target.clips.push({ id: ++idSeq, fxKey: key, start: relStart, duration: def.defDur, enabled: true, params: defaultParamsFor(key) });
     renderTimeline();
   }
   function snapTimeToBeat(t) {
     if (!audio.beatTimes || audio.beatTimes.length < 2) return t;
-    // convert playback-time-of-beat to scene time is not exact (we only
-    // have performance.now() timestamps). Fall back to nearest 60/BPM
-    // grid from bpm estimate.
     if (STATE.bpm) { const step = 60 / STATE.bpm; return Math.round(t / step) * step; }
+    return t;
+  }
+  function snapTimeToFrame(t) { const fps = STATE.fps || 30; return Math.round(t * fps) / fps; }
+  // Apply whichever snap modes are enabled. Called by clip drag handlers.
+  function applySnap(t) {
+    if (STATE.snapBeat) t = snapTimeToBeat(t);
+    if (STATE.snapFrame) t = snapTimeToFrame(t);
     return t;
   }
 
@@ -1012,30 +1137,72 @@
      ============================================================ */
   const EVENT_EFFECTS = {
     // Focus Snap: blur ramps up then snaps sharp on release.
-    focusSnap(p, sig) { const b = p < 0.6 ? p / 0.6 : (1 - p) / 0.4; return { blur: 6 * b, glow: 10 * b, opacity: 0.85 + 0.15 * b }; },
+    focusSnap(p, sig, params) { const k = (params?.intensity ?? 50) / 50; const b = p < 0.6 ? p / 0.6 : (1 - p) / 0.4; return { blur: 6 * b * k, glow: 10 * b * k, opacity: 0.85 + 0.15 * b }; },
     // Signal Interrupt: 1-3 frame opacity dropout with brief RGB kick.
-    signalInterrupt(p, sig) { const on = p < 0.85; return { opacity: on ? 0.02 : 1, rgb: on ? 6 : 0, flash: on ? "#000" : null, flashA: on ? 0.15 : 0 }; },
+    signalInterrupt(p, sig, params) { const on = p < 0.85; const k = (params?.intensity ?? 50) / 50; return { opacity: on ? 0.02 : 1, rgb: on ? 6 * k : 0, flash: on ? "#000" : null, flashA: on ? 0.15 * k : 0 }; },
     // Frame Hold: freeze (returns freeze:true; render loop keeps the previous frame).
     frameHold(p, sig) { return { freeze: true, blur: 0.4 }; },
     // RGB Spike: strong channel offset for a short window.
-    rgbSpike(p, sig) { const k = 1 - Math.abs(p - 0.5) * 2; return { rgb: 14 * k }; },
+    rgbSpike(p, sig, params) { const k = (params?.intensity ?? 50) / 50; const t = 1 - Math.abs(p - 0.5) * 2; return { rgb: 14 * t * k }; },
     // Hard Cut event: single flash.
-    hardCutEvent(p, sig) { return { flash: p < 0.5 ? "#fff" : "#000", flashA: 0.5 * (1 - p) }; },
+    hardCutEvent(p, sig, params) { const k = (params?.intensity ?? 50) / 50; return { flash: p < 0.5 ? "#fff" : "#000", flashA: 0.5 * (1 - p) * k }; },
     // Radar Sweep: horizontal scan bar (returns radarBar 0..1 as position).
-    radarSweep(p, sig) { return { radarBar: p, scanBoost: 0.3 + sig.high * 0.4 }; },
+    radarSweep(p, sig, params) { const k = (params?.intensity ?? 50) / 50; return { radarBar: p, scanBoost: (0.3 + sig.high * 0.4) * k }; },
     // Scan Reveal event: mask sweeps across the layer.
     scanRevealEvent(p, sig) { return { scanMask: p, opacityWave: 0.9 + 0.1 * Math.sin(p * 20) }; },
     // Coordinate Blink event: HUD flicker burst.
     coordBlinkEvt(p, sig) { return { hud: true, hudFlicker: 0.3 + 0.7 * (Math.random() < 0.4 ? 0 : 1) }; },
     // Data Break event: short breakup.
-    dataBreakEvent(p, sig) { return { breakup: 0.7 + sig.peak * 0.3, opacity: Math.random() < 0.25 ? 0.35 : 1, rgb: 4 }; },
+    dataBreakEvent(p, sig, params) { const k = (params?.intensity ?? 50) / 50; return { breakup: (0.7 + sig.peak * 0.3) * k, opacity: Math.random() < 0.25 ? 0.35 : 1, rgb: 4 * k }; },
     // Path Energize: stroke-dash flow across the layer's paths.
-    pathEnergize(p, sig) { return { pathDraw: p, glow: 8 + 12 * (1 - Math.abs(p - 0.5) * 2) }; },
+    pathEnergize(p, sig, params) { const k = (params?.intensity ?? 50) / 50; return { pathDraw: p, glow: (8 + 12 * (1 - Math.abs(p - 0.5) * 2)) * k }; },
     // Layer Swap: brief opacity drop plus color invert-like glow.
     layerSwap(p, sig) { return { opacity: p < 0.5 ? 0.2 : 1, glow: 20 * (1 - p) }; },
     // Text Replace: opacity blink (text swap handled at render if the
     // layer contains <text>). Kept safe if not.
     textReplace(p, sig) { return { textSwap: p, opacity: (p < 0.15 || p > 0.85) ? 1 : 0.65 }; },
+
+    // ---- 20 new micrographic events ----
+    // Micro Jitter: rapid tiny position jitter (px in artboard %-units, scaled small).
+    microJitter(p, sig, params) { const k = (params?.intensity ?? 50) / 50; const a = 1.4 * k; return { tx: (Math.random() - 0.5) * a, ty: (Math.random() - 0.5) * a }; },
+    // HUD Pulse: bright HUD frame that pulses with a triangle envelope.
+    hudPulse(p, sig, params) { const k = (params?.intensity ?? 50) / 50; const env = 1 - Math.abs(p - 0.5) * 2; return { hud: true, hudFlicker: 0.6 + 0.4 * env, glow: 8 * env * k }; },
+    // Grid Flash: brief scanline burst filling the canvas.
+    gridFlash(p, sig, params) { const k = (params?.intensity ?? 50) / 50; return { scanBoost: 0.9 * k, flash: "#fff", flashA: 0.12 * k * (1 - p) }; },
+    // Terminal Blink: on/off opacity toggle at 8Hz.
+    terminalBlink(p, sig, params) { const k = (params?.intensity ?? 50) / 50; const on = Math.floor(p * 8) % 2 === 0; return { opacity: on ? 1 : (1 - 0.85 * k) }; },
+    // Signal Drop: hard opacity cut like a bad feed, plus small RGB kick.
+    signalDrop(p, sig, params) { const k = (params?.intensity ?? 50) / 50; const drop = p > 0.2 && p < 0.7; return { opacity: drop ? (1 - 0.9 * k) : 1, rgb: drop ? 4 * k : 0, flash: drop ? "#000" : null, flashA: drop ? 0.08 * k : 0 }; },
+    // Magnetic Snap: quick offset then springs back to center.
+    magneticSnap(p, sig, params) { const k = (params?.intensity ?? 50) / 50; const dir = (params?.direction ?? 0) === 0 ? 1 : -1; const amt = (1 - p) * 4 * k * dir; return { tx: amt }; },
+    // Phase Shift: RGB channel wobble suggesting an out-of-phase signal.
+    phaseShift(p, sig, params) { const k = (params?.intensity ?? 50) / 50; return { rgb: 6 * Math.abs(Math.sin(p * Math.PI * 3)) * k }; },
+    // Data Scramble: heavy breakup + noise burst.
+    dataScramble(p, sig, params) { const k = (params?.intensity ?? 50) / 50; return { breakup: 0.9 * k, rgb: 3 * k, opacity: Math.random() < 0.15 ? 0.6 : 1 }; },
+    // Line Trace: draws SVG strokes progressively (path-draw event).
+    lineTrace(p, sig, params) { const k = (params?.intensity ?? 50) / 50; return { pathDraw: p, glow: 6 * k }; },
+    // Vector Lock: brief scale lock — small shrink then return, plus HUD flash.
+    vectorLock(p, sig, params) { const k = (params?.intensity ?? 50) / 50; const shrink = 1 - 0.06 * k * (1 - Math.abs(p - 0.5) * 2); return { scaleSafe: shrink, hud: true, hudFlicker: 1 }; },
+    // Target Ping: radial pulse from the layer center — rendered as glow ring.
+    targetPing(p, sig, params) { const k = (params?.intensity ?? 50) / 50; return { targetPing: p, glow: 6 * k * (1 - p) }; },
+    // Frequency Jump: fast opacity spike train (strobe-lite).
+    frequencyJump(p, sig, params) { const k = (params?.intensity ?? 50) / 50; const on = Math.floor(p * 14) % 2 === 0; return { opacity: on ? 1 : (1 - 0.7 * k), rgb: on ? 0 : 2 * k }; },
+    // Waveform Burst: audio-reactive glow tied to bass/high.
+    waveformBurst(p, sig, params) { const k = (params?.intensity ?? 50) / 50; return { glow: (6 + sig.bass * 18 + sig.high * 8) * k * (1 - p) }; },
+    // Micro Zoom Pop: subtle scale bump (2-3%).
+    microZoomPop(p, sig, params) { const k = (params?.intensity ?? 50) / 50; const bump = 1 + 0.025 * k * (1 - Math.abs(p - 0.5) * 2); return { scaleSafe: bump }; },
+    // Digital Tear: horizontal slice offset — signaled to renderer via `tear`.
+    digitalTear(p, sig, params) { const k = (params?.intensity ?? 50) / 50; return { tear: k * (1 - Math.abs(p - 0.5) * 2), rgb: 2 * k }; },
+    // Sync Flash: single frame full-canvas white flash.
+    syncFlash(p, sig, params) { const k = (params?.intensity ?? 50) / 50; return { flash: "#fff", flashA: 0.6 * k * (1 - p) }; },
+    // Scanline Surge: strong scanline overlay during clip.
+    scanlineSurge(p, sig, params) { const k = (params?.intensity ?? 50) / 50; return { scanBoost: 0.7 * k * (0.6 + 0.4 * Math.sin(p * 8)) }; },
+    // Noise Gate: opacity is gated (on/off) based on audio noise / random.
+    noiseGate(p, sig, params) { const k = (params?.intensity ?? 50) / 50; const gate = Math.random() < 0.35; return { opacity: gate ? (1 - 0.6 * k) : 1 }; },
+    // Ghost Frame: brief double exposure (rendered via layerSwap channel).
+    ghostFrame(p, sig, params) { const k = (params?.intensity ?? 50) / 50; return { ghost: 0.5 * k * (1 - Math.abs(p - 0.5) * 2), opacity: 1 }; },
+    // Coordinate Shift: small stepped position shift with HUD readout blink.
+    coordShift(p, sig, params) { const k = (params?.intensity ?? 50) / 50; const dir = (params?.direction ?? 0) === 0 ? 1 : -1; return { tx: 2 * k * dir * Math.sign(Math.sin(p * Math.PI * 2)), hud: true, hudFlicker: 0.8 }; },
   };
 
   // For each event key, which live layer field it modifies (used to
@@ -1044,6 +1211,7 @@
     if (!layer.clips || !layer.clips.length) return [];
     const layerStart = layer.start;
     return layer.clips.filter((c) => {
+      if (c.enabled === false) return false; // disabled clip: still visible on timeline, no effect
       const s = layerStart + c.start, e = s + c.duration;
       return t >= s && t <= e;
     }).map((c) => ({ c, p: clamp01((t - (layerStart + c.start)) / Math.max(0.001, c.duration)) }));
@@ -1130,8 +1298,10 @@
       const active = activeEventClipsAt(layer, sceneTime);
       for (const { c, p } of active) {
         const mod = EVENT_EFFECTS[c.fxKey]; if (!mod) continue;
-        const d = mod(p, sig) || {};
-        if (d.opacity !== undefined) opacity *= d.opacity;
+        const d = mod(p, sig, c.params) || {};
+        // opacity mix: params.opacityMix (0-100) scales how much of the event's opacity effect is felt.
+        const mix = c.params && c.params.opacityMix !== undefined ? c.params.opacityMix / 100 : 1;
+        if (d.opacity !== undefined) { const eff = 1 - (1 - d.opacity) * mix; opacity *= eff; }
         if (d.opacityWave !== undefined) opacity *= d.opacityWave;
         if (d.blur) blur += d.blur;
         if (d.rgb) rgb = Math.max(rgb, d.rgb);
@@ -1145,6 +1315,17 @@
         if (d.radarBar !== undefined) radarBar = d.radarBar;
         if (d.scanMask !== undefined) scanMask = d.scanMask;
         if (d.freeze) freeze = true;
+        // Event clips MAY move / scale / rotate the layer briefly even
+        // when allowTransform is off (they're designed as short micro-
+        // motions).
+        if (d.tx) tx += d.tx;
+        if (d.ty) ty += d.ty;
+        if (d.rot) rot += d.rot;
+        if (d.scaleSafe !== undefined) extraScale *= d.scaleSafe;
+        // New per-layer channels used by drawExportFrame:
+        if (d.tear !== undefined) layer._tear = d.tear; else if (layer._tear !== undefined) layer._tear = 0;
+        if (d.targetPing !== undefined) layer._targetPing = d.targetPing; else if (layer._targetPing !== undefined) layer._targetPing = null;
+        if (d.ghost !== undefined) layer._ghost = d.ghost; else if (layer._ghost !== undefined) layer._ghost = 0;
       }
     }
     blur += (STATE.blur / 100) * 2;
@@ -1349,7 +1530,7 @@
         // add a unique event per layer at a staggered offset
         const key = evtKeys[i % evtKeys.length], def = FX_EVENTS.find((f) => f.key === key);
         const start = clamp(0.5 + i * 0.6, 0, l.duration - def.defDur);
-        l.clips.push({ id: ++idSeq, fxKey: key, start, duration: def.defDur });
+        l.clips.push({ id: ++idSeq, fxKey: key, start, duration: def.defDur, enabled: true, params: defaultParamsFor(key) });
       });
       renderTimeline();
       ch.push("unique recipes per layer", "staggered starts", `unique event per layer (${layers.length} events created)`);
@@ -1550,8 +1731,9 @@
     const active = activeEventClipsAt(layer, sceneTime);
     for (const { c, p } of active) {
       const mod = EVENT_EFFECTS[c.fxKey]; if (!mod) continue;
-      const d = mod(p, sig) || {};
-      if (d.opacity !== undefined) s.opacity *= d.opacity;
+      const d = mod(p, sig, c.params) || {};
+      const mix = c.params && c.params.opacityMix !== undefined ? c.params.opacityMix / 100 : 1;
+      if (d.opacity !== undefined) { const eff = 1 - (1 - d.opacity) * mix; s.opacity *= eff; }
       if (d.opacityWave !== undefined) s.opacity *= d.opacityWave;
       if (d.blur) s.blur += d.blur;
       if (d.rgb) s.rgb = Math.max(s.rgb, d.rgb);
@@ -1566,6 +1748,15 @@
       if (d.scanMask !== undefined) s.scanMask = d.scanMask;
       if (d.freeze) s.freeze = true;
       if (d.textSwap !== undefined) s.textSwap = d.textSwap;
+      // Events may move / scale / rotate the layer briefly.
+      if (d.tx) s.tx += d.tx;
+      if (d.ty) s.ty += d.ty;
+      if (d.rot) s.rot += d.rot;
+      if (d.scaleSafe !== undefined) s.extraScale *= d.scaleSafe;
+      // New channels for the canvas renderer (drawExportFrame reads these).
+      if (d.tear !== undefined) s.tear = d.tear;
+      if (d.targetPing !== undefined) s.targetPing = d.targetPing;
+      if (d.ghost !== undefined) s.ghost = d.ghost;
       if (c.fxKey === "layerSwap") s.layerSwap = 1 - p;
     }
     s.blur += (STATE.blur / 100) * 2;
@@ -1677,13 +1868,63 @@
         ctx.globalAlpha = a;
       }
 
-      // Main layer draw
-      ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+      // Ghost Frame: soft double-exposure duplicate offset from center.
+      if (s.ghost && s.ghost > 0.02) {
+        const a = ctx.globalAlpha;
+        ctx.globalAlpha = a * 0.55 * s.ghost;
+        ctx.drawImage(img, -dw / 2 + 6 * sx, -dh / 2 + 4 * sy, dw, dh);
+        ctx.globalAlpha = a;
+      }
+
+      // Digital Tear: split the layer horizontally into a few slabs
+      // and offset alternate slabs horizontally.
+      if (s.tear && s.tear > 0.02) {
+        const slabs = 8;
+        const slabH = dh / slabs;
+        const srcSlabH = img.height / slabs;
+        const maxOff = 30 * sx * s.tear;
+        ctx.save();
+        for (let sIdx = 0; sIdx < slabs; sIdx++) {
+          const off = (sIdx % 2 === 0 ? 1 : -1) * maxOff * ((sIdx / slabs) * 2 - 0.5);
+          ctx.drawImage(
+            img,
+            0, sIdx * srcSlabH, img.width, srcSlabH,
+            -dw / 2 + off, -dh / 2 + sIdx * slabH, dw, slabH
+          );
+        }
+        ctx.restore();
+      } else {
+        // Main layer draw (default path; tear replaces it when active)
+        ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+      }
 
       // Reset filter/shadow for post-passes
       ctx.filter = "none";
       ctx.shadowBlur = 0;
       ctx.restore();
+
+      // Target Ping: expanding ring centered on the layer.
+      if (s.targetPing !== undefined && s.targetPing !== null) {
+        const pR = clamp01(s.targetPing);
+        const maxR = Math.max(dw, dh) * 0.6;
+        const r = maxR * pR;
+        const alpha = 1 - pR;
+        ctx.save();
+        ctx.globalAlpha = alpha * 0.8;
+        ctx.strokeStyle = "rgba(156,134,255,1)";
+        ctx.lineWidth = Math.max(1.5, 3 * sx);
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, r, 0, Math.PI * 2);
+        ctx.stroke();
+        // inner faint ring
+        if (r > 6) {
+          ctx.globalAlpha = alpha * 0.35;
+          ctx.beginPath();
+          ctx.arc(centerX, centerY, r * 0.6, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
 
       // Radar sweep beam (event effect): draw a vertical bar sweeping
       // across the layer's bounding rect in artboard coords.
@@ -1869,29 +2110,80 @@
     if (!layers.length) { toast("Add a layer first"); return; }
     if (typeof MediaRecorder === "undefined") { setExportStatus("This browser can't record video — use PNG sequence", "error"); return; }
     const fps = EXPORTOPTS.fps;
-    // wantAlpha only when user *explicitly* clicked the alpha WebM button
-    // (alphaOverride === true), or picked the "Alpha WebM" segmented bg
-    // AND checked transparent stills. WebM VP8/VP9 alpha is unreliable so
-    // we still warn and record with an "alpha.webm" name.
+    const totalDur = EXPORTOPTS.duration;
+    const totalFrames = Math.max(1, Math.round(fps * totalDur));
+    const frameInterval = 1000 / fps;
+    // wantAlpha only when user explicitly requested alpha video
     const wantAlpha = alphaOverride !== undefined ? alphaOverride : (EXPORTOPTS.transparent && EXPORTOPTS.bg === "transparent");
-    // Detect the "black background even though I asked for transparent"
-    // scenario and warn the user before we silently fall back.
     const artboardTransparent = STATE.bgMode === "transparent";
     if (!wantAlpha && (artboardTransparent || EXPORTOPTS.bg === "transparent")) {
       toast("WebM/MP4 don't preserve alpha — using a solid background. Use PNG sequence for real transparency.");
     }
-    setExportStatus(`Recording WebM (${EXPORTOPTS.duration}s @ ${fps}fps)…`, "work");
-    const { W, H, crop } = exportDims(), c = document.createElement("canvas"); c.width = W; c.height = H;
-    const ctx = c.getContext("2d"), imgs = await rasterizeAll();
-    const vStream = c.captureStream(fps); let mixed = vStream;
-    if (EXPORTOPTS.includeAudio && audio.ready && audio.ctx) { try { audio.streamDest = audio.streamDest || audio.ctx.createMediaStreamDestination(); audio.destGain.connect(audio.streamDest); const at = audio.streamDest.stream.getAudioTracks()[0]; if (at) mixed = new MediaStream([...vStream.getVideoTracks(), at]); if (audio.ctx.state === "suspended") await audio.ctx.resume(); audio.el.currentTime = 0; audio.el.play().catch(() => {}); } catch (e) {} }
-    // Pass wantAlpha so the resolver falls back to black instead of null.
+    setExportStatus(`Recording WebM (${totalDur}s @ ${fps}fps)…`, "work");
+    const { W, H, crop } = exportDims();
+    const c = document.createElement("canvas"); c.width = W; c.height = H;
+    const ctx = c.getContext("2d");
+    const imgs = await rasterizeAll();
+    /* DETERMINISTIC CAPTURE PIPELINE
+       Bug we're fixing: prior version used `canvas.captureStream(fps)` +
+       requestAnimationFrame(). rAF is throttled in background tabs and
+       under load, so short event effects (a 0.08s Hard Cut, a 0.2s Focus
+       Snap) got missed by MediaRecorder — the layer rendered correctly
+       to the canvas, but the video track never sampled that frame.
+       Fix: captureStream(0) means "only capture on requestFrame()", so
+       every drawExportFrame call becomes exactly one recorded frame. */
+    const useManualCapture = typeof c.captureStream === "function";
+    const vStream = useManualCapture ? c.captureStream(0) : c.captureStream(fps);
+    const vTrack = vStream.getVideoTracks()[0];
+    const canRequestFrame = vTrack && typeof vTrack.requestFrame === "function";
+    let mixed = vStream;
+    if (EXPORTOPTS.includeAudio && audio.ready && audio.ctx) {
+      try {
+        audio.streamDest = audio.streamDest || audio.ctx.createMediaStreamDestination();
+        audio.destGain.connect(audio.streamDest);
+        const at = audio.streamDest.stream.getAudioTracks()[0];
+        if (at) mixed = new MediaStream([...vStream.getVideoTracks(), at]);
+        if (audio.ctx.state === "suspended") await audio.ctx.resume();
+        audio.el.currentTime = 0;
+        audio.el.play().catch(() => {});
+      } catch (e) {}
+    }
     const bg = resolveExportBg(true, wantAlpha);
-    let rec; try { rec = new MediaRecorder(mixed, { mimeType: pickWebmMime(), videoBitsPerSecond: EXPORTOPTS.quality === "high" ? 12000000 : 16000000 }); } catch (e) { setExportStatus("Recording not supported here — use PNG sequence", "error"); return; }
-    const chunks = []; rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-    rec.onstop = () => { const blob = new Blob(chunks, { type: "video/webm" }); LAST_WEBM_BLOB = blob; downloadBlob(blob, wantAlpha ? baseName("alpha.webm") : baseName("webm")); setExportStatus("Done — WebM saved", "done"); closeSheet(); };
-    const t0 = performance.now(); rec.start();
-    (function rf(now) { const e2 = (now - t0) / 1000; drawExportFrame(ctx, W, H, imgs, e2 % STATE.duration, { bg }, crop); if (e2 < EXPORTOPTS.duration) requestAnimationFrame(rf); else { rec.stop(); if (audio.ready) audio.el.pause(); } })(performance.now());
+    let rec;
+    try {
+      rec = new MediaRecorder(mixed, { mimeType: pickWebmMime(), videoBitsPerSecond: bitrateFor(EXPORTOPTS.quality) });
+    } catch (e) {
+      setExportStatus("Recording not supported here — use PNG sequence", "error");
+      return;
+    }
+    const chunks = [];
+    rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    const stopped = new Promise((r) => { rec.onstop = () => r(); });
+    rec.start();
+    // Render every frame; pace to wall-clock so audio stays in sync.
+    const startWall = performance.now();
+    for (let f = 0; f < totalFrames; f++) {
+      const t = f / fps;
+      await drawExportFrame(ctx, W, H, imgs, t % STATE.duration, { bg }, crop);
+      if (canRequestFrame) vTrack.requestFrame(); // baker: sample THIS canvas state
+      // Pace to real-time so audio keeps sync; also lets browser flush the capture
+      const targetElapsed = (f + 1) * frameInterval;
+      const actual = performance.now() - startWall;
+      const wait = Math.max(2, targetElapsed - actual);
+      await new Promise((r) => setTimeout(r, wait));
+      if (f % Math.max(1, Math.round(fps / 3)) === 0) {
+        setExportStatus(`Recording ${f + 1}/${totalFrames}…`, "work");
+      }
+    }
+    // Give the recorder one more moment to flush the last frames
+    await new Promise((r) => setTimeout(r, Math.max(80, frameInterval * 2)));
+    rec.stop();
+    await stopped;
+    const blob = new Blob(chunks, { type: "video/webm" });
+    LAST_WEBM_BLOB = blob;
+    downloadBlob(blob, wantAlpha ? baseName("alpha.webm") : baseName("webm"));
+    if (audio.ready) audio.el.pause();
+    setExportStatus("Done — WebM saved", "done"); closeSheet();
   }
 
   /* MP4 (H.264) via ffmpeg.wasm — FFMPEG.WASM INTEGRATION POINT
@@ -1899,6 +2191,23 @@
      index.html by default (~30MB). Without them: export WebM + message.
      The MP4 button never crashes the app. */
   let LAST_WEBM_BLOB = null, ffmpegInstance = null;
+
+  // Adaptive bitrate — the old 12/16 Mbps was excessive and produced huge
+  // files. Recommended range for 1080p Instagram content is 5-9 Mbps.
+  function bitrateFor(quality) {
+    if (quality === "ultra") return 9_000_000;
+    if (quality === "2x")    return 14_000_000;
+    return 5_000_000; // "high" default
+  }
+  // Estimated output size (bytes) = bitrate * duration / 8.
+  function estimatedSizeBytes() {
+    return Math.round(bitrateFor(EXPORTOPTS.quality) * EXPORTOPTS.duration / 8);
+  }
+  function humanBytes(n) {
+    if (n < 1024) return n + " B";
+    if (n < 1024*1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / (1024*1024)).toFixed(1) + " MB";
+  }
   async function loadFFmpeg() {
     if (ffmpegInstance) return ffmpegInstance;
     const hasNew = typeof window.FFmpeg !== "undefined" && window.FFmpeg.FFmpeg, hasClassic = typeof window.FFmpeg !== "undefined" && window.FFmpeg.createFFmpeg;
@@ -1909,10 +2218,19 @@
   }
   async function exportMP4() {
     if (!layers.length) { toast("Add a layer first"); return; }
-    setExportStatus("Preparing render…", "work");
-    if (!LAST_WEBM_BLOB) { setExportStatus("Recording source video for MP4…", "work"); await recordWebMForMp4(); if (!LAST_WEBM_BLOB) { setExportStatus("Could not record source video", "error"); return; } }
-    let ff = null; try { ff = await loadFFmpeg(); } catch (e) { ff = null; }
-    if (!ff) { downloadBlob(LAST_WEBM_BLOB, baseName("webm")); setExportStatus("MP4 encoding requires ffmpeg.wasm. Export WebM or PNG sequence now. (Saved WebM; uncomment the ffmpeg tags in index.html to enable MP4.)", "error"); return; }
+    // Always reset the cached WebM source so settings changes (duration,
+    // fps, background, clips, quality) actually take effect. The old code
+    // reused LAST_WEBM_BLOB across exports, producing outdated MP4s.
+    LAST_WEBM_BLOB = null;
+    setExportStatus("Recording source video for MP4…", "work");
+    await recordWebMForMp4();
+    if (!LAST_WEBM_BLOB) { setExportStatus("Could not record source video", "error"); return; }
+    let ff = null; try { ff = await loadFFmpeg(); } catch (e) { console.error("[Phaser] ffmpeg load error:", e); ff = null; }
+    if (!ff) {
+      downloadBlob(LAST_WEBM_BLOB, baseName("webm"));
+      setExportStatus("MP4 is unavailable (ffmpeg.wasm not loaded) — saved WebM instead. Uncomment the ffmpeg script tags in index.html to enable MP4.", "error");
+      return;
+    }
     try {
       setExportStatus("Encoding H.264 MP4…", "work");
       const inName = "in.webm", outName = baseName("mp4"), bytes = new Uint8Array(await LAST_WEBM_BLOB.arrayBuffer());
@@ -1921,20 +2239,60 @@
       if (ff.api === "new") { await ff.ff.writeFile(inName, bytes); await ff.ff.exec(args); const out = await ff.ff.readFile(outName); downloadBlob(new Blob([out.buffer], { type: "video/mp4" }), outName); }
       else { ff.ff.FS("writeFile", inName, bytes); await ff.ff.run(...args); const out = ff.ff.FS("readFile", outName); downloadBlob(new Blob([out.buffer], { type: "video/mp4" }), outName); }
       setExportStatus("Done — " + outName + " saved", "done"); closeSheet();
-    } catch (e) { downloadBlob(LAST_WEBM_BLOB, baseName("webm")); setExportStatus("MP4 encode failed — saved WebM as fallback", "error"); }
+    } catch (e) {
+      console.error("[Phaser] MP4 encode failed:", e);
+      downloadBlob(LAST_WEBM_BLOB, baseName("webm"));
+      setExportStatus("MP4 encode failed (" + (e && e.message ? e.message : "unknown") + ") — saved WebM as fallback. See browser console for details.", "error");
+    }
   }
   function recordWebMForMp4() {
     return new Promise(async (resolve) => {
       if (typeof MediaRecorder === "undefined") { resolve(); return; }
-      const fps = EXPORTOPTS.fps, { W, H, crop } = exportDims(), c = document.createElement("canvas"); c.width = W; c.height = H;
-      const ctx = c.getContext("2d"), imgs = await rasterizeAll();
-      const vStream = c.captureStream(fps); let mixed = vStream;
-      if (EXPORTOPTS.includeAudio && audio.ready && audio.ctx) { try { audio.streamDest = audio.streamDest || audio.ctx.createMediaStreamDestination(); audio.destGain.connect(audio.streamDest); const at = audio.streamDest.stream.getAudioTracks()[0]; if (at) mixed = new MediaStream([...vStream.getVideoTracks(), at]); if (audio.ctx.state === "suspended") await audio.ctx.resume(); audio.el.currentTime = 0; audio.el.play().catch(() => {}); } catch (e) {} }
-      let rec; try { rec = new MediaRecorder(mixed, { mimeType: pickWebmMime(), videoBitsPerSecond: 12000000 }); } catch (e) { resolve(); return; }
-      const chunks = []; rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+      const fps = EXPORTOPTS.fps;
+      const totalDur = EXPORTOPTS.duration;
+      const totalFrames = Math.max(1, Math.round(fps * totalDur));
+      const frameInterval = 1000 / fps;
+      const { W, H, crop } = exportDims();
+      const c = document.createElement("canvas"); c.width = W; c.height = H;
+      const ctx = c.getContext("2d");
+      const imgs = await rasterizeAll();
+      // Same deterministic capture pattern as exportWebM — every event
+      // frame is guaranteed to reach the encoder.
+      const useManualCapture = typeof c.captureStream === "function";
+      const vStream = useManualCapture ? c.captureStream(0) : c.captureStream(fps);
+      const vTrack = vStream.getVideoTracks()[0];
+      const canRequestFrame = vTrack && typeof vTrack.requestFrame === "function";
+      let mixed = vStream;
+      if (EXPORTOPTS.includeAudio && audio.ready && audio.ctx) {
+        try {
+          audio.streamDest = audio.streamDest || audio.ctx.createMediaStreamDestination();
+          audio.destGain.connect(audio.streamDest);
+          const at = audio.streamDest.stream.getAudioTracks()[0];
+          if (at) mixed = new MediaStream([...vStream.getVideoTracks(), at]);
+          if (audio.ctx.state === "suspended") await audio.ctx.resume();
+          audio.el.currentTime = 0; audio.el.play().catch(() => {});
+        } catch (e) {}
+      }
+      let rec;
+      try { rec = new MediaRecorder(mixed, { mimeType: pickWebmMime(), videoBitsPerSecond: bitrateFor(EXPORTOPTS.quality) }); }
+      catch (e) { resolve(); return; }
+      const chunks = [];
+      rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
       rec.onstop = () => { LAST_WEBM_BLOB = new Blob(chunks, { type: "video/webm" }); if (audio.ready) audio.el.pause(); resolve(); };
-      const bg = resolveExportBg(true, false), t0 = performance.now(); rec.start();
-      (function rf(now) { const e2 = (now - t0) / 1000; drawExportFrame(ctx, W, H, imgs, e2 % STATE.duration, { bg }, crop); if (e2 < EXPORTOPTS.duration) requestAnimationFrame(rf); else rec.stop(); })(performance.now());
+      const bg = resolveExportBg(true, false);
+      rec.start();
+      const startWall = performance.now();
+      for (let f = 0; f < totalFrames; f++) {
+        const t = f / fps;
+        await drawExportFrame(ctx, W, H, imgs, t % STATE.duration, { bg }, crop);
+        if (canRequestFrame) vTrack.requestFrame();
+        const targetElapsed = (f + 1) * frameInterval;
+        const actual = performance.now() - startWall;
+        const wait = Math.max(2, targetElapsed - actual);
+        await new Promise((r) => setTimeout(r, wait));
+      }
+      await new Promise((r) => setTimeout(r, Math.max(80, frameInterval * 2)));
+      rec.stop();
     });
   }
   function syncExportUI() {
@@ -1945,6 +2303,11 @@
     el.layerModeRow.hidden = EXPORTOPTS.target !== "layer";
     if (el.optTransparent) el.optTransparent.checked = EXPORTOPTS.transparent;
     if (el.optAudio) el.optAudio.checked = EXPORTOPTS.includeAudio;
+    // Estimated video file size — bitrate × duration ÷ 8. This is a rough
+    // estimate for MP4/WebM; PNG/PNG-sequence sizes are much smaller and
+    // vary widely, so we intentionally show one video-oriented number.
+    const es = document.getElementById("estSize");
+    if (es) es.textContent = `~ ${humanBytes(estimatedSizeBytes())} · ${(bitrateFor(EXPORTOPTS.quality) / 1_000_000).toFixed(1)} Mbps`;
   }
 
   /* ---------------- WIRING ---------------- */
@@ -2186,6 +2549,94 @@
     });
 
     // resize -> refit + relayout timeline
+    // ============ CANVAS DIRECT MANIPULATION ============
+    // Users can drag layers directly on the artboard.  Selection also
+    // works by clicking any layer's wrap element.  Locked / hidden layers
+    // aren't draggable / selectable from the canvas.
+    let dragL = null;
+    function pickLayerAtEvent(e) {
+      const rect = el.artboard.getBoundingClientRect();
+      const ax = (e.clientX - rect.left) / STATE.zoom; // artboard px (from artboard top-left)
+      const ay = (e.clientY - rect.top) / STATE.zoom;
+      // top-most first (layers array = bottom to top, so iterate from end)
+      for (let i = layers.length - 1; i >= 0; i--) {
+        const L = layers[i];
+        if (!L.visible || L.locked) continue;
+        const A = STATE.format, T = L.transform;
+        const wPx = (T.wPct / 100) * A.w, hPx = (T.hPct / 100) * A.h;
+        const leftPx = A.w / 2 + (T.cx / 100) * A.w - wPx / 2;
+        const topPx = A.h / 2 + (T.cy / 100) * A.h - hPx / 2;
+        if (ax >= leftPx && ax <= leftPx + wPx && ay >= topPx && ay <= topPx + hPx) return L;
+      }
+      return null;
+    }
+    el.artboard.addEventListener("mousedown", (e) => {
+      // Ignore clicks on selection-box handles / other UI overlays
+      if (e.target.closest(".sel-handle")) return;
+      const L = pickLayerAtEvent(e); if (!L) return;
+      selectLayer(L);
+      dragL = { layer: L, x0: e.clientX, y0: e.clientY, cx0: L.transform.cx, cy0: L.transform.cy };
+      el.artboard.style.cursor = "grabbing";
+      e.preventDefault();
+    });
+    document.addEventListener("mousemove", (e) => {
+      if (!dragL) return;
+      const A = STATE.format;
+      const dxPx = (e.clientX - dragL.x0) / STATE.zoom;
+      const dyPx = (e.clientY - dragL.y0) / STATE.zoom;
+      dragL.layer.transform.cx = clamp(dragL.cx0 + (dxPx / A.w) * 100, -200, 200);
+      dragL.layer.transform.cy = clamp(dragL.cy0 + (dyPx / A.h) * 100, -200, 200);
+      setSlider("x", Math.round(dragL.layer.transform.cx));
+      setSlider("y", Math.round(dragL.layer.transform.cy));
+      updateSelectionBox(); paintIfPaused();
+    });
+    document.addEventListener("mouseup", () => { if (dragL) { dragL = null; el.artboard.style.cursor = ""; } });
+
+    // Arrow keys nudge the selected layer (1 px, or 10 px with Shift).
+    document.addEventListener("keydown", (e) => {
+      if (!selectedLayer) return;
+      if (/^(INPUT|TEXTAREA|SELECT)$/i.test(e.target.tagName)) return;
+      const A = STATE.format, step = e.shiftKey ? 10 : 1;
+      let handled = true;
+      if (e.key === "ArrowLeft")       selectedLayer.transform.cx -= (step / A.w) * 100;
+      else if (e.key === "ArrowRight") selectedLayer.transform.cx += (step / A.w) * 100;
+      else if (e.key === "ArrowUp")    selectedLayer.transform.cy -= (step / A.h) * 100;
+      else if (e.key === "ArrowDown")  selectedLayer.transform.cy += (step / A.h) * 100;
+      else handled = false;
+      if (handled) {
+        e.preventDefault();
+        setSlider("x", Math.round(selectedLayer.transform.cx));
+        setSlider("y", Math.round(selectedLayer.transform.cy));
+        updateSelectionBox(); paintIfPaused();
+      }
+    });
+
+    // ============ ALIGNMENT WIRING ============
+    const alignBind = (id, fn) => { const b = document.getElementById(id); if (b) b.addEventListener("click", fn); };
+    alignBind("alignLeft",  alignLeft);
+    alignBind("alignCH",    alignCenterH);
+    alignBind("alignRight", alignRight);
+    alignBind("alignTop",   alignTop);
+    alignBind("alignCV",    alignMiddle);
+    alignBind("alignBottom",alignBottom);
+    alignBind("alignDistH", distributeH);
+    alignBind("alignDistV", distributeV);
+    alignBind("alignCenter",centerToCanvas);
+    alignBind("alignFit",   tfFit);
+    alignBind("alignFill",  tfFill);
+
+    // ============ SNAP-TO-FRAME TOGGLE ============
+    const snapFrameEl = document.getElementById("snapFrame");
+    if (snapFrameEl) snapFrameEl.addEventListener("change", (e) => { STATE.snapFrame = e.target.checked; });
+
+    // ============ ENABLE / DISABLE CLIP TOGGLE ============
+    const enBtn = document.getElementById("clipEnable");
+    if (enBtn) enBtn.addEventListener("click", () => {
+      if (!selectedEventClip) return;
+      selectedEventClip.ec.enabled = !(selectedEventClip.ec.enabled !== false);
+      renderClipInspector(); renderTimeline(); paintIfPaused();
+    });
+
     window.addEventListener("resize", () => { if (STATE.zoomMode === "fit") fitZoom(); renderTimeline(); });
   }
   function wireDurSeg(seg) {
@@ -2213,6 +2664,8 @@
     // re-fit once layout has settled (fonts, flex sizing)
     requestAnimationFrame(() => fitZoom());
     setTimeout(() => { fitZoom(); renderTimeline(); }, 120);
+    // Test hook: expose internals for automated verification (harmless in production).
+    window.__phaserDebug = { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, getState: () => STATE, getLayers: () => layers, createEventClip };
   }
   document.addEventListener("DOMContentLoaded", init);
 })();
