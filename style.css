@@ -354,10 +354,27 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; }
 .sfx-actions button.danger:hover { color: var(--danger); }
 
 /* Event grid (right panel) */
-.fx-event-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 10px 0 4px; }
+.fx-event-grid { display: flex; flex-direction: column; gap: 4px; margin: 10px 0 4px; }
+.fx-event-grid-inner { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 4px; }
+.fx-event-group-hd { font-size: 9px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-3); margin: 10px 0 4px; padding-left: 2px; opacity: 0.75; }
 .fx-event { display: flex; align-items: center; gap: 6px; padding: 7px 9px; border-radius: var(--r-xs); border: 1px dashed rgba(156,134,255,0.4); background: rgba(122,92,255,0.06); color: var(--text-2); font-size: 11px; font-weight: 500; transition: all var(--fast); text-align: left; }
 .fx-event:hover { color: var(--text); border-color: var(--accent-2); background: var(--accent-soft); }
 .fx-event .fx-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 6px var(--accent-glow); flex-shrink: 0; }
+
+/* Alignment mini grid */
+.align-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-top: 4px; }
+.align-btn { padding: 8px 0; font-weight: 700; letter-spacing: 0.05em; font-size: 11px; }
+
+/* Disabled event clip on timeline: still visible but muted */
+.tl-clip.event.disabled { opacity: 0.32; filter: grayscale(0.6); background: linear-gradient(180deg, rgba(120,120,140,0.4), rgba(80,80,100,0.25)); border-style: dashed; }
+
+/* Canvas grab cursor while dragging */
+.artboard { cursor: default; }
+.artboard.dragging { cursor: grabbing; }
+
+/* Estimated size cell in export sheet */
+.est-size { font-family: ui-monospace, "SF Mono", monospace; font-size: 12px; color: var(--accent-2); font-variant-numeric: tabular-nums; }
+
 .sub-head { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); margin: 16px 0 6px; }
 
 /* Mixer color labels */
