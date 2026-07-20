@@ -272,6 +272,9 @@
     lockAspect: $("#lockAspect"),
     tfCenter: $("#tfCenter"), tfFit: $("#tfFit"), tfFill: $("#tfFill"), tfOriginal: $("#tfOriginal"), tfReset: $("#tfReset"),
     layerDup: $("#layerDup"), layerHide: $("#layerHide"), layerLock: $("#layerLock"), layerDel: $("#layerDel"),
+    // video (Phase 2)
+    videoGroup: $("#videoGroup"), videoDurLabel: $("#videoDurLabel"),
+    vFitTrim: $("#vFitTrim"), vResetTrim: $("#vResetTrim"),
     // color
     colorEmpty: $("#colorEmpty"), colorBody: $("#colorBody"), colorNote: $("#colorNote"),
     fillColor: $("#fillColor"), fillHex: $("#fillHex"), strokeColor: $("#strokeColor"), strokeHex: $("#strokeHex"),
@@ -489,12 +492,26 @@
     const id = ++idSeq;
     let node;
     if (asset.kind === "SVG") { node = asset.node.cloneNode(true); splitTextNodes(node); }
+    else if (asset.kind === "VIDEO") {
+      // Phase 2: each video layer gets its OWN <video> element (so
+      // multiple layers from the same asset can be at different
+      // playhead positions).  This same element is used for both the
+      // DOM preview AND as the drawImage source during export.
+      node = document.createElement("video");
+      node.muted = true;
+      node.playsInline = true;
+      node.preload = "auto";
+      node.crossOrigin = "anonymous";
+      // Blob URL from addVideoAsset; the browser has already decoded
+      // metadata + at least one frame during the Phase-1 snapshot pass,
+      // so re-loading from the same URL is near-instant.
+      node.src = asset.meta.videoUrl;
+      // Surface a decode error to the user instead of a silent failure.
+      node.addEventListener("error", () => {
+        toast(`Couldn't decode ${asset.name} — browser doesn't support this codec`);
+      });
+    }
     else {
-      // Both IMG and VIDEO use an <img> element pointing at the stored
-      // dataURL (asset.node for IMG is already an Image; for VIDEO we
-      // stored the first-frame snapshot Image as asset.node too — see
-      // addVideoAsset).  Cloning via new Image() gives each layer its
-      // own DOM node without disturbing the asset's cached Image.
       node = new Image(); node.src = asset.dataUrl;
     }
     const wrap = document.createElement("div"); wrap.className = "layer-el"; wrap.appendChild(node);
@@ -521,18 +538,17 @@
       recipe: makeRecipe(id * 131),
       originalColors: null,
     };
-    // VIDEO layers carry additive future-phase fields so Phase 2+ can
-    // wire up playback without another schema change.  Phase 1 does not
-    // read these — the layer renders as its first-frame snapshot.
+    // VIDEO layers carry per-layer playback state.  layer.videoEl points
+    // to the SAME element as layer.node (used both by preview compositing
+    // and by drawExportFrame as its drawImage source).  Additive schema
+    // fields for later phases stay unset by rendering code in Phase 2.
     if (asset.kind === "VIDEO") {
-      layer.videoEl = nat.videoEl || null;          // reference to offscreen <video>
-      layer.videoUrl = nat.videoUrl || null;        // blob URL to source
-      layer.videoDuration = nat.duration || 0;      // source media duration in seconds
-      layer.srcInPoint = 0;                          // trim-in (source seconds)
-      layer.srcOutPoint = nat.duration || 0;         // trim-out (source seconds)
-      layer.speed = 1;                               // Phase 3 constant speed multiplier
-      // Phase 4 will attach a speedCurve here (list of {tLocal, speed}
-      // keyframes).  Left unset by design.
+      layer.videoEl = node;                          // same reference as layer.node
+      layer.videoUrl = nat.videoUrl || null;
+      layer.videoDuration = nat.duration || 0;
+      layer.srcInPoint = 0;
+      layer.srcOutPoint = nat.duration || 0;
+      layer.speed = 1;                                // Phase 3 hook — not read yet
     }
     captureOriginalColors(layer);
     layers.push(layer);
@@ -634,7 +650,25 @@
     el.transformEmpty.hidden = has; el.transformBody.hidden = !has;
     el.fxEmpty.hidden = has; el.fxBody.hidden = !has;
     const isSvg = has && selectedLayer.kind === "SVG";
+    const isVideo = has && selectedLayer.kind === "VIDEO";
     el.colorEmpty.hidden = isSvg; el.colorBody.hidden = !isSvg;
+    // Video panel: only visible for VIDEO layers.
+    if (el.videoGroup) {
+      el.videoGroup.hidden = !isVideo;
+      if (isVideo) {
+        const L = selectedLayer;
+        const dur = L.videoDuration || 0;
+        if (el.videoDurLabel) el.videoDurLabel.textContent = dur.toFixed(2) + "s";
+        const vin  = document.getElementById("ctl-vin");
+        const vout = document.getElementById("ctl-vout");
+        const vvin  = document.getElementById("val-vin");
+        const vvout = document.getElementById("val-vout");
+        if (vin)  { vin.max  = dur.toFixed(2); vin.value  = (L.srcInPoint  || 0).toFixed(2); }
+        if (vout) { vout.max = dur.toFixed(2); vout.value = (L.srcOutPoint || dur).toFixed(2); }
+        if (vvin)  vvin.textContent  = (L.srcInPoint  || 0).toFixed(2);
+        if (vvout) vvout.textContent = (L.srcOutPoint || dur).toFixed(2);
+      }
+    }
     if (!has) return;
     const t = selectedLayer.transform;
     setSlider("x", t.cx); setSlider("y", t.cy); setSlider("scale", Math.round(t.wPct / initialWPct(selectedLayer) * 100));
@@ -1606,6 +1640,95 @@
     }).map((c) => ({ c, p: clamp01((t - (layerStart + c.start)) / Math.max(0.001, c.duration)) }));
   }
 
+  /* ============ VIDEO / TIMELINE SYNC (Phase 2) ================
+     One pure function is the source of truth for "what source-media
+     time does this layer show at timeline time t?".  Both preview and
+     export call it, guaranteeing the two paths agree.
+
+     Phase 2: layer.speed defaults to 1, so this is simple linear
+     mapping with clamping to the trim range.  Phase 3 will let users
+     move the multiplier.  Phase 4 will swap the linear factor for the
+     integrated speed curve.  No other code needs to change for those
+     phases — everything downstream calls this function. */
+  function sourceTimeAt(layer, t) {
+    const inPt  = layer.srcInPoint  || 0;
+    const outPt = (layer.srcOutPoint != null) ? layer.srcOutPoint : (layer.videoDuration || 0);
+    const speed = layer.speed || 1;
+    const src   = inPt + Math.max(0, t - layer.start) * speed;
+    // Freeze on the trimmed-out frame if the layer outlives the source.
+    return Math.min(Math.max(src, inPt), Math.max(inPt, outPt - 0.001));
+  }
+
+  /* Preview sync — hybrid strategy per the design doc:
+     - Timeline playing, within 100ms drift: let native <video> playback advance.
+     - Drift > 100ms (scrub, jump, initial): hard-seek.
+     - Timeline paused: hard-seek + pause the video.
+     Fire-and-forget on preview to keep scrubbing snappy; the video
+     element updates its displayed frame when the seek completes. */
+  const VIDEO_DRIFT_TOL = 0.10;   // 100ms
+  function syncVideoLayerToTimeline(layer, t, playing) {
+    const v = layer.videoEl;
+    if (!v || v.readyState < 2) return;   // metadata not decoded yet
+    const active = layer.visible && t >= layer.start - 0.001 && t <= layer.start + layer.duration + 0.001;
+    if (!active) { if (!v.paused) { try { v.pause(); } catch (e) {} } return; }
+    const desired = sourceTimeAt(layer, t);
+    const drift   = Math.abs(v.currentTime - desired);
+    if (drift > VIDEO_DRIFT_TOL) {
+      try { v.currentTime = desired; } catch (e) {}
+    }
+    if (playing) {
+      if (v.paused) { const p = v.play(); if (p && p.catch) p.catch(() => {}); }
+    } else {
+      if (!v.paused) { try { v.pause(); } catch (e) {} }
+    }
+  }
+
+  /* Export sync — async, deterministic.  Waits for the frame to be
+     displayable before returning, so the next drawExportFrame call
+     actually samples the seeked frame.  Prefers
+     requestVideoFrameCallback (Chromium/Edge/Safari 16.4+) — precise
+     "next painted frame" signal.  Falls back to 'seeked' + one RAF
+     yield for any browser without rVFC. */
+  function seekVideoLayerFor(layer, t) {
+    const v = layer.videoEl;
+    if (!v || v.readyState < 2) return Promise.resolve();
+    if (!layer.visible) return Promise.resolve();
+    if (t < layer.start - 0.001 || t > layer.start + layer.duration + 0.001) return Promise.resolve();
+    const desired = sourceTimeAt(layer, t);
+    if (Math.abs(v.currentTime - desired) < 1/240) return Promise.resolve();   // already there
+    // rVFC path (preferred)
+    if (typeof v.requestVideoFrameCallback === "function") {
+      return new Promise((resolve) => {
+        let done = false;
+        const finish = () => { if (done) return; done = true; resolve(); };
+        try { v.requestVideoFrameCallback(finish); } catch (e) { finish(); return; }
+        try { v.currentTime = desired; } catch (e) { finish(); return; }
+        setTimeout(finish, 500);   // hard timeout guard
+      });
+    }
+    // seeked + RAF fallback
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return; done = true;
+        v.removeEventListener("seeked", onSeeked);
+        requestAnimationFrame(() => resolve());
+      };
+      const onSeeked = () => finish();
+      v.addEventListener("seeked", onSeeked);
+      try { v.currentTime = desired; } catch (e) { finish(); return; }
+      setTimeout(finish, 500);
+    });
+  }
+  async function seekAllVideoLayersTo(t) {
+    const vids = layers.filter((L) => L.kind === "VIDEO" && L.videoEl);
+    if (!vids.length) return;
+    // Videos should be paused during export so playback can't advance
+    // between seeks.  Safe to call pause() on already-paused videos.
+    vids.forEach((L) => { try { L.videoEl.pause(); } catch (e) {} });
+    await Promise.all(vids.map((L) => seekVideoLayerFor(L, t)));
+  }
+
   /* ---------------- RENDER LOOP ---------------- */
   let rafStart = performance.now();
   let hudLayer = null, flashOverlay = null;
@@ -1628,6 +1751,11 @@
     }
     const t = STATE.time, sig = audioSignal();
     let sceneScan = STATE.scanline / 100, sceneNoise = STATE.noise / 100, anyHud = false, hudFlicker = 1, anyFlash = null, flashA = 0;
+
+    // Phase 2: keep every video layer's <video> element in sync with the
+    // timeline BEFORE composeLayer runs (composeLayer applies CSS
+    // transforms/filters but doesn't touch playback state).
+    layers.forEach((layer) => { if (layer.kind === "VIDEO") syncVideoLayerToTimeline(layer, t, true); });
 
     layers.forEach((layer) => {
       if (!layer.wrap) return;
@@ -1778,6 +1906,11 @@
   // changes, etc. while paused.
   function renderStaticFrame() {
     if (STATE.playing) return;
+    // Video layers still need to show the frame at the current
+    // playhead when paused/scrubbing.  Fire-and-forget seek — the
+    // <video> element updates its displayed frame when the seek
+    // completes, which is fine for preview.
+    layers.forEach((L) => { if (L.kind === "VIDEO") syncVideoLayerToTimeline(L, STATE.time, false); });
     layers.forEach((layer) => { if (!layer.wrap) return; if (!layer.visible) { layer.wrap.style.opacity = "0"; return; } placeLayerStatic(layer); });
     el.artboard.style.setProperty("--scanline-op", 0);
     el.artboard.style.setProperty("--noise-op", 0);
@@ -1793,6 +1926,8 @@
     const t = STATE.time, sig = audioSignal();
     let sceneScan = STATE.scanline / 100, sceneNoise = STATE.noise / 100;
     let anyHud = false, hudFlicker = 1, anyFlash = null, flashA = 0;
+    // Sync video layers to the current timeline position before drawing.
+    layers.forEach((L) => { if (L.kind === "VIDEO") syncVideoLayerToTimeline(L, t, false); });
     layers.forEach((layer) => {
       if (!layer.wrap) return;
       const active = layer.visible && t >= layer.start - 0.001 && t <= layer.start + layer.duration + 0.001;
@@ -1875,11 +2010,16 @@
         try { audio.el.currentTime = STATE.time; } catch (e) {}
         audio.el.play().catch(() => {});
       }
+      // Sync + start every video layer.  syncVideoLayerToTimeline
+      // handles the hard-seek + play() call.
+      layers.forEach((L) => { if (L.kind === "VIDEO") syncVideoLayerToTimeline(L, STATE.time, true); });
       // schedule all SFX/voice clips
       schedulePlayback(STATE.time);
     } else {
       if (audio.ready) audio.el.pause();
       stopAllAudioClipSources();
+      // Pause every video layer.
+      layers.forEach((L) => { if (L.kind === "VIDEO" && L.videoEl && !L.videoEl.paused) { try { L.videoEl.pause(); } catch (e) {} } });
       stopPreview();
       renderStaticFrame();
     }
@@ -2102,10 +2242,12 @@
 
   function layerToImage(layer) {
     return new Promise((resolve) => {
-      // IMG and VIDEO both have a ready-to-draw Image node cached on
-      // the layer (for VIDEO it's the first-frame snapshot from
-      // addVideoAsset).  SVG needs a fresh rasterization via a blob URL
-      // because its DOM can be recolored between rasterizations.
+      // IMG layers already have an <img> in layer.node — draw directly.
+      // VIDEO layers have a <video> in layer.node — <video> is a valid
+      // CanvasImageSource, so drawImage(video, ...) samples whatever
+      // frame the video is currently displaying.  Preview and export
+      // both seek the video before drawing, so both sample the same
+      // frame at the same timeline t.
       if (layer.kind === "IMG" || layer.kind === "VIDEO") { resolve(layer.node); return; }
       const svgStr = new XMLSerializer().serializeToString(layer.node);
       const url = URL.createObjectURL(new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" }));
@@ -2804,7 +2946,7 @@
     setExportStatus(`Rendering ${total} frames (${dur}s @ ${fps}fps)…`, "work");
     const { W, H, crop } = exportDims(), c = document.createElement("canvas"); c.width = W; c.height = H;
     const ctx = c.getContext("2d"), imgs = await rasterizeAll(), bg = transparent ? null : resolveExportBg(false);
-    for (let f = 0; f < total; f++) { await drawExportFrame(ctx, W, H, imgs, f / fps, { bg }, crop); await new Promise((res) => c.toBlob((b) => { downloadBlob(b, `phaser-seq-${String(f).padStart(4, "0")}.png`); setTimeout(res, 55); }, "image/png")); if (f % 10 === 0) setExportStatus(`Rendering frame ${f + 1}/${total}…`, "work"); }
+    for (let f = 0; f < total; f++) { await seekAllVideoLayersTo(f / fps); await drawExportFrame(ctx, W, H, imgs, f / fps, { bg }, crop); await new Promise((res) => c.toBlob((b) => { downloadBlob(b, `phaser-seq-${String(f).padStart(4, "0")}.png`); setTimeout(res, 55); }, "image/png")); if (f % 10 === 0) setExportStatus(`Rendering frame ${f + 1}/${total}…`, "work"); }
     setExportStatus("Done — sequence saved", "done"); closeSheet();
   }
   function pickWebmMime() { return ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"].find((m) => MediaRecorder.isTypeSupported(m)) || "video/webm"; }
@@ -2866,6 +3008,9 @@
     const startWall = performance.now();
     for (let f = 0; f < totalFrames; f++) {
       const t = f / fps;
+      // Phase 2: seek every video layer to sourceTimeAt(layer, t) and
+      // wait for the frame to be displayable before drawing.
+      await seekAllVideoLayersTo(t % STATE.duration);
       await drawExportFrame(ctx, W, H, imgs, t % STATE.duration, { bg }, crop);
       if (canRequestFrame) vTrack.requestFrame(); // baker: sample THIS canvas state
       // Pace to real-time so audio keeps sync; also lets browser flush the capture
@@ -2986,6 +3131,7 @@
       const startWall = performance.now();
       for (let f = 0; f < totalFrames; f++) {
         const t = f / fps;
+        await seekAllVideoLayersTo(t % STATE.duration);
         await drawExportFrame(ctx, W, H, imgs, t % STATE.duration, { bg }, crop);
         if (canRequestFrame) vTrack.requestFrame();
         const targetElapsed = (f + 1) * frameInterval;
@@ -3068,6 +3214,46 @@
 
     // allow transform toggle
     el.allowTransform.addEventListener("change", (e) => { if (selectedLayer) { selectedLayer.allowTransform = e.target.checked; renderInspector(); paintIfPaused(); } });
+
+    // ---- Video In/Out sliders + Fit-to-trim / Reset-trim (Phase 2) ----
+    const vin  = document.getElementById("ctl-vin");
+    const vout = document.getElementById("ctl-vout");
+    if (vin) vin.addEventListener("input", (e) => {
+      if (!selectedLayer || selectedLayer.kind !== "VIDEO") return;
+      const L = selectedLayer;
+      let v = +e.target.value;
+      // Clamp so In < Out with a small gap.
+      v = Math.max(0, Math.min(v, (L.srcOutPoint || L.videoDuration) - 0.05));
+      L.srcInPoint = v;
+      const lab = document.getElementById("val-vin"); if (lab) lab.textContent = v.toFixed(2);
+      e.target.value = v.toFixed(2);
+      paintIfPaused();
+    });
+    if (vout) vout.addEventListener("input", (e) => {
+      if (!selectedLayer || selectedLayer.kind !== "VIDEO") return;
+      const L = selectedLayer;
+      let v = +e.target.value;
+      v = Math.max((L.srcInPoint || 0) + 0.05, Math.min(v, L.videoDuration || v));
+      L.srcOutPoint = v;
+      const lab = document.getElementById("val-vout"); if (lab) lab.textContent = v.toFixed(2);
+      e.target.value = v.toFixed(2);
+      paintIfPaused();
+    });
+    if (el.vFitTrim) el.vFitTrim.addEventListener("click", () => {
+      if (!selectedLayer || selectedLayer.kind !== "VIDEO") return;
+      const L = selectedLayer;
+      const trimLen = Math.max(0.05, (L.srcOutPoint || L.videoDuration) - (L.srcInPoint || 0));
+      L.duration = Math.min(trimLen, Math.max(0.1, STATE.duration - L.start));
+      renderTimeline(); paintIfPaused();
+      toast(`Layer duration set to ${L.duration.toFixed(2)}s`);
+    });
+    if (el.vResetTrim) el.vResetTrim.addEventListener("click", () => {
+      if (!selectedLayer || selectedLayer.kind !== "VIDEO") return;
+      const L = selectedLayer;
+      L.srcInPoint = 0;
+      L.srcOutPoint = L.videoDuration || L.srcOutPoint || 0;
+      renderInspector(); paintIfPaused();
+    });
 
     // color
     el.fillColor.addEventListener("input", (e) => { el.fillHex.textContent = e.target.value.toUpperCase(); });
@@ -3276,7 +3462,13 @@
       const t = clamp((e.clientX - rect.left) / TL.pxPerSec, 0, STATE.duration);
       STATE.time = t; rafStart = performance.now() - t * 1000;
       updatePlayheads(t);
-      if (STATE.playing) { stopAllAudioClipSources(); schedulePlayback(t); if (audio.ready) { try { audio.el.currentTime = t; } catch (err) {} } }
+      if (STATE.playing) {
+        stopAllAudioClipSources(); schedulePlayback(t);
+        if (audio.ready) { try { audio.el.currentTime = t; } catch (err) {} }
+        // Force video layers to re-seek immediately — the drift-based
+        // sync in frame() would only pick this up on the next RAF.
+        layers.forEach((L) => { if (L.kind === "VIDEO" && L.videoEl) { try { L.videoEl.currentTime = sourceTimeAt(L, t); } catch (err) {} } });
+      }
       else { paintIfPaused(); }
     });
 
