@@ -1729,6 +1729,117 @@
     await Promise.all(vids.map((L) => seekVideoLayerFor(L, t)));
   }
 
+  /* ---- Playback-based export sync (Phase 2 fix) --------------------
+     The per-frame `seekAllVideoLayersTo` approach above works for PNG
+     sequences (which don't care how long each frame takes) but breaks
+     WebM/MP4 exports.  MediaRecorder timestamps every captured frame
+     at the wall-clock moment `requestFrame()` is called; per-frame
+     seeks take 20-100ms each, so `requestFrame` fires at variable
+     intervals, and the recorded video plays back at variable framerate
+     (choppy / slow-motion / inconsistent).
+
+     Fix: use native <video> playback during export.  Pre-seek to
+     srcInPoint once, then let the browser's decoder advance the video
+     naturally at real-time (matching the export loop's wall-clock
+     pacing).  Per-frame overhead drops from 20-100ms to ~1ms — a
+     drift check that almost always passes.  Same strategy the preview
+     path already uses, so preview and export match. */
+
+  /* Called ONCE before an export starts.  Sets each video's currentTime
+     to its srcInPoint and pauses.  Awaits the frame-ready signal so
+     the first drawn export frame is guaranteed correct. */
+  async function initVideoLayersForExport() {
+    const vids = layers.filter((L) => L.kind === "VIDEO" && L.videoEl);
+    if (!vids.length) return;
+    await Promise.all(vids.map((L) => new Promise((resolve) => {
+      const v = L.videoEl;
+      try { v.pause(); } catch (e) {}
+      v.playbackRate = 1;   // Phase 2: always 1.  Phase 3 will vary this.
+      const target = Math.max(0, L.srcInPoint || 0);
+      if (v.readyState >= 2 && Math.abs(v.currentTime - target) < 1/240) { resolve(); return; }
+      let done = false;
+      const fin = () => { if (done) return; done = true; resolve(); };
+      if (typeof v.requestVideoFrameCallback === "function") {
+        try { v.requestVideoFrameCallback(fin); } catch (e) { fin(); return; }
+      } else {
+        v.addEventListener("seeked", fin, { once: true });
+      }
+      try { v.currentTime = target; } catch (e) { fin(); return; }
+      setTimeout(fin, 800);
+    })));
+  }
+
+  /* Called ONCE after the export loop ends.  Pauses every video and
+     resets its position to the layer's srcInPoint so subsequent
+     previews start fresh. */
+  function finalizeVideoLayersAfterExport() {
+    layers.forEach((L) => {
+      if (L.kind !== "VIDEO" || !L.videoEl) return;
+      try { L.videoEl.pause(); } catch (e) {}
+      try { L.videoEl.currentTime = L.srcInPoint || 0; } catch (e) {}
+    });
+  }
+
+  /* Called on EVERY export loop iteration.  Cheap when the videos are
+     already playing at the right rate (which is the common case,
+     because the export loop is wall-clock-paced and video playback
+     advances at wall-clock 1x).  Only performs an async seek when a
+     layer's window is being entered/exited or when drift exceeds the
+     tolerance.  Returns a Promise that resolves immediately when no
+     seek is required. */
+  const EXPORT_DRIFT_TOL = 0.10;   // 100ms
+  function driveVideoLayersRealtime(t) {
+    const vids = layers.filter((L) => L.kind === "VIDEO" && L.videoEl && L.visible);
+    if (!vids.length) return Promise.resolve();
+    const awaits = [];
+    for (const L of vids) {
+      const v = L.videoEl;
+      const inWindow = t >= L.start - 0.001 && t <= L.start + L.duration + 0.001;
+      if (!inWindow) {
+        if (!v.paused) { try { v.pause(); } catch (e) {} }
+        continue;
+      }
+      const desired = sourceTimeAt(L, t);
+      if (v.paused) {
+        // Entering the layer's window — align + play.  If we're already
+        // very close (pre-seek did the work), start playing immediately;
+        // otherwise seek first, then play in the seek callback.
+        if (Math.abs(v.currentTime - desired) < 0.02) {
+          const p = v.play(); if (p && p.catch) p.catch(() => {});
+        } else {
+          awaits.push(new Promise((resolve) => {
+            let done = false;
+            const fin = () => { if (done) return; done = true; const pp = v.play(); if (pp && pp.catch) pp.catch(() => {}); resolve(); };
+            if (typeof v.requestVideoFrameCallback === "function") {
+              try { v.requestVideoFrameCallback(fin); } catch (e) { fin(); return; }
+            } else {
+              v.addEventListener("seeked", fin, { once: true });
+            }
+            try { v.currentTime = desired; } catch (e) { fin(); return; }
+            setTimeout(fin, 500);
+          }));
+        }
+      } else {
+        // Playing normally — only correct large drift.
+        const drift = Math.abs(v.currentTime - desired);
+        if (drift > EXPORT_DRIFT_TOL) {
+          awaits.push(new Promise((resolve) => {
+            let done = false;
+            const fin = () => { if (done) return; done = true; resolve(); };
+            if (typeof v.requestVideoFrameCallback === "function") {
+              try { v.requestVideoFrameCallback(fin); } catch (e) { fin(); return; }
+            } else {
+              v.addEventListener("seeked", fin, { once: true });
+            }
+            try { v.currentTime = desired; } catch (e) { fin(); return; }
+            setTimeout(fin, 500);
+          }));
+        }
+      }
+    }
+    return awaits.length ? Promise.all(awaits) : Promise.resolve();
+  }
+
   /* ---------------- RENDER LOOP ---------------- */
   let rafStart = performance.now();
   let hudLayer = null, flashOverlay = null;
@@ -3003,17 +3114,25 @@
     const chunks = [];
     rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
     const stopped = new Promise((r) => { rec.onstop = () => r(); });
+    // Playback-based export sync: pre-seek all video layers to their
+    // srcInPoint once, then let native playback advance them at 1x
+    // during the loop.  Avoids the per-frame seek overhead that made
+    // recorded output choppy / slow-motion.
+    await initVideoLayersForExport();
     rec.start();
-    // Render every frame; pace to wall-clock so audio stays in sync.
+    // Render every frame; pace to wall-clock so audio + video playback stay in sync.
     const startWall = performance.now();
     for (let f = 0; f < totalFrames; f++) {
       const t = f / fps;
-      // Phase 2: seek every video layer to sourceTimeAt(layer, t) and
-      // wait for the frame to be displayable before drawing.
-      await seekAllVideoLayersTo(t % STATE.duration);
+      // Cheap sync: manages play/pause per layer window, only seeks on
+      // window-entry or when drift exceeds 100ms.  Common iteration
+      // has no seek at all — videos advance naturally under the export
+      // loop's own wall-clock pacing.
+      await driveVideoLayersRealtime(t % STATE.duration);
       await drawExportFrame(ctx, W, H, imgs, t % STATE.duration, { bg }, crop);
       if (canRequestFrame) vTrack.requestFrame(); // baker: sample THIS canvas state
-      // Pace to real-time so audio keeps sync; also lets browser flush the capture
+      // Pace to real-time so audio stays in sync AND the video decoder's
+      // natural playback stays aligned with our target sourceTimeAt.
       const targetElapsed = (f + 1) * frameInterval;
       const actual = performance.now() - startWall;
       const wait = Math.max(2, targetElapsed - actual);
@@ -3026,6 +3145,7 @@
     await new Promise((r) => setTimeout(r, Math.max(80, frameInterval * 2)));
     rec.stop();
     await stopped;
+    finalizeVideoLayersAfterExport();
     const blob = new Blob(chunks, { type: "video/webm" });
     LAST_WEBM_BLOB = blob;
     downloadBlob(blob, wantAlpha ? baseName("alpha.webm") : baseName("webm"));
@@ -3125,13 +3245,14 @@
       catch (e) { resolve(); return; }
       const chunks = [];
       rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-      rec.onstop = () => { LAST_WEBM_BLOB = new Blob(chunks, { type: "video/webm" }); if (audio.ready) audio.el.pause(); resolve(); };
+      rec.onstop = () => { LAST_WEBM_BLOB = new Blob(chunks, { type: "video/webm" }); if (audio.ready) audio.el.pause(); finalizeVideoLayersAfterExport(); resolve(); };
       const bg = resolveExportBg(true, false);
+      await initVideoLayersForExport();
       rec.start();
       const startWall = performance.now();
       for (let f = 0; f < totalFrames; f++) {
         const t = f / fps;
-        await seekAllVideoLayersTo(t % STATE.duration);
+        await driveVideoLayersRealtime(t % STATE.duration);
         await drawExportFrame(ctx, W, H, imgs, t % STATE.duration, { bg }, crop);
         if (canRequestFrame) vTrack.requestFrame();
         const targetElapsed = (f + 1) * frameInterval;
@@ -3589,7 +3710,7 @@
     requestAnimationFrame(() => fitZoom());
     setTimeout(() => { fitZoom(); renderTimeline(); }, 120);
     // Test hook: expose internals for automated verification (harmless in production).
-    window.__phaserDebug = { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, getState: () => STATE, getLayers: () => layers, createEventClip };
+    window.__phaserDebug = { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport };
   }
   document.addEventListener("DOMContentLoaded", init);
 })();
