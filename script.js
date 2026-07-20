@@ -398,12 +398,21 @@
   function loadMP4Box() {
     if (typeof window.MP4Box !== "undefined") return Promise.resolve(window.MP4Box);
     if (_mp4boxLoadPromise) return _mp4boxLoadPromise;
+    console.log("[Phaser video] injecting mp4box.js from CDN");
     _mp4boxLoadPromise = new Promise((resolve) => {
       const s = document.createElement("script");
       s.src = "https://cdn.jsdelivr.net/npm/mp4box@0.5.3/dist/mp4box.all.min.js";
       s.async = true;
-      s.onload = () => resolve(window.MP4Box || null);
-      s.onerror = () => { _mp4boxLoadPromise = null; resolve(null); };
+      s.onload = () => {
+        const ok = typeof window.MP4Box !== "undefined";
+        console.log("[Phaser video] mp4box.js script.onload — MP4Box global present:", ok);
+        resolve(window.MP4Box || null);
+      };
+      s.onerror = (e) => {
+        console.warn("[Phaser video] mp4box.js script.onerror — CDN load failed (network/CSP/ad-blocker?)", e);
+        _mp4boxLoadPromise = null;
+        resolve(null);
+      };
       document.head.appendChild(s);
     });
     return _mp4boxLoadPromise;
@@ -498,13 +507,16 @@
       this._lastError = null;
     }
 
-    static async create(arrayBuffer) {
+    static async create(arrayBuffer, step) {
+      const log = step || (() => {});
       if (typeof VideoDecoder === "undefined") throw new Error("VideoDecoder unavailable");
       if (typeof EncodedVideoChunk === "undefined") throw new Error("EncodedVideoChunk unavailable");
+      log("loading mp4box.js...");
       const MP4Box = await loadMP4Box();
-      if (!MP4Box) throw new Error("mp4box.js failed to load");
+      if (!MP4Box) throw new Error("mp4box.js failed to load (CDN blocked or unreachable)");
+      log("mp4box.js loaded", { hasCreateFile: typeof MP4Box.createFile === "function" });
       const source = new VideoSource(arrayBuffer);
-      await source._init(MP4Box);
+      await source._init(MP4Box, log);
       return source;
     }
 
@@ -515,36 +527,39 @@
     get sampleCount() { return this._samples.length; }
     get cacheStats()  { return { frames: this._cache.size, bytes: this._cache.bytes, maxFrames: this._cache.maxFrames, maxBytes: this._cache.maxBytes }; }
 
-    async _init(MP4Box) {
+    async _init(MP4Box, step) {
+      const log = step || (() => {});
+      log("starting demux");
       const { track, samples, description } = await this._demux(MP4Box);
+      log("demux complete", { codec: track.codec, nbSamples: track.nb_samples, descBytes: description && description.byteLength });
       this._width  = track.video ? track.video.width  : (track.track_width  || 0);
       this._height = track.video ? track.video.height : (track.track_height || 0);
       this._duration = (track.duration || 0) / (track.timescale || 1);
       this._frameRate = this._duration > 0 ? (track.nb_samples / this._duration) : 30;
       this._codec = track.codec;
       this._codecDescription = description;
-      // Build sample table keyed by µs timestamps (matches VideoFrame.timestamp).
       for (let i = 0; i < samples.length; i++) {
         const s = samples[i];
         const pts_us = Math.round((s.cts / track.timescale) * 1e6);
         this._samples.push({ pts_us, isKeyframe: !!s.is_sync, data: s.data });
         this._sampleByPts.set(pts_us, i);
       }
-      // Verify codec support
+      log("checking codec support", { codec: this._codec });
       const support = await VideoDecoder.isConfigSupported({
         codec: this._codec, codedWidth: this._width, codedHeight: this._height,
         description: this._codecDescription,
-      }).catch(() => ({ supported: false }));
-      if (!support.supported) throw new Error("Codec not supported: " + this._codec);
-      // Create + configure the decoder.
+      }).catch((e) => { log("isConfigSupported threw", { error: String(e) }); return { supported: false }; });
+      log("codec support result", { supported: support.supported });
+      if (!support.supported) throw new Error("Codec not supported by browser: " + this._codec);
       this._decoder = new VideoDecoder({
         output: (frame) => this._onFrame(frame),
-        error:  (e) => { this._lastError = e; },
+        error:  (e) => { this._lastError = e; log("decoder error", { error: String(e) }); },
       });
       this._decoder.configure({
         codec: this._codec, codedWidth: this._width, codedHeight: this._height,
         description: this._codecDescription,
       });
+      log("decoder configured");
     }
 
     _demux(MP4Box) {
@@ -710,60 +725,113 @@
      path.  In both cases we snapshot the first frame for the asset
      library thumbnail.  The user can tell which mode a layer is in
      from the "Frame-accurate" / "Legacy" badge in the inspector. */
+  /* ---- VIDEO import ------------------------------------------------
+     Path B: for MP4 files, try to build a WebCodecs VideoSource
+     (deterministic, timeline-driven).  If that fails (WebCodecs
+     unavailable, mp4box fails to load, unsupported codec, corrupt file)
+     OR the file isn't MP4, fall back to the legacy HTMLVideoElement
+     path.  In both cases we snapshot the first frame for the asset
+     library thumbnail.  The user can tell which mode a layer is in
+     from the "Frame-accurate" / "Legacy" badge in the inspector. */
   function addVideoAsset(file) {
-    // Only MP4 (and best-effort MOV) go through the WebCodecs path in
-    // this deliverable.  WebM stays on the legacy path until B6.
+    // Diagnostic record — every step logs into this object.  Retrievable
+    // from DevTools console as window.__phaserVideoDiag so we can trace
+    // exactly which step of the fallback ladder fired.
+    const diag = {
+      file: file.name,
+      fileType: file.type,
+      fileSize: file.size,
+      steps: [],
+      finalPath: null,
+      error: null,
+    };
+    const step = (label, extra) => {
+      const entry = { t: Date.now(), label, ...(extra || {}) };
+      diag.steps.push(entry);
+      console.log("[Phaser video]", label, extra || "");
+    };
+    window.__phaserVideoDiag = diag;
+
+    // Step 1: file-type detection.
     const isMP4Like = /\.(mp4|m4v|mov)$/i.test(file.name) || file.type === "video/mp4" || file.type === "video/quicktime";
-    if (!isMP4Like || typeof VideoDecoder === "undefined" || typeof EncodedVideoChunk === "undefined") {
-      addVideoAsset_Legacy(file);
-      return;
+    step("file-type check", { isMP4Like, name: file.name, mime: file.type });
+    if (!isMP4Like) {
+      step("→ LEGACY (not MP4-like)", null);
+      diag.finalPath = "legacy:not-mp4";
+      addVideoAsset_Legacy(file); return;
     }
-    // Attempt WebCodecs path: read ArrayBuffer → demux → configure decoder → snapshot frame 0.
+
+    // Step 2: WebCodecs API presence.
+    const hasVD = typeof VideoDecoder !== "undefined";
+    const hasEC = typeof EncodedVideoChunk !== "undefined";
+    step("WebCodecs API check", { hasVideoDecoder: hasVD, hasEncodedVideoChunk: hasEC });
+    if (!hasVD || !hasEC) {
+      step("→ LEGACY (WebCodecs API missing)", null);
+      diag.finalPath = "legacy:no-webcodecs-api";
+      addVideoAsset_Legacy(file); return;
+    }
+
+    // Step 3+: FileReader → VideoSource.create → snapshot.
     const reader = new FileReader();
-    reader.onerror = () => { toast(`Couldn't read ${file.name}`); };
+    reader.onerror = () => {
+      step("FileReader error", { name: reader.error && reader.error.name });
+      diag.finalPath = "legacy:file-read-error";
+      toast(`Couldn't read ${file.name}`);
+    };
     reader.onload = async (ev) => {
       const arrayBuffer = ev.target.result;
+      step("FileReader loaded", { bytes: arrayBuffer.byteLength });
       let source;
-      try { source = await VideoSource.create(arrayBuffer); }
-      catch (e) {
-        // Any failure — codec, mp4box, demux, decoder config — falls to legacy.
-        console.warn("[VideoSource] falling back to legacy for", file.name, e);
+      try {
+        source = await VideoSource.create(arrayBuffer, step);
+        step("VideoSource.create succeeded", { width: source.width, height: source.height, duration: source.duration, codec: source._codec, sampleCount: source.sampleCount });
+      } catch (e) {
+        step("VideoSource.create FAILED", { error: String(e && e.message || e) });
+        diag.error = String(e && e.message || e);
+        diag.finalPath = "legacy:VideoSource.create-threw";
+        console.warn("[Phaser video] falling back to legacy for", file.name, e);
         addVideoAsset_Legacy(file);
         return;
       }
-      // Snapshot the first frame for the library thumbnail.  Uses the
-      // same VideoSource pipeline so we know it works end-to-end.
+      // Snapshot first frame to exercise the full decode pipeline.
       let dataUrl;
       try {
         const frame = await source.getFrameAtSourceTime(0);
+        step("first-frame decode succeeded", { hasFrame: !!frame });
         const c = document.createElement("canvas");
         c.width = source.width; c.height = source.height;
         c.getContext("2d").drawImage(frame, 0, 0, source.width, source.height);
         dataUrl = c.toDataURL("image/png");
       } catch (e) {
-        console.warn("[VideoSource] snapshot failed, falling back", e);
+        step("first-frame decode FAILED", { error: String(e && e.message || e) });
+        diag.error = String(e && e.message || e);
+        diag.finalPath = "legacy:snapshot-failed";
+        console.warn("[Phaser video] snapshot failed, falling back", e);
         source.close();
         addVideoAsset_Legacy(file);
         return;
       }
       const img = new Image();
       img.onload = () => {
-        // Store the raw ArrayBuffer on the asset so future layers built
-        // from this asset get their own independent VideoSource.  The
-        // asset's own source is discarded after the snapshot; not
-        // shared with layers (each layer needs its own decoder state).
         source.close();
+        step("→ WEBCODECS active (registering asset)", null);
+        diag.finalPath = "webcodecs";
         registerAsset(file.name, "VIDEO", img, dataUrl, {
           natW: source.width, natH: source.height, complex: false,
-          arrayBuffer,                         // shared source of truth
+          arrayBuffer,
           duration: source.duration,
           frameRate: source.frameRate,
           codec: source._codec,
           isVideoSource: true,
-          useWebCodecs: true,                  // marks Frame-accurate layers
+          useWebCodecs: true,
         });
       };
-      img.onerror = () => { source.close(); addVideoAsset_Legacy(file); };
+      img.onerror = () => {
+        step("snapshot Image failed to load", null);
+        diag.finalPath = "legacy:snapshot-img-load-failed";
+        source.close();
+        addVideoAsset_Legacy(file);
+      };
       img.src = dataUrl;
     };
     reader.readAsArrayBuffer(file);
@@ -2260,7 +2328,14 @@
      layer's window is being entered/exited or when drift exceeds the
      tolerance.  Returns a Promise that resolves immediately when no
      seek is required. */
-  const EXPORT_DRIFT_TOL = 0.10;   // 100ms
+  // Larger tolerance during export than during preview.  Each corrective
+  // seek costs 20-100 ms of wall-clock time, and MediaRecorder-based
+  // export uses wall-clock as its frame-timestamp clock; excessive
+  // corrective seeks inflate the recorded duration beyond the target.
+  // 300 ms is one to three source frames at 30 fps — still tight enough
+  // that any perceptible drift gets corrected, but loose enough that
+  // routine playback jitter doesn't trigger a seek.
+  const EXPORT_DRIFT_TOL = 0.30;   // 300ms
   function driveVideoLayersRealtime(t) {
     const vids = layers.filter((L) => L.kind === "VIDEO" && L.videoEl && L.visible);
     if (!vids.length) return Promise.resolve();
@@ -2311,6 +2386,43 @@
       }
     }
     return awaits.length ? Promise.all(awaits) : Promise.resolve();
+  }
+
+  /* Path B — WebCodecs layer export sync.  Called on every export loop
+     iteration alongside driveVideoLayersRealtime (which is a no-op for
+     WebCodecs layers because layer.videoEl is null).  This is where
+     the WebCodecs canvas actually gets its frame content for export.
+
+     For each in-window WebCodecs video layer:
+       - Compute tSource = sourceTimeAt(layer, t)
+       - Cache hit → draw immediately (microseconds)
+       - Cache miss → await one decode, draw when it arrives
+     Speculative prefetch decodes ~0.5s ahead so subsequent frames hit
+     the cache.  Skipped when the loop is behind wall-clock (see the
+     export loop for details).  */
+  async function paintWebCodecsLayersForExport(t) {
+    const vids = layers.filter((L) => L.kind === "VIDEO" && L.videoSource && L.visible && L.node);
+    if (!vids.length) return;
+    await Promise.all(vids.map(async (L) => {
+      const inWindow = t >= L.start - 0.001 && t <= L.start + L.duration + 0.001;
+      if (!inWindow) return;
+      const tSource = sourceTimeAt(L, t);
+      // Fast path: sync cache hit.
+      let frame = L.videoSource.getFrameSyncIfCached(tSource);
+      if (!frame) {
+        try { frame = await L.videoSource.getFrameAtSourceTime(tSource); }
+        catch (e) { return; }
+      }
+      try {
+        const ctx = L.node.getContext("2d");
+        ctx.drawImage(frame, 0, 0, L.node.width, L.node.height);
+      } catch (e) {}
+      // Prefetch a rolling window ahead of the current position so
+      // subsequent iterations hit the sync cache path.
+      const ahead = tSource + 0.5;
+      const srcOut = L.srcOutPoint || L.videoDuration || 0;
+      if (ahead < srcOut) L.videoSource.getFrameAtSourceTime(ahead).catch(() => {});
+    }));
   }
 
   /* ---------------- RENDER LOOP ---------------- */
@@ -3530,7 +3642,7 @@
     setExportStatus(`Rendering ${total} frames (${dur}s @ ${fps}fps)…`, "work");
     const { W, H, crop } = exportDims(), c = document.createElement("canvas"); c.width = W; c.height = H;
     const ctx = c.getContext("2d"), imgs = await rasterizeAll(), bg = transparent ? null : resolveExportBg(false);
-    for (let f = 0; f < total; f++) { await seekAllVideoLayersTo(f / fps); await drawExportFrame(ctx, W, H, imgs, f / fps, { bg }, crop); await new Promise((res) => c.toBlob((b) => { downloadBlob(b, `phaser-seq-${String(f).padStart(4, "0")}.png`); setTimeout(res, 55); }, "image/png")); if (f % 10 === 0) setExportStatus(`Rendering frame ${f + 1}/${total}…`, "work"); }
+    for (let f = 0; f < total; f++) { await seekAllVideoLayersTo(f / fps); await paintWebCodecsLayersForExport(f / fps); await drawExportFrame(ctx, W, H, imgs, f / fps, { bg }, crop); await new Promise((res) => c.toBlob((b) => { downloadBlob(b, `phaser-seq-${String(f).padStart(4, "0")}.png`); setTimeout(res, 55); }, "image/png")); if (f % 10 === 0) setExportStatus(`Rendering frame ${f + 1}/${total}…`, "work"); }
     setExportStatus("Done — sequence saved", "done"); closeSheet();
   }
   function pickWebmMime() { return ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"].find((m) => MediaRecorder.isTypeSupported(m)) || "video/webm"; }
@@ -3587,38 +3699,54 @@
     const chunks = [];
     rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
     const stopped = new Promise((r) => { rec.onstop = () => r(); });
-    // Playback-based export sync: pre-seek all video layers to their
-    // srcInPoint once, then let native playback advance them at 1x
-    // during the loop.  Avoids the per-frame seek overhead that made
-    // recorded output choppy / slow-motion.
+    // Playback-based export sync: pre-seek all legacy video layers to
+    // their srcInPoint once, then let native playback advance them at
+    // 1x during the loop.
     await initVideoLayersForExport();
     rec.start();
-    // Render every frame; pace to wall-clock so audio + video playback stay in sync.
+    /* ---- Strict real-time pacing to preserve target duration --------
+       MediaRecorder timestamps every captured frame at wall-clock, so
+       the recorded file's duration equals the wall-clock elapsed
+       between the first and last requestFrame() calls.  If seek+draw
+       is faster than the frame interval we wait to target; if slower,
+       we SKIP the seek+draw on that iteration and fire requestFrame()
+       on time anyway.  The canvas keeps its previous contents in that
+       slot (one duplicate frame).  Result: exact target duration.  */
+    const frameIntervalMs = 1000 / fps;
     const startWall = performance.now();
+    let droppedFrames = 0;
     for (let f = 0; f < totalFrames; f++) {
       const t = f / fps;
-      // Cheap sync: manages play/pause per layer window, only seeks on
-      // window-entry or when drift exceeds 100ms.  Common iteration
-      // has no seek at all — videos advance naturally under the export
-      // loop's own wall-clock pacing.
-      await driveVideoLayersRealtime(t % STATE.duration);
-      await drawExportFrame(ctx, W, H, imgs, t % STATE.duration, { bg }, crop);
-      if (canRequestFrame) vTrack.requestFrame(); // baker: sample THIS canvas state
-      // Pace to real-time so audio stays in sync AND the video decoder's
-      // natural playback stays aligned with our target sourceTimeAt.
-      const targetElapsed = (f + 1) * frameInterval;
-      const actual = performance.now() - startWall;
-      const wait = Math.max(2, targetElapsed - actual);
-      await new Promise((r) => setTimeout(r, wait));
+      const targetWall = startWall + (f + 1) * frameIntervalMs;
+      const nowBefore = performance.now();
+      const behindMs = nowBefore - (startWall + f * frameIntervalMs);
+
+      if (behindMs < frameIntervalMs * 1.5) {
+        // On budget — do the full seek + WebCodecs paint + composite.
+        await driveVideoLayersRealtime(t % STATE.duration);
+        await paintWebCodecsLayersForExport(t % STATE.duration);
+        await drawExportFrame(ctx, W, H, imgs, t % STATE.duration, { bg }, crop);
+      } else {
+        // Behind by more than 1.5 frame intervals — reuse the last
+        // drawn frame.  Prevents the export from stretching beyond
+        // the target duration when the decoder can't keep up.
+        droppedFrames++;
+      }
+      // Gate requestFrame() on the target wall-clock so MediaRecorder
+      // sees consistently-spaced samples regardless of iteration cost.
+      const wait = targetWall - performance.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      if (canRequestFrame) vTrack.requestFrame();
       if (f % Math.max(1, Math.round(fps / 3)) === 0) {
-        setExportStatus(`Recording ${f + 1}/${totalFrames}…`, "work");
+        setExportStatus(`Recording ${f + 1}/${totalFrames}…` + (droppedFrames ? ` (${droppedFrames} paced-out)` : ""), "work");
       }
     }
     // Give the recorder one more moment to flush the last frames
-    await new Promise((r) => setTimeout(r, Math.max(80, frameInterval * 2)));
+    await new Promise((r) => setTimeout(r, Math.max(80, frameIntervalMs * 2)));
     rec.stop();
     await stopped;
     finalizeVideoLayersAfterExport();
+    if (droppedFrames) console.log("[Phaser export] paced-out frames:", droppedFrames, "/", totalFrames);
     const blob = new Blob(chunks, { type: "video/webm" });
     LAST_WEBM_BLOB = blob;
     downloadBlob(blob, wantAlpha ? baseName("alpha.webm") : baseName("webm"));
@@ -3722,19 +3850,28 @@
       const bg = resolveExportBg(true, false);
       await initVideoLayersForExport();
       rec.start();
+      const frameIntervalMs = 1000 / fps;
       const startWall = performance.now();
+      let droppedFrames = 0;
       for (let f = 0; f < totalFrames; f++) {
         const t = f / fps;
-        await driveVideoLayersRealtime(t % STATE.duration);
-        await drawExportFrame(ctx, W, H, imgs, t % STATE.duration, { bg }, crop);
+        const targetWall = startWall + (f + 1) * frameIntervalMs;
+        const nowBefore = performance.now();
+        const behindMs = nowBefore - (startWall + f * frameIntervalMs);
+        if (behindMs < frameIntervalMs * 1.5) {
+          await driveVideoLayersRealtime(t % STATE.duration);
+          await paintWebCodecsLayersForExport(t % STATE.duration);
+          await drawExportFrame(ctx, W, H, imgs, t % STATE.duration, { bg }, crop);
+        } else {
+          droppedFrames++;
+        }
+        const wait = targetWall - performance.now();
+        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
         if (canRequestFrame) vTrack.requestFrame();
-        const targetElapsed = (f + 1) * frameInterval;
-        const actual = performance.now() - startWall;
-        const wait = Math.max(2, targetElapsed - actual);
-        await new Promise((r) => setTimeout(r, wait));
       }
-      await new Promise((r) => setTimeout(r, Math.max(80, frameInterval * 2)));
+      await new Promise((r) => setTimeout(r, Math.max(80, frameIntervalMs * 2)));
       rec.stop();
+      if (droppedFrames) console.log("[Phaser export] paced-out frames (MP4 path):", droppedFrames, "/", totalFrames);
     });
   }
   function syncExportUI() {
