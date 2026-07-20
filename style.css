@@ -163,7 +163,18 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; }
 .layer-host { position: absolute; inset: 0; }
 /* Each layer wrap positioned in artboard px space, centered origin. */
 .layer-el { position: absolute; left: 0; top: 0; display: flex; align-items: center; justify-content: center; will-change: transform, opacity, filter; }
-.layer-el > svg, .layer-el > img, .layer-el > video { width: 100%; height: 100%; display: block; object-fit: contain; }
+.layer-el > svg, .layer-el > img, .layer-el > video, .layer-el > canvas { width: 100%; height: 100%; display: block; object-fit: contain; }
+
+/* Path B decoder badge in the Video inspector panel. */
+.video-badge {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.video-badge.is-wc { background: rgba(110, 231, 168, 0.15); color: rgb(140, 240, 190); border: 1px solid rgba(110, 231, 168, 0.35); }
+.video-badge.is-legacy { background: rgba(255, 200, 120, 0.12); color: rgb(255, 210, 140); border: 1px solid rgba(255, 200, 120, 0.30); }
 
 /* CANVAS FRAME — fixed export boundary (subtle glowing solid border) */
 .artboard-frame { position: absolute; inset: 0; pointer-events: none; z-index: 20; border-radius: 2px;
