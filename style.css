@@ -314,6 +314,16 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; }
 .tl-clip:hover { box-shadow: 0 0 0 1px var(--accent), 0 4px 14px rgba(122,92,255,0.3); }
 .tl-clip.selected { box-shadow: 0 0 0 2px var(--accent-2), 0 4px 16px rgba(122,92,255,0.4); }
 .tl-clip.dragging { cursor: grabbing; }
+/* Video layer's timeline clip — subtle filmstrip diagonal stripe so
+   users can tell at a glance which layer is a video source without
+   competing visually with the purple accent for regular layers. */
+.tl-clip.video {
+  background: linear-gradient(180deg, rgba(110,231,168,0.42), rgba(110,231,168,0.24)),
+              repeating-linear-gradient(90deg, rgba(0,0,0,0.18) 0 4px, transparent 4px 8px);
+  border-color: rgba(110,231,168,0.75);
+}
+.tl-clip.video:hover { box-shadow: 0 0 0 1px rgba(110,231,168,0.75), 0 4px 14px rgba(110,231,168,0.25); }
+.tl-clip.video.selected { box-shadow: 0 0 0 2px rgba(110,231,168,0.9), 0 4px 16px rgba(110,231,168,0.35); }
 .tl-clip-label { font-size: 10px; color: #fff; padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; font-weight: 500; }
 .tl-handle { position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; }
 .tl-handle.left { left: 0; } .tl-handle.right { right: 0; }
