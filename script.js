@@ -376,17 +376,404 @@
     img.src = dataUrl; img.alt = name;
   }
 
-  /* ---- VIDEO import (Phase 1) --------------------------------------
-     We create an offscreen <video>, wait for metadata + a real decoded
-     frame, snapshot that first frame to an <img>, and register the
-     asset with kind "VIDEO".  Phase 1 treats the video as its first
-     frame everywhere downstream — preview, canvas, export — so we
-     inherit the existing static-bitmap render path with zero changes.
-     The layer additionally carries a reference to the source video
-     element and to future-facing fields (srcInPoint / srcOutPoint /
-     speed / videoDuration) so later phases can drive per-frame video
-     playback without another schema change. */
+  /* =============== PATH B — WebCodecs VideoSource =====================
+     Deterministic, timeline-driven video decoding.  Replaces the
+     HTMLVideoElement + native-playback-clock architecture with a
+     seek-any-frame frame cache addressed by source PTS.  Preview and
+     export both call getFrameAtSourceTime(t) → VideoFrame; the timeline
+     clock is the only clock.
+
+     Scope for this deliverable (B1+B2+B3): MP4/H.264 input, preview
+     only.  WebM continues to use the legacy HTMLVideoElement path
+     until B6.  If WebCodecs or mp4box is unavailable, ANY video falls
+     back to legacy — no regression versus previous release.  Export
+     path is NOT touched in this deliverable (B4 — separate).
+  */
+
+  // ---- mp4box.js lazy loader ----------------------------------------
+  // Loads mp4box on demand (first video import) from a CDN.  Cached
+  // promise so we only load once.  If the load fails (offline, CDN
+  // blocked, CSP), we return null and the caller falls back to legacy.
+  let _mp4boxLoadPromise = null;
+  function loadMP4Box() {
+    if (typeof window.MP4Box !== "undefined") return Promise.resolve(window.MP4Box);
+    if (_mp4boxLoadPromise) return _mp4boxLoadPromise;
+    _mp4boxLoadPromise = new Promise((resolve) => {
+      const s = document.createElement("script");
+      s.src = "https://cdn.jsdelivr.net/npm/mp4box@0.5.3/dist/mp4box.all.min.js";
+      s.async = true;
+      s.onload = () => resolve(window.MP4Box || null);
+      s.onerror = () => { _mp4boxLoadPromise = null; resolve(null); };
+      document.head.appendChild(s);
+    });
+    return _mp4boxLoadPromise;
+  }
+
+  // ---- LRU cache (frame-index → VideoFrame) -------------------------
+  // Doubly-linked list + Map.  O(1) get / set / evict.  Every eviction
+  // calls frame.close() — critical to avoid GPU memory leaks.
+  class FrameLRU {
+    constructor(maxFrames, maxBytes) {
+      this.maxFrames = maxFrames;
+      this.maxBytes = maxBytes;
+      this._map = new Map();      // idx → node
+      this._head = null;           // MRU
+      this._tail = null;           // LRU
+      this._bytes = 0;
+    }
+    get(idx) {
+      const node = this._map.get(idx);
+      if (!node) return null;
+      this._moveToHead(node);
+      return node.frame;
+    }
+    set(idx, frame, byteSize) {
+      if (this._map.has(idx)) { try { frame.close(); } catch(e){} return; }
+      const node = { idx, frame, byteSize, prev: null, next: this._head };
+      if (this._head) this._head.prev = node;
+      this._head = node;
+      if (!this._tail) this._tail = node;
+      this._map.set(idx, node);
+      this._bytes += byteSize;
+      this._evict();
+    }
+    _moveToHead(node) {
+      if (node === this._head) return;
+      if (node.prev) node.prev.next = node.next;
+      if (node.next) node.next.prev = node.prev;
+      if (node === this._tail) this._tail = node.prev;
+      node.prev = null; node.next = this._head;
+      if (this._head) this._head.prev = node;
+      this._head = node;
+      if (!this._tail) this._tail = node;
+    }
+    _evict() {
+      while ((this._map.size > this.maxFrames || this._bytes > this.maxBytes) && this._tail) {
+        const dead = this._tail;
+        this._tail = dead.prev;
+        if (this._tail) this._tail.next = null; else this._head = null;
+        this._map.delete(dead.idx);
+        this._bytes -= dead.byteSize;
+        try { dead.frame.close(); } catch(e){}
+      }
+    }
+    clear() {
+      for (const node of this._map.values()) { try { node.frame.close(); } catch(e){} }
+      this._map.clear();
+      this._head = null; this._tail = null;
+      this._bytes = 0;
+    }
+    get size() { return this._map.size; }
+    get bytes() { return this._bytes; }
+  }
+
+  /* ---- VideoSource -------------------------------------------------
+     Wraps an MP4/H.264 file into a frame-accurate, timeline-driven
+     decode source.  Public API:
+
+       VideoSource.create(arrayBuffer) → Promise<VideoSource>
+       source.getFrameSyncIfCached(tSourceSeconds) → VideoFrame | null
+       source.getFrameAtSourceTime(tSourceSeconds) → Promise<VideoFrame>
+       source.close()
+
+     Each layer owns its own VideoSource so independent playhead
+     positions don't fight for a shared decoder.  Duplicated layers get
+     independent sources built from the same shared ArrayBuffer. */
+  class VideoSource {
+    constructor(arrayBuffer) {
+      this._buffer = arrayBuffer;
+      this._decoder = null;
+      this._samples = [];              // [{pts_us, isKeyframe, data}]
+      this._sampleByPts = new Map();   // pts_us → sample index
+      this._width = 0;
+      this._height = 0;
+      this._duration = 0;
+      this._frameRate = 30;
+      this._codec = null;
+      this._codecDescription = null;
+      this._cache = new FrameLRU(60, 256 * 1024 * 1024);
+      this._pendingResolvers = new Map();  // idx → [{resolve, reject}]
+      this._submittedUpTo = -1;
+      this._closed = false;
+      this._lastError = null;
+    }
+
+    static async create(arrayBuffer) {
+      if (typeof VideoDecoder === "undefined") throw new Error("VideoDecoder unavailable");
+      if (typeof EncodedVideoChunk === "undefined") throw new Error("EncodedVideoChunk unavailable");
+      const MP4Box = await loadMP4Box();
+      if (!MP4Box) throw new Error("mp4box.js failed to load");
+      const source = new VideoSource(arrayBuffer);
+      await source._init(MP4Box);
+      return source;
+    }
+
+    get width()       { return this._width; }
+    get height()      { return this._height; }
+    get duration()    { return this._duration; }
+    get frameRate()   { return this._frameRate; }
+    get sampleCount() { return this._samples.length; }
+    get cacheStats()  { return { frames: this._cache.size, bytes: this._cache.bytes, maxFrames: this._cache.maxFrames, maxBytes: this._cache.maxBytes }; }
+
+    async _init(MP4Box) {
+      const { track, samples, description } = await this._demux(MP4Box);
+      this._width  = track.video ? track.video.width  : (track.track_width  || 0);
+      this._height = track.video ? track.video.height : (track.track_height || 0);
+      this._duration = (track.duration || 0) / (track.timescale || 1);
+      this._frameRate = this._duration > 0 ? (track.nb_samples / this._duration) : 30;
+      this._codec = track.codec;
+      this._codecDescription = description;
+      // Build sample table keyed by µs timestamps (matches VideoFrame.timestamp).
+      for (let i = 0; i < samples.length; i++) {
+        const s = samples[i];
+        const pts_us = Math.round((s.cts / track.timescale) * 1e6);
+        this._samples.push({ pts_us, isKeyframe: !!s.is_sync, data: s.data });
+        this._sampleByPts.set(pts_us, i);
+      }
+      // Verify codec support
+      const support = await VideoDecoder.isConfigSupported({
+        codec: this._codec, codedWidth: this._width, codedHeight: this._height,
+        description: this._codecDescription,
+      }).catch(() => ({ supported: false }));
+      if (!support.supported) throw new Error("Codec not supported: " + this._codec);
+      // Create + configure the decoder.
+      this._decoder = new VideoDecoder({
+        output: (frame) => this._onFrame(frame),
+        error:  (e) => { this._lastError = e; },
+      });
+      this._decoder.configure({
+        codec: this._codec, codedWidth: this._width, codedHeight: this._height,
+        description: this._codecDescription,
+      });
+    }
+
+    _demux(MP4Box) {
+      return new Promise((resolve, reject) => {
+        const file = MP4Box.createFile();
+        let track = null;
+        let expected = 0;
+        let description = null;
+        const samples = [];
+        file.onReady = (info) => {
+          track = (info.videoTracks && info.videoTracks[0]) || null;
+          if (!track) { reject(new Error("No video track")); return; }
+          // Extract codec configuration box (avcC / hvcC / vpcC / av1C).
+          try {
+            const trak = file.moov.traks.find(t => t.tkhd.track_id === track.id);
+            if (!trak) { reject(new Error("No track box")); return; }
+            const entry = trak.mdia.minf.stbl.stsd.entries[0];
+            const box = entry.avcC || entry.hvcC || entry.vpcC || entry.av1C;
+            if (!box) { reject(new Error("No codec description box")); return; }
+            const stream = new MP4Box.DataStream(undefined, 0, MP4Box.DataStream.BIG_ENDIAN);
+            box.write(stream);
+            // First 8 bytes are the box header (size + type); trim them.
+            description = new Uint8Array(stream.buffer, 8);
+          } catch (e) { reject(new Error("Codec description extraction failed: " + e.message)); return; }
+          expected = track.nb_samples;
+          if (expected === 0) { reject(new Error("Track has no samples")); return; }
+          file.setExtractionOptions(track.id, null, { nbSamples: expected });
+          file.start();
+        };
+        file.onSamples = (trackId, user, extracted) => {
+          for (const s of extracted) samples.push(s);
+          if (samples.length >= expected) resolve({ track, samples, description });
+        };
+        file.onError = (e) => reject(new Error("mp4box: " + e));
+        // mp4box mutates the buffer; clone so we don't damage the caller's copy.
+        const buf = this._buffer.slice(0);
+        buf.fileStart = 0;
+        try { file.appendBuffer(buf); file.flush(); }
+        catch (e) { reject(new Error("mp4box appendBuffer failed: " + e.message)); }
+      });
+    }
+
+    _onFrame(frame) {
+      if (this._closed) { try { frame.close(); } catch(e){} return; }
+      const idx = this._sampleByPts.get(frame.timestamp);
+      if (idx === undefined) { try { frame.close(); } catch(e){} return; }
+      const byteSize = (frame.allocationSize && frame.allocationSize()) || (this._width * this._height * 4);
+      // Resolve pending BEFORE caching (so waiters get the frame even if cache
+      // immediately evicts).  Cache also pins by "just-inserted head" position.
+      const resolvers = this._pendingResolvers.get(idx);
+      this._cache.set(idx, frame, byteSize);
+      if (resolvers) {
+        this._pendingResolvers.delete(idx);
+        for (const r of resolvers) r.resolve(frame);
+      }
+    }
+
+    _sampleIndexForTime(tSource) {
+      if (this._samples.length === 0) return -1;
+      const idx = Math.round(tSource * this._frameRate);
+      return Math.max(0, Math.min(idx, this._samples.length - 1));
+    }
+
+    _findKeyframeAtOrBefore(idx) {
+      for (let i = idx; i >= 0; i--) if (this._samples[i].isKeyframe) return i;
+      return 0;
+    }
+
+    _enqueue(idx) {
+      const s = this._samples[idx];
+      try {
+        this._decoder.decode(new EncodedVideoChunk({
+          type: s.isKeyframe ? "key" : "delta",
+          timestamp: s.pts_us,
+          data: s.data,
+        }));
+        this._submittedUpTo = idx;
+      } catch (e) { this._lastError = e; }
+    }
+
+    _resetDecoderForRewind() {
+      // Fired when a request lands behind _submittedUpTo AND isn't in cache.
+      try { this._decoder.reset(); } catch(e){}
+      try {
+        this._decoder.configure({
+          codec: this._codec, codedWidth: this._width, codedHeight: this._height,
+          description: this._codecDescription,
+        });
+      } catch(e){ this._lastError = e; }
+      this._submittedUpTo = -1;
+      // Keep pendingResolvers — they'll resolve when we resubmit those chunks.
+    }
+
+    getFrameSyncIfCached(tSource) {
+      const idx = this._sampleIndexForTime(tSource);
+      if (idx < 0) return null;
+      return this._cache.get(idx);
+    }
+
+    getFrameAtSourceTime(tSource) {
+      if (this._closed) return Promise.reject(new Error("VideoSource closed"));
+      const idx = this._sampleIndexForTime(tSource);
+      if (idx < 0) return Promise.reject(new Error("No samples"));
+      const cached = this._cache.get(idx);
+      if (cached) return Promise.resolve(cached);
+      // Attach or create a pending resolver.
+      const existing = this._pendingResolvers.get(idx);
+      const promise = new Promise((resolve, reject) => {
+        const entry = { resolve, reject };
+        if (existing) existing.push(entry);
+        else { this._pendingResolvers.set(idx, [entry]); }
+      });
+      if (!existing) {
+        // We haven't started waiting for this idx yet — kick off decode.
+        this._triggerDecodeTo(idx);
+        // Safety timeout so the promise can't hang forever if the decoder wedges.
+        setTimeout(() => {
+          const rs = this._pendingResolvers.get(idx);
+          if (rs) { this._pendingResolvers.delete(idx); for (const r of rs) r.reject(new Error("decode timeout")); }
+        }, 2000);
+      }
+      return promise;
+    }
+
+    _triggerDecodeTo(targetIdx) {
+      if (targetIdx <= this._submittedUpTo) {
+        // Already in-flight: either the frame is coming or was evicted.
+        // If evicted, we need to resubmit.  Since we don't track that
+        // separately, resubmit from the keyframe before targetIdx.
+        const cached = this._cache.get(targetIdx);
+        if (cached) return;   // shouldn't happen (caller already checked)
+        this._resetDecoderForRewind();
+        const kf = this._findKeyframeAtOrBefore(targetIdx);
+        for (let i = kf; i <= targetIdx; i++) this._enqueue(i);
+        return;
+      }
+      // Forward from _submittedUpTo (contiguous decode).
+      let startIdx = this._submittedUpTo + 1;
+      // Cold start: begin at the keyframe at or before targetIdx.
+      if (this._submittedUpTo < 0) startIdx = this._findKeyframeAtOrBefore(targetIdx);
+      for (let i = startIdx; i <= targetIdx; i++) this._enqueue(i);
+    }
+
+    close() {
+      if (this._closed) return;
+      this._closed = true;
+      try { this._decoder && this._decoder.close(); } catch(e){}
+      this._cache.clear();
+      for (const [, resolvers] of this._pendingResolvers) {
+        for (const r of resolvers) r.reject(new Error("closed"));
+      }
+      this._pendingResolvers.clear();
+      // Release the backing buffer so GC can reclaim.
+      this._buffer = null;
+    }
+  }
+
+  /* ---- VIDEO import ------------------------------------------------
+     Path B: for MP4 files, try to build a WebCodecs VideoSource
+     (deterministic, timeline-driven).  If that fails (WebCodecs
+     unavailable, mp4box fails to load, unsupported codec, corrupt file)
+     OR the file isn't MP4, fall back to the legacy HTMLVideoElement
+     path.  In both cases we snapshot the first frame for the asset
+     library thumbnail.  The user can tell which mode a layer is in
+     from the "Frame-accurate" / "Legacy" badge in the inspector. */
   function addVideoAsset(file) {
+    // Only MP4 (and best-effort MOV) go through the WebCodecs path in
+    // this deliverable.  WebM stays on the legacy path until B6.
+    const isMP4Like = /\.(mp4|m4v|mov)$/i.test(file.name) || file.type === "video/mp4" || file.type === "video/quicktime";
+    if (!isMP4Like || typeof VideoDecoder === "undefined" || typeof EncodedVideoChunk === "undefined") {
+      addVideoAsset_Legacy(file);
+      return;
+    }
+    // Attempt WebCodecs path: read ArrayBuffer → demux → configure decoder → snapshot frame 0.
+    const reader = new FileReader();
+    reader.onerror = () => { toast(`Couldn't read ${file.name}`); };
+    reader.onload = async (ev) => {
+      const arrayBuffer = ev.target.result;
+      let source;
+      try { source = await VideoSource.create(arrayBuffer); }
+      catch (e) {
+        // Any failure — codec, mp4box, demux, decoder config — falls to legacy.
+        console.warn("[VideoSource] falling back to legacy for", file.name, e);
+        addVideoAsset_Legacy(file);
+        return;
+      }
+      // Snapshot the first frame for the library thumbnail.  Uses the
+      // same VideoSource pipeline so we know it works end-to-end.
+      let dataUrl;
+      try {
+        const frame = await source.getFrameAtSourceTime(0);
+        const c = document.createElement("canvas");
+        c.width = source.width; c.height = source.height;
+        c.getContext("2d").drawImage(frame, 0, 0, source.width, source.height);
+        dataUrl = c.toDataURL("image/png");
+      } catch (e) {
+        console.warn("[VideoSource] snapshot failed, falling back", e);
+        source.close();
+        addVideoAsset_Legacy(file);
+        return;
+      }
+      const img = new Image();
+      img.onload = () => {
+        // Store the raw ArrayBuffer on the asset so future layers built
+        // from this asset get their own independent VideoSource.  The
+        // asset's own source is discarded after the snapshot; not
+        // shared with layers (each layer needs its own decoder state).
+        source.close();
+        registerAsset(file.name, "VIDEO", img, dataUrl, {
+          natW: source.width, natH: source.height, complex: false,
+          arrayBuffer,                         // shared source of truth
+          duration: source.duration,
+          frameRate: source.frameRate,
+          codec: source._codec,
+          isVideoSource: true,
+          useWebCodecs: true,                  // marks Frame-accurate layers
+        });
+      };
+      img.onerror = () => { source.close(); addVideoAsset_Legacy(file); };
+      img.src = dataUrl;
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  /* Legacy HTMLVideoElement path — Phase 2 behaviour, kept as fallback.
+     Used for WebM, for anything WebCodecs can't decode, and when
+     mp4box/WebCodecs are unavailable.  Layers built from these assets
+     get the "Legacy" badge in the inspector. */
+  function addVideoAsset_Legacy(file) {
     let url;
     try { url = URL.createObjectURL(file); } catch (e) { toast(`Couldn't read ${file.name}`); return; }
     const video = document.createElement("video");
@@ -439,6 +826,7 @@
               videoEl: video, videoUrl: url, duration,
               // Phase 1 marker: this asset comes from a video source.
               isVideoSource: true,
+              useWebCodecs: false,     // Legacy layers get the "Legacy" badge.
             });
           };
           img.onerror = () => fail("snapshot decode failed");
@@ -491,25 +879,54 @@
   function addLayerFromAsset(asset) {
     const id = ++idSeq;
     let node;
+    let webCodecsSource = null;   // if non-null, this layer uses the WebCodecs path
     if (asset.kind === "SVG") { node = asset.node.cloneNode(true); splitTextNodes(node); }
     else if (asset.kind === "VIDEO") {
-      // Phase 2: each video layer gets its OWN <video> element (so
-      // multiple layers from the same asset can be at different
-      // playhead positions).  This same element is used for both the
-      // DOM preview AND as the drawImage source during export.
-      node = document.createElement("video");
-      node.muted = true;
-      node.playsInline = true;
-      node.preload = "auto";
-      node.crossOrigin = "anonymous";
-      // Blob URL from addVideoAsset; the browser has already decoded
-      // metadata + at least one frame during the Phase-1 snapshot pass,
-      // so re-loading from the same URL is near-instant.
-      node.src = asset.meta.videoUrl;
-      // Surface a decode error to the user instead of a silent failure.
-      node.addEventListener("error", () => {
-        toast(`Couldn't decode ${asset.name} — browser doesn't support this codec`);
-      });
+      if (asset.meta.useWebCodecs && asset.meta.arrayBuffer) {
+        // Path B: create a canvas node that we'll drawImage decoded
+        // VideoFrames into on every RAF.  The canvas naturally slots
+        // into the existing layer.wrap → composeLayer → CSS filter
+        // pipeline, so all 34 event effects work on top of it
+        // without special-casing.  A fresh VideoSource is built here
+        // so each layer has its own decoder + cache (independent
+        // playhead per layer).
+        node = document.createElement("canvas");
+        node.width  = asset.meta.natW;
+        node.height = asset.meta.natH;
+        node._is_webcodecs_video = true;   // marker used by the render loop
+        // Kick off VideoSource creation asynchronously; until it's
+        // ready, the canvas stays black.  The initial snapshot is
+        // drawn as soon as the source is ready.
+        VideoSource.create(asset.meta.arrayBuffer).then((source) => {
+          if (!node.isConnected) { source.close(); return; }
+          const found = layers.find((L) => L.node === node);
+          if (!found) { source.close(); return; }
+          found.videoSource = source;
+          // Prime the cache with frame 0 and draw it immediately.
+          source.getFrameAtSourceTime(0).then((frame) => {
+            try {
+              const ctx = node.getContext("2d");
+              ctx.drawImage(frame, 0, 0, node.width, node.height);
+            } catch (e) {}
+            paintIfPaused();
+          }).catch(() => {});
+        }).catch((e) => {
+          console.warn("[VideoSource] layer init failed, using snapshot fallback", e);
+          // Draw the asset's first-frame snapshot as a static fallback.
+          try { node.getContext("2d").drawImage(asset.node, 0, 0, node.width, node.height); } catch (e) {}
+        });
+      } else {
+        // Legacy path: keep the Phase 2 <video> element behaviour.
+        node = document.createElement("video");
+        node.muted = true;
+        node.playsInline = true;
+        node.preload = "auto";
+        node.crossOrigin = "anonymous";
+        node.src = asset.meta.videoUrl;
+        node.addEventListener("error", () => {
+          toast(`Couldn't decode ${asset.name} — browser doesn't support this codec`);
+        });
+      }
     }
     else {
       node = new Image(); node.src = asset.dataUrl;
@@ -538,17 +955,18 @@
       recipe: makeRecipe(id * 131),
       originalColors: null,
     };
-    // VIDEO layers carry per-layer playback state.  layer.videoEl points
-    // to the SAME element as layer.node (used both by preview compositing
-    // and by drawExportFrame as its drawImage source).  Additive schema
-    // fields for later phases stay unset by rendering code in Phase 2.
+    // VIDEO layers: schema fields, additive.  WebCodecs layers use
+    // layer.videoSource (attached asynchronously above); legacy layers
+    // use layer.videoEl (the <video> node itself).
     if (asset.kind === "VIDEO") {
-      layer.videoEl = node;                          // same reference as layer.node
+      layer.useWebCodecs = !!asset.meta.useWebCodecs;
+      layer.videoEl = layer.useWebCodecs ? null : node;
+      layer.videoSource = null;         // filled in when VideoSource.create resolves
       layer.videoUrl = nat.videoUrl || null;
       layer.videoDuration = nat.duration || 0;
       layer.srcInPoint = 0;
       layer.srcOutPoint = nat.duration || 0;
-      layer.speed = 1;                                // Phase 3 hook — not read yet
+      layer.speed = 1;                  // Phase 3 hook — not read yet
     }
     captureOriginalColors(layer);
     layers.push(layer);
@@ -590,6 +1008,9 @@
   }
   function deleteLayer(layer) {
     const i = layers.indexOf(layer); if (i < 0) return;
+    // Path B: release the decoder + close all cached VideoFrames.
+    // Without this, GPU memory leaks with every deleted video layer.
+    if (layer.videoSource) { try { layer.videoSource.close(); } catch (e) {} layer.videoSource = null; }
     if (layer.wrap && layer.wrap.parentNode) layer.wrap.parentNode.removeChild(layer.wrap);
     layers.splice(i, 1);
     if (selectedLayer === layer) selectedLayer = null;
@@ -667,6 +1088,17 @@
         if (vout) { vout.max = dur.toFixed(2); vout.value = (L.srcOutPoint || dur).toFixed(2); }
         if (vvin)  vvin.textContent  = (L.srcInPoint  || 0).toFixed(2);
         if (vvout) vvout.textContent = (L.srcOutPoint || dur).toFixed(2);
+        // Path B badge — tells the user which decoder is driving this layer.
+        const badge = document.getElementById("videoDecoderBadge");
+        if (badge) {
+          if (L.useWebCodecs) {
+            badge.textContent = "Frame-accurate (WebCodecs)";
+            badge.className = "video-badge is-wc";
+          } else {
+            badge.textContent = "Legacy (HTMLVideoElement)";
+            badge.className = "video-badge is-legacy";
+          }
+        }
       }
     }
     if (!has) return;
@@ -1683,6 +2115,47 @@
     }
   }
 
+  /* Path B — per-frame video sync for WebCodecs-backed layers.
+     Draws the frame at sourceTimeAt(layer, t) into the layer's canvas
+     if it's cached; otherwise kicks off an async decode and leaves
+     the canvas showing the previously-drawn frame (no flash).  A
+     small speculative prefetch (~0.5s ahead) keeps the cache warm
+     during playback so sync-cached hits dominate. */
+  function paintVideoLayer_WebCodecs(layer, t) {
+    if (!layer.videoSource || !layer.node) return;
+    const active = layer.visible && t >= layer.start - 0.001 && t <= layer.start + layer.duration + 0.001;
+    if (!active) return;   // opacity will be zeroed by composeLayer; canvas retains last drawn frame
+    const tSource = sourceTimeAt(layer, t);
+    const frame = layer.videoSource.getFrameSyncIfCached(tSource);
+    if (frame) {
+      try {
+        const ctx = layer.node.getContext("2d");
+        ctx.drawImage(frame, 0, 0, layer.node.width, layer.node.height);
+      } catch (e) {}
+    } else {
+      // Kick off async decode; result lands in the cache and gets drawn on a subsequent RAF.
+      layer.videoSource.getFrameAtSourceTime(tSource).then((f) => {
+        if (!layer.node || !layer.node.getContext) return;
+        try {
+          const ctx = layer.node.getContext("2d");
+          ctx.drawImage(f, 0, 0, layer.node.width, layer.node.height);
+        } catch (e) {}
+      }).catch(() => {});
+    }
+    // Speculative prefetch — keeps a rolling window of ~15 frames warm.
+    // Harmless if the target is beyond the trim range (out-of-bounds request just fails).
+    const ahead = tSource + 0.5;
+    if (ahead < (layer.srcOutPoint || layer.videoDuration || 0)) {
+      layer.videoSource.getFrameAtSourceTime(ahead).catch(() => {});
+    }
+  }
+
+  // Dispatch to the right video-sync helper based on which decoder the layer uses.
+  function syncOrPaintVideoLayer(layer, t, playing) {
+    if (layer.videoSource)      paintVideoLayer_WebCodecs(layer, t);
+    else if (layer.videoEl)     syncVideoLayerToTimeline(layer, t, playing);
+  }
+
   /* Export sync — async, deterministic.  Waits for the frame to be
      displayable before returning, so the next drawExportFrame call
      actually samples the seeked frame.  Prefers
@@ -1866,7 +2339,7 @@
     // Phase 2: keep every video layer's <video> element in sync with the
     // timeline BEFORE composeLayer runs (composeLayer applies CSS
     // transforms/filters but doesn't touch playback state).
-    layers.forEach((layer) => { if (layer.kind === "VIDEO") syncVideoLayerToTimeline(layer, t, true); });
+    layers.forEach((layer) => { if (layer.kind === "VIDEO") syncOrPaintVideoLayer(layer, t, true); });
 
     layers.forEach((layer) => {
       if (!layer.wrap) return;
@@ -2021,7 +2494,7 @@
     // playhead when paused/scrubbing.  Fire-and-forget seek — the
     // <video> element updates its displayed frame when the seek
     // completes, which is fine for preview.
-    layers.forEach((L) => { if (L.kind === "VIDEO") syncVideoLayerToTimeline(L, STATE.time, false); });
+    layers.forEach((L) => { if (L.kind === "VIDEO") syncOrPaintVideoLayer(L, STATE.time, false); });
     layers.forEach((layer) => { if (!layer.wrap) return; if (!layer.visible) { layer.wrap.style.opacity = "0"; return; } placeLayerStatic(layer); });
     el.artboard.style.setProperty("--scanline-op", 0);
     el.artboard.style.setProperty("--noise-op", 0);
@@ -2038,7 +2511,7 @@
     let sceneScan = STATE.scanline / 100, sceneNoise = STATE.noise / 100;
     let anyHud = false, hudFlicker = 1, anyFlash = null, flashA = 0;
     // Sync video layers to the current timeline position before drawing.
-    layers.forEach((L) => { if (L.kind === "VIDEO") syncVideoLayerToTimeline(L, t, false); });
+    layers.forEach((L) => { if (L.kind === "VIDEO") syncOrPaintVideoLayer(L, t, false); });
     layers.forEach((layer) => {
       if (!layer.wrap) return;
       const active = layer.visible && t >= layer.start - 0.001 && t <= layer.start + layer.duration + 0.001;
@@ -2123,7 +2596,7 @@
       }
       // Sync + start every video layer.  syncVideoLayerToTimeline
       // handles the hard-seek + play() call.
-      layers.forEach((L) => { if (L.kind === "VIDEO") syncVideoLayerToTimeline(L, STATE.time, true); });
+      layers.forEach((L) => { if (L.kind === "VIDEO") syncOrPaintVideoLayer(L, STATE.time, true); });
       // schedule all SFX/voice clips
       schedulePlayback(STATE.time);
     } else {
@@ -3588,7 +4061,7 @@
         if (audio.ready) { try { audio.el.currentTime = t; } catch (err) {} }
         // Force video layers to re-seek immediately — the drift-based
         // sync in frame() would only pick this up on the next RAF.
-        layers.forEach((L) => { if (L.kind === "VIDEO" && L.videoEl) { try { L.videoEl.currentTime = sourceTimeAt(L, t); } catch (err) {} } });
+        layers.forEach((L) => { if (L.kind === "VIDEO") syncOrPaintVideoLayer(L, t, true); });
       }
       else { paintIfPaused(); }
     });
