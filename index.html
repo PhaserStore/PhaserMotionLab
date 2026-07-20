@@ -244,6 +244,20 @@
           </div>
         </section>
 
+        <!-- VIDEO (only shown for video layers) -->
+        <section class="prop-group" id="videoGroup" hidden>
+          <div class="group-head"><h3>Video</h3></div>
+          <div id="videoBody">
+            <div class="prop-row"><span class="prop-label">Duration</span><span class="color-hex" id="videoDurLabel">—</span></div>
+            <div class="control"><span class="ctl-label">In point</span><span class="ctl-val" id="val-vin">0.00</span><input type="range" min="0" max="10" step="0.01" value="0" id="ctl-vin"></div>
+            <div class="control"><span class="ctl-label">Out point</span><span class="ctl-val" id="val-vout">0.00</span><input type="range" min="0" max="10" step="0.01" value="0" id="ctl-vout"></div>
+            <div class="btn-grid" style="margin-top:8px">
+              <button class="mini-btn" id="vFitTrim" title="Set layer duration to match the trimmed range">Fit layer to trim</button>
+              <button class="mini-btn" id="vResetTrim" title="Reset In/Out to the full source range">Reset trim</button>
+            </div>
+          </div>
+        </section>
+
         <!-- ALIGNMENT -->
         <section class="prop-group" id="alignGroup">
           <div class="group-head"><h3>Alignment</h3></div>
