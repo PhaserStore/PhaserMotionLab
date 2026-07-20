@@ -343,8 +343,9 @@
       const reader = new FileReader();
       if (file.type.includes("svg") || file.name.toLowerCase().endsWith(".svg")) { reader.onload = (e) => addSvgAsset(file.name, e.target.result); reader.readAsText(file); ok++; }
       else if (file.type.startsWith("image/")) { reader.onload = (e) => addImageAsset(file.name, e.target.result); reader.readAsDataURL(file); ok++; }
+      else if (file.type.startsWith("video/") || /\.(mp4|webm|mov|m4v)$/i.test(file.name)) { addVideoAsset(file); ok++; }
     });
-    if (!ok) toast("No supported files (SVG, PNG, JPG, WebP)");
+    if (!ok) toast("No supported files (SVG, PNG, JPG, WebP, MP4, WebM)");
   }
 
   function addSvgAsset(name, svgText) {
@@ -371,6 +372,82 @@
     img.onerror = () => toast(`Couldn't load ${name}`);
     img.src = dataUrl; img.alt = name;
   }
+
+  /* ---- VIDEO import (Phase 1) --------------------------------------
+     We create an offscreen <video>, wait for metadata + a real decoded
+     frame, snapshot that first frame to an <img>, and register the
+     asset with kind "VIDEO".  Phase 1 treats the video as its first
+     frame everywhere downstream — preview, canvas, export — so we
+     inherit the existing static-bitmap render path with zero changes.
+     The layer additionally carries a reference to the source video
+     element and to future-facing fields (srcInPoint / srcOutPoint /
+     speed / videoDuration) so later phases can drive per-frame video
+     playback without another schema change. */
+  function addVideoAsset(file) {
+    let url;
+    try { url = URL.createObjectURL(file); } catch (e) { toast(`Couldn't read ${file.name}`); return; }
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+    video.crossOrigin = "anonymous";
+    // Offscreen: kept alive in memory but not attached to the DOM so
+    // it never renders itself into the layout.
+    video.src = url;
+
+    let handled = false;
+    const fail = (why) => {
+      if (handled) return; handled = true;
+      URL.revokeObjectURL(url);
+      toast(`Couldn't load ${file.name} — ${why}`);
+    };
+    video.addEventListener("error", () => fail("decoder error"));
+    // Timeout guard for browsers that stall on metadata for a bad file.
+    const t0 = performance.now();
+    const timeoutId = setTimeout(() => { if (!handled && !video.videoWidth) fail("timed out reading video"); }, 10000);
+
+    video.addEventListener("loadedmetadata", () => {
+      const natW = video.videoWidth || 640, natH = video.videoHeight || 480;
+      const duration = isFinite(video.duration) && video.duration > 0 ? video.duration : 1;
+      // Seek to a tiny offset instead of exactly 0 — some browsers
+      // hand back a blank frame at t=0 before the first keyframe has
+      // been decoded.  Clamp to a value inside the media.
+      const seekTo = Math.min(0.05, duration * 0.02);
+      const onSeeked = () => {
+        video.removeEventListener("seeked", onSeeked);
+        clearTimeout(timeoutId);
+        if (handled) return;
+        // Snapshot the current frame to a canvas → dataURL → Image
+        try {
+          const c = document.createElement("canvas");
+          c.width = natW; c.height = natH;
+          const ctx = c.getContext("2d");
+          ctx.drawImage(video, 0, 0, natW, natH);
+          const dataUrl = c.toDataURL("image/png");
+          const img = new Image();
+          img.onload = () => {
+            handled = true;
+            // Register with kind VIDEO; asset.node is the snapshot Image
+            // (so it slots straight into the existing rendering path);
+            // asset.videoEl keeps the offscreen video alive for later
+            // phases; asset.videoUrl / duration are stored for save/UX.
+            registerAsset(file.name, "VIDEO", img, dataUrl, {
+              natW, natH, complex: false,
+              videoEl: video, videoUrl: url, duration,
+              // Phase 1 marker: this asset comes from a video source.
+              isVideoSource: true,
+            });
+          };
+          img.onerror = () => fail("snapshot decode failed");
+          img.src = dataUrl;
+        } catch (e) { fail("frame snapshot blocked"); }
+      };
+      video.addEventListener("seeked", onSeeked);
+      // Some browsers only fire seeked if currentTime actually changes;
+      // if we're already at seekTo (rare) trigger the load manually.
+      try { video.currentTime = seekTo; } catch (e) { onSeeked(); }
+    });
+  }
   function registerAsset(name, kind, node, dataUrl, meta) {
     const asset = { id: ++idSeq, name, kind, node, dataUrl, meta: meta || { natW: 512, natH: 512, complex: false } };
     assets.push(asset); renderAssetList(); addLayerFromAsset(asset); toast(`Added ${name}`);
@@ -381,7 +458,11 @@
     el.assetList.innerHTML = "";
     assets.forEach((a) => {
       const card = document.createElement("div"); card.className = "asset-card"; card.title = `${a.name} — click to add as a layer`;
-      const thumb = a.kind === "IMG" ? `<img class="asset-thumb" src="${a.dataUrl}" alt="">` : `<div class="asset-thumb">${svgThumb(a.node)}</div>`;
+      // VIDEO assets use the first-frame snapshot dataURL, same as IMG.
+      // Only SVG is rendered from a live <svg> node.
+      const thumb = (a.kind === "IMG" || a.kind === "VIDEO")
+        ? `<img class="asset-thumb" src="${a.dataUrl}" alt="">`
+        : `<div class="asset-thumb">${svgThumb(a.node)}</div>`;
       card.innerHTML = `<span class="asset-kind">${a.kind}</span><button class="asset-del" title="Remove from library">\u00d7</button>` + thumb;
       card.addEventListener("click", (e) => { if (e.target.classList.contains("asset-del")) { removeAsset(a); e.stopPropagation(); } else { addLayerFromAsset(a); toast(`Layer added: ${a.name}`); } });
       el.assetList.appendChild(card);
@@ -408,7 +489,14 @@
     const id = ++idSeq;
     let node;
     if (asset.kind === "SVG") { node = asset.node.cloneNode(true); splitTextNodes(node); }
-    else { node = new Image(); node.src = asset.dataUrl; }
+    else {
+      // Both IMG and VIDEO use an <img> element pointing at the stored
+      // dataURL (asset.node for IMG is already an Image; for VIDEO we
+      // stored the first-frame snapshot Image as asset.node too — see
+      // addVideoAsset).  Cloning via new Image() gives each layer its
+      // own DOM node without disturbing the asset's cached Image.
+      node = new Image(); node.src = asset.dataUrl;
+    }
     const wrap = document.createElement("div"); wrap.className = "layer-el"; wrap.appendChild(node);
     el.layerHost.appendChild(wrap);
 
@@ -433,6 +521,19 @@
       recipe: makeRecipe(id * 131),
       originalColors: null,
     };
+    // VIDEO layers carry additive future-phase fields so Phase 2+ can
+    // wire up playback without another schema change.  Phase 1 does not
+    // read these — the layer renders as its first-frame snapshot.
+    if (asset.kind === "VIDEO") {
+      layer.videoEl = nat.videoEl || null;          // reference to offscreen <video>
+      layer.videoUrl = nat.videoUrl || null;        // blob URL to source
+      layer.videoDuration = nat.duration || 0;      // source media duration in seconds
+      layer.srcInPoint = 0;                          // trim-in (source seconds)
+      layer.srcOutPoint = nat.duration || 0;         // trim-out (source seconds)
+      layer.speed = 1;                               // Phase 3 constant speed multiplier
+      // Phase 4 will attach a speedCurve here (list of {tLocal, speed}
+      // keyframes).  Left unset by design.
+    }
     captureOriginalColors(layer);
     layers.push(layer);
     renderLayers(); renderTimeline(); selectLayer(layer); updateHintVisibility();
@@ -767,7 +868,7 @@
       markers.forEach((m) => { const mk = document.createElement("div"); mk.className = "tl-marker " + m.type; mk.style.left = (m.time * TL.pxPerSec) + "px"; track.appendChild(mk); });
       const label = document.createElement("span"); label.className = "tl-track-label"; label.textContent = layer.name; track.appendChild(label);
       // main sustained clip
-      const clip = document.createElement("div"); clip.className = "tl-clip" + (layer === selectedLayer && !selectedAudioClip ? " selected" : "");
+      const clip = document.createElement("div"); clip.className = "tl-clip" + (layer.kind === "VIDEO" ? " video" : "") + (layer === selectedLayer && !selectedAudioClip ? " selected" : "");
       clip.style.left = (layer.start * TL.pxPerSec) + "px"; clip.style.width = Math.max(14, layer.duration * TL.pxPerSec) + "px";
       const summary = (layer.fx.length ? layer.fx.length + " fx" : "no fx") + (layer.clips.length ? " · " + layer.clips.length + " ev" : "");
       clip.innerHTML = `<span class="tl-handle left"></span><span class="tl-clip-label">${layer.name} \u00b7 ${summary}</span><span class="tl-handle right"></span>`;
@@ -2001,7 +2102,11 @@
 
   function layerToImage(layer) {
     return new Promise((resolve) => {
-      if (layer.kind === "IMG") { resolve(layer.node); return; }
+      // IMG and VIDEO both have a ready-to-draw Image node cached on
+      // the layer (for VIDEO it's the first-frame snapshot from
+      // addVideoAsset).  SVG needs a fresh rasterization via a blob URL
+      // because its DOM can be recolored between rasterizations.
+      if (layer.kind === "IMG" || layer.kind === "VIDEO") { resolve(layer.node); return; }
       const svgStr = new XMLSerializer().serializeToString(layer.node);
       const url = URL.createObjectURL(new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" }));
       const img = new Image(); img.onload = () => { URL.revokeObjectURL(url); resolve(img); }; img.onerror = () => { URL.revokeObjectURL(url); resolve(null); }; img.src = url;
