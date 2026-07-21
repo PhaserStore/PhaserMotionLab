@@ -852,17 +852,22 @@
       }
       const img = new Image();
       img.onload = () => {
+        // Store the raw ArrayBuffer on the asset so future layers built
+        // from this asset get their own independent VideoSource.  The
+        // asset's own source is discarded after the snapshot; not
+        // shared with layers (each layer needs its own decoder state).
         source.close();
-        step("→ WEBCODECS active (registering asset)", null);
         diag.finalPath = "webcodecs";
+        step("→ WEBCODECS active (registering asset)", null);
         registerAsset(file.name, "VIDEO", img, dataUrl, {
           natW: source.width, natH: source.height, complex: false,
-          arrayBuffer,
+          arrayBuffer,                         // shared source of truth
           duration: source.duration,
           frameRate: source.frameRate,
           codec: source._codec,
           isVideoSource: true,
-          useWebCodecs: true,
+          useWebCodecs: true,                  // marks Frame-accurate layers
+          videoDiag: JSON.parse(JSON.stringify(diag)),  // snapshot for the inspector
         });
       };
       img.onerror = () => {
@@ -933,6 +938,14 @@
               // Phase 1 marker: this asset comes from a video source.
               isVideoSource: true,
               useWebCodecs: false,     // Legacy layers get the "Legacy" badge.
+              // Snapshot the WebCodecs-attempt diag so the inspector can
+              // surface WHY we ended up here.  When the file was e.g. a
+              // WebM (not MP4-like), diag exists but its steps only
+              // include the "not-mp4" trip.  When mp4box.js CDN failed,
+              // the full ladder is captured.
+              videoDiag: window.__phaserVideoDiag
+                ? JSON.parse(JSON.stringify(window.__phaserVideoDiag))
+                : { finalPath: "legacy:direct", steps: [], error: null },
             });
           };
           img.onerror = () => fail("snapshot decode failed");
@@ -1077,6 +1090,9 @@
       layer.srcInPoint = 0;
       layer.srcOutPoint = nat.duration || 0;
       layer.speed = 1;                  // Phase 3 hook — not read yet
+      // Diag from import — inspector reads this to show WHY the layer
+      // ended up on WebCodecs or Legacy.
+      layer.videoDiag = nat.videoDiag || null;
     }
     captureOriginalColors(layer);
     layers.push(layer);
@@ -1178,6 +1194,97 @@
   }
 
   /* ---------------- INSPECTOR (transform + color + fx) ---------------- */
+  /* v15.3 — Render the video diagnostic panel from layer.videoDiag.
+     Extracts environmental status (WebCodecs API + mp4box) and the
+     fallback reason from the raw diag step trail.  Adds a helpful
+     hint below the status when the fallback reason is one we recognize
+     (CDN block, HEVC, no WebCodecs, etc.).  Called from renderInspector
+     whenever a video layer is selected. */
+  function renderVideoDiagPanel(layer) {
+    const $ = (id) => document.getElementById(id);
+    const setVal = (id, text, cls) => {
+      const e = $(id); if (!e) return;
+      e.textContent = text;
+      e.className = "video-diag-val" + (cls ? " " + cls : "");
+    };
+    const setHint = (text) => {
+      const e = $("diag-hint"); if (!e) return;
+      if (text) { e.textContent = text; e.classList.add("show"); }
+      else { e.textContent = ""; e.classList.remove("show"); }
+    };
+    // If the layer has no diag object (very old asset, or edge case),
+    // show a minimal panel with environmental info anyway.
+    const diag = layer.videoDiag || { steps: [], finalPath: null, error: null };
+    const stepByLabel = {};
+    for (const s of (diag.steps || [])) {
+      if (!stepByLabel[s.label]) stepByLabel[s.label] = s;
+    }
+
+    // --- WebCodecs API row (from step or current env) ---
+    const wcStep = stepByLabel["WebCodecs API check"];
+    const wcAvail = wcStep
+      ? (!!wcStep.hasVideoDecoder && !!wcStep.hasEncodedVideoChunk)
+      : (typeof VideoDecoder !== "undefined" && typeof EncodedVideoChunk !== "undefined");
+    setVal("diag-webcodecs", wcAvail ? "available" : "unavailable", wcAvail ? "diag-ok" : "diag-err");
+
+    // --- mp4box.js row ---
+    // Loaded if either the "mp4box.js loaded" step exists, or the current
+    // window has MP4Box defined.
+    const mp4Step = stepByLabel["mp4box.js loaded"];
+    const mp4Global = typeof window.MP4Box !== "undefined";
+    let mp4Val, mp4Cls;
+    if (mp4Step || mp4Global) { mp4Val = "loaded"; mp4Cls = "diag-ok"; }
+    else if (diag.error && /mp4box/i.test(diag.error)) { mp4Val = "failed to load"; mp4Cls = "diag-err"; }
+    else if (diag.finalPath === "legacy:not-mp4" || diag.finalPath === "legacy:no-webcodecs-api") { mp4Val = "not attempted"; mp4Cls = ""; }
+    else { mp4Val = "not attempted"; mp4Cls = ""; }
+    setVal("diag-mp4box", mp4Val, mp4Cls);
+
+    // --- Codec row ---
+    // Try to pull codec from the "codec selected" or "demux complete" step,
+    // or from the asset meta if we got that far.
+    const codecStep = stepByLabel["demux complete"] || stepByLabel["codec selected"] || stepByLabel["checking codec support"];
+    const codec = (codecStep && codecStep.codec) || null;
+    setVal("diag-codec", codec || "not detected", codec ? "" : "diag-warn");
+
+    // --- Fallback row ---
+    if (layer.useWebCodecs) {
+      // Success — hide the fallback row (nothing to report).
+      const row = $("diag-reason-row"); if (row) row.style.display = "none";
+      setHint("");
+    } else {
+      const row = $("diag-reason-row"); if (row) row.style.display = "";
+      const reason = diag.finalPath || "unknown";
+      const msg    = diag.error     || (REASON_MESSAGES[reason] || "See DevTools console for details");
+      setVal("diag-reason", msg, "diag-err");
+      // Helpful hint below the status.
+      setHint(REASON_HINTS[reason] || (
+        diag.error && /codec not supported/i.test(diag.error)
+          ? "This browser can't decode this codec via WebCodecs. Re-encode as H.264 (avc1) for frame-accurate playback."
+        : diag.error && /mp4box/i.test(diag.error)
+          ? "mp4box.js was blocked from loading (extension, corporate proxy, or CSP). Try a different network, disable ad-blockers for this site, or self-host mp4box."
+        : ""
+      ));
+    }
+  }
+
+  // Human-readable messages + hints keyed by diag.finalPath.
+  const REASON_MESSAGES = {
+    "legacy:not-mp4":                    "file is not MP4",
+    "legacy:no-webcodecs-api":           "WebCodecs API missing",
+    "legacy:file-read-error":            "couldn't read file bytes",
+    "legacy:VideoSource.create-threw":   "demux/decoder init failed",
+    "legacy:snapshot-failed":            "first-frame decode failed",
+    "legacy:snapshot-img-load-failed":   "snapshot image load failed",
+    "legacy:direct":                     "WebM/other, always legacy",
+  };
+  const REASON_HINTS = {
+    "legacy:not-mp4":                    "WebM sources always use the legacy path in this build. B6 will add WebM WebCodecs support.",
+    "legacy:no-webcodecs-api":           "Browser doesn't expose VideoDecoder. Try Microsoft Edge, Chrome, or Safari 16.4+.",
+    "legacy:file-read-error":            "The browser refused to read the file. Try re-importing.",
+    "legacy:snapshot-img-load-failed":   "Decoded frame couldn't be turned into a preview image. Rare — try re-encoding the source.",
+    "legacy:direct":                     "This file type uses the legacy decoder by design.",
+  };
+
   function renderInspector() {
     const has = !!selectedLayer;
     el.transformEmpty.hidden = has; el.transformBody.hidden = !has;
@@ -1211,6 +1318,9 @@
             badge.className = "video-badge is-legacy";
           }
         }
+        // v15.3 — In-UI diagnostic panel.  Read layer.videoDiag and show
+        // the environmental status + the fallback reason (if any).
+        renderVideoDiagPanel(L);
       }
     }
     if (!has) return;
