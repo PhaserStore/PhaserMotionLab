@@ -774,13 +774,34 @@
     };
     window.__phaserVideoDiag = diag;
 
+    /* --- Debug switch: force WebCodecs path, no fallback ---------------
+       Enable from the DevTools console with:
+           window.__phaserForceWebCodecs = true
+       When set, ANY failure in the WebCodecs path throws to the console
+       with a full stack trace instead of silently falling back to the
+       legacy HTMLVideoElement path.  Use only for diagnosis. */
+    const strictMode = !!window.__phaserForceWebCodecs;
+    if (strictMode) step("STRICT MODE — fallback disabled");
+
+    const failToLegacy = (reason, err) => {
+      diag.finalPath = reason;
+      if (err) diag.error = String(err && err.message || err);
+      if (strictMode) {
+        step("STRICT MODE — refusing to fall back", { reason, error: diag.error });
+        console.error("[Phaser video] STRICT MODE — WebCodecs failed at", reason, err);
+        toast(`WebCodecs failed at "${reason}" — see console. Legacy fallback disabled.`);
+        return;
+      }
+      addVideoAsset_Legacy(file);
+    };
+
     // Step 1: file-type detection.
     const isMP4Like = /\.(mp4|m4v|mov)$/i.test(file.name) || file.type === "video/mp4" || file.type === "video/quicktime";
     step("file-type check", { isMP4Like, name: file.name, mime: file.type });
     if (!isMP4Like) {
       step("→ LEGACY (not MP4-like)", null);
-      diag.finalPath = "legacy:not-mp4";
-      addVideoAsset_Legacy(file); return;
+      failToLegacy("legacy:not-mp4");
+      return;
     }
 
     // Step 2: WebCodecs API presence.
@@ -789,15 +810,15 @@
     step("WebCodecs API check", { hasVideoDecoder: hasVD, hasEncodedVideoChunk: hasEC });
     if (!hasVD || !hasEC) {
       step("→ LEGACY (WebCodecs API missing)", null);
-      diag.finalPath = "legacy:no-webcodecs-api";
-      addVideoAsset_Legacy(file); return;
+      failToLegacy("legacy:no-webcodecs-api");
+      return;
     }
 
     // Step 3+: FileReader → VideoSource.create → snapshot.
     const reader = new FileReader();
     reader.onerror = () => {
       step("FileReader error", { name: reader.error && reader.error.name });
-      diag.finalPath = "legacy:file-read-error";
+      failToLegacy("legacy:file-read-error", reader.error);
       toast(`Couldn't read ${file.name}`);
     };
     reader.onload = async (ev) => {
@@ -808,11 +829,9 @@
         source = await VideoSource.create(arrayBuffer, step);
         step("VideoSource.create succeeded", { width: source.width, height: source.height, duration: source.duration, codec: source._codec, sampleCount: source.sampleCount });
       } catch (e) {
-        step("VideoSource.create FAILED", { error: String(e && e.message || e) });
-        diag.error = String(e && e.message || e);
-        diag.finalPath = "legacy:VideoSource.create-threw";
+        step("VideoSource.create FAILED", { error: String(e && e.message || e), stack: e && e.stack });
         console.warn("[Phaser video] falling back to legacy for", file.name, e);
-        addVideoAsset_Legacy(file);
+        failToLegacy("legacy:VideoSource.create-threw", e);
         return;
       }
       // Snapshot first frame to exercise the full decode pipeline.
@@ -825,12 +844,10 @@
         c.getContext("2d").drawImage(frame, 0, 0, source.width, source.height);
         dataUrl = c.toDataURL("image/png");
       } catch (e) {
-        step("first-frame decode FAILED", { error: String(e && e.message || e) });
-        diag.error = String(e && e.message || e);
-        diag.finalPath = "legacy:snapshot-failed";
+        step("first-frame decode FAILED", { error: String(e && e.message || e), stack: e && e.stack });
         console.warn("[Phaser video] snapshot failed, falling back", e);
         source.close();
-        addVideoAsset_Legacy(file);
+        failToLegacy("legacy:snapshot-failed", e);
         return;
       }
       const img = new Image();
@@ -850,9 +867,8 @@
       };
       img.onerror = () => {
         step("snapshot Image failed to load", null);
-        diag.finalPath = "legacy:snapshot-img-load-failed";
         source.close();
-        addVideoAsset_Legacy(file);
+        failToLegacy("legacy:snapshot-img-load-failed");
       };
       img.src = dataUrl;
     };
