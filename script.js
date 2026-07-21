@@ -28,8 +28,13 @@
 
   /* ---------------- STATE ---------------- */
   const STATE = {
-    // scene overlay strengths (shared params)
-    speed: 45, glitch: 25, flicker: 30, blur: 15, rgbSplit: 25, scanline: 40, noise: 18, glow: 40,
+    // Scene overlay strengths — default all zero.  Users opt in to
+    // stylistic effects (flicker, blur, RGB offset, scanlines, noise,
+    // glow) by moving the sliders or applying a preset.  A brand-new
+    // project should be a neutral motion-graphics workspace.
+    // `speed` and `glitch` are input rate controls (not visual overlays)
+    // so they keep sensible defaults.
+    speed: 45, glitch: 0, flicker: 0, blur: 0, rgbSplit: 0, scanline: 0, noise: 0, glow: 0,
     // beat-sync engine
     beatSensitivity: 55, bassReaction: 70, midReaction: 50, highReaction: 55,
     smoothing: 60, peakThreshold: 60, motionIntensity: 65, syncTightness: 65,
