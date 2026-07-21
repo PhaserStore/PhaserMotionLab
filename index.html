@@ -557,13 +557,13 @@
 
     <div class="export-group-label">Video</div>
     <div class="export-options">
-      <button class="export-opt" id="exportMp4"><div class="eo-icon eo-primary">MP4</div><div class="eo-text"><strong>MP4 video · H.264 <span class="exp-badge">Experimental</span></strong><span>Optional ffmpeg.wasm library (~30 MB one-time load) transcodes to H.264. Video file size depends on your duration + quality, not on that library.</span></div></button>
+      <button class="export-opt" id="exportMp4"><div class="eo-icon eo-primary">MP4</div><div class="eo-text"><strong>MP4 video · H.264 <span class="exp-badge exp-badge-good">Recommended</span></strong><span>Frame-accurate encoding via WebCodecs. Duration always matches your timeline. No external dependencies. Chromium-based browsers (Edge / Chrome). Falls back to WebM if unavailable.</span></div></button>
       <button class="export-opt" id="exportWebm"><div class="eo-icon">WEBM</div><div class="eo-text"><strong>WebM video</strong><span>Animated clip with audio</span></div></button>
       <button class="export-opt" id="exportWebmA"><div class="eo-icon eo-alpha">WEBM</div><div class="eo-text"><strong>Transparent WebM*</strong><span>Advanced · alpha if browser supports it</span></div></button>
     </div>
 
     <div class="export-status" id="exportStatus" data-kind="info">Ready</div>
-    <p class="sheet-note">*Transparent video depends on browser codec support and is not needed for Instagram. For compositing, prefer transparent PNG or transparent PNG sequence. MP4 uses ffmpeg.wasm when its scripts are loaded — see the note in index.html and script.js.</p>
+    <p class="sheet-note">*Alpha exports use WebM automatically — H.264 has no alpha channel. For compositing, prefer transparent PNG or transparent PNG sequence. MP4 export is video-only for now; audio can be added by exporting WebM alongside and mixing in your editing software.</p>
   </div>
 </div>
 
