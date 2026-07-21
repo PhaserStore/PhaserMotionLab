@@ -38,7 +38,7 @@
     // beat-sync engine
     beatSensitivity: 55, bassReaction: 70, midReaction: 50, highReaction: 55,
     smoothing: 60, peakThreshold: 60, motionIntensity: 65, syncTightness: 65,
-    audioReactive: true, snapBeat: false, autoKeyframes: false,
+    audioReactive: true, snapBeat: false, autoKeyframes: false, snapFrame: true,
     // output
     bgMode: "custom", bgColor: "#0B0B0F", bgColor2: "#1A1030",
     format: { w: 1080, h: 1080, label: "Post 1:1" },
@@ -321,7 +321,7 @@
     // timeline
     tlBody: $("#tlBody"), tlRuler: $("#tlRuler"), tlTracks: $("#tlTracks"), tlEmpty: $("#tlEmpty"), tlPlayhead: $("#tlPlayhead"),
     tlAudioTracks: $("#tlAudioTracks"), tlTracksWrap: $("#tlTracksWrap"), durSegTl: $("#durSegTl"),
-    tlZoom: $("#tlZoom"), markerBtn: $("#markerBtn"),
+    tlZoom: $("#tlZoom"), markerBtn: $("#markerBtn"), snapFrameBtn: $("#snapFrameBtn"),
     // export
     exportBtn: $("#exportBtn"), exportSheet: $("#exportSheet"), exportClose: $("#exportClose"),
     exportPng: $("#exportPng"), exportPngT: $("#exportPngT"), exportSeq: $("#exportSeq"), exportSeqT: $("#exportSeqT"),
@@ -1475,8 +1475,12 @@
     if (out) {
       // Time sliders (start / duration in seconds) need decimal precision;
       // integer sliders (px, %, etc.) don't.
-      out.textContent = (key === "cs" || key === "cd") ? (+val).toFixed(2) : Math.round(val);
+      out.textContent = (key === "cs" || key === "cd") ? (+val).toFixed(3) : Math.round(val);
     }
+    // v16 — paired numeric input for millisecond-precision typing.
+    // Only cs / cd have these today; call is a no-op otherwise.
+    const num = document.getElementById(`num-${key}`);
+    if (num && document.activeElement !== num) num.value = (+val).toFixed(3);
   }
 
   // Transform slider bindings
@@ -1565,7 +1569,30 @@
     computePxPerSec();
     // ruler
     el.tlRuler.innerHTML = "";
+    // Major ticks every second — always visible with the second label.
     for (let s = 0; s <= STATE.duration; s++) { const tick = document.createElement("div"); tick.className = "tl-tick"; tick.style.left = (s * TL.pxPerSec) + "px"; tick.textContent = s + "s"; el.tlRuler.appendChild(tick); }
+    // Minor ticks: half-second marks appear when a second is wide
+    // enough to fit them; frame marks appear when frames are wide
+    // enough to distinguish visually.  Prevents visual clutter at
+    // low zoom while surfacing frame boundaries at high zoom.
+    const fps = STATE.fps || 30;
+    const pxPerFrame = TL.pxPerSec / fps;
+    if (TL.pxPerSec >= 140) {
+      // Show half-second minor ticks
+      for (let s = 0; s < STATE.duration; s++) {
+        const tick = document.createElement("div"); tick.className = "tl-tick-minor";
+        tick.style.left = ((s + 0.5) * TL.pxPerSec) + "px"; el.tlRuler.appendChild(tick);
+      }
+    }
+    if (pxPerFrame >= 6) {
+      // Show individual frame boundaries
+      const totalFrames = Math.floor(STATE.duration * fps);
+      for (let f = 0; f <= totalFrames; f++) {
+        if (f % fps === 0) continue;   // skip whole seconds (drawn above)
+        const tick = document.createElement("div"); tick.className = "tl-tick-frame";
+        tick.style.left = ((f / fps) * TL.pxPerSec) + "px"; el.tlRuler.appendChild(tick);
+      }
+    }
     // markers overlay (draw in ruler and behind tracks)
     markers.forEach((m) => { const mk = document.createElement("div"); mk.className = "tl-marker " + m.type; mk.style.left = (m.time * TL.pxPerSec) + "px"; el.tlRuler.appendChild(mk); });
 
@@ -1637,14 +1664,40 @@
     clip.classList.add("dragging");
     document.addEventListener("mousemove", onClipDrag); document.addEventListener("mouseup", endClipDrag);
   }
+  // Compute the effective time delta from a mousemove.  When the Shift
+  // key is held, the delta is scaled by 10 so users get precise
+  // sub-frame nudging.  Both drag handlers use this so behavior is
+  // consistent across layer clips, event clips, and audio clips.
+  function tlDeltaFromEvent(e, startX) {
+    const rawDx = (e.clientX - startX) / TL.pxPerSec;
+    return e.shiftKey ? rawDx / 10 : rawDx;
+  }
+
   function onClipDrag(e) {
     if (!TL.dragClip) return;
-    const dx = (e.clientX - TL.startX) / TL.pxPerSec, { layer } = TL.dragClip, o = TL.orig, D = STATE.duration;
+    const dx = tlDeltaFromEvent(e, TL.startX), { layer } = TL.dragClip, o = TL.orig, D = STATE.duration;
     if (TL.mode === "move") layer.start = clamp(o.start + dx, 0, Math.max(0, D - layer.duration));
     else if (TL.mode === "trim-left") { const ns = clamp(o.start + dx, 0, o.start + o.duration - 0.2); layer.duration = o.duration - (ns - o.start); layer.start = ns; }
     else if (TL.mode === "trim-right") layer.duration = clamp(o.duration + dx, 0.2, D - layer.start);
-    layer.start = applySnap(layer.start);
+    // Snap ALL editable edges on each mousemove.  Shift-drag suppresses
+    // snap so users can nudge sub-frame during precise adjustments.
+    if (!e.shiftKey) {
+      layer.start = applySnap(layer.start);
+      // For trim, snap the OPPOSITE edge (start+duration) too so the
+      // trailing edge lands on a frame boundary as well.
+      if (TL.mode === "trim-right") {
+        const endSnapped = applySnap(layer.start + layer.duration);
+        layer.duration = Math.max(0.2, endSnapped - layer.start);
+      } else if (TL.mode === "trim-left") {
+        // trim-left already snapped layer.start; recompute duration to
+        // keep the trailing edge in its original position.
+        const endHeld = o.start + o.duration;
+        layer.duration = Math.max(0.2, endHeld - layer.start);
+      }
+    }
     const c = TL.dragClip.clip; c.style.left = (layer.start * TL.pxPerSec) + "px"; c.style.width = Math.max(14, layer.duration * TL.pxPerSec) + "px";
+    // Live-refresh the inspector's numeric fields as the drag moves.
+    if (typeof renderClipInspector === "function") renderClipInspector();
   }
   function endClipDrag() { if (TL.dragClip) TL.dragClip.clip.classList.remove("dragging"); TL.dragClip = null; document.removeEventListener("mousemove", onClipDrag); document.removeEventListener("mouseup", endClipDrag); }
 
@@ -1657,11 +1710,22 @@
   }
   function onEventClipDrag(e) {
     if (!TL.dragEvent) return;
-    const D = TL.dragEvent, dx = (e.clientX - D.startX) / TL.pxPerSec, layerDur = D.layer.duration;
+    const D = TL.dragEvent, dx = tlDeltaFromEvent(e, D.startX), layerDur = D.layer.duration;
     if (D.mode === "move") D.ec.start = clamp(D.orig.start + dx, 0, Math.max(0, layerDur - D.ec.duration));
     else if (D.mode === "trim-left") { const ns = clamp(D.orig.start + dx, 0, D.orig.start + D.orig.duration - 0.02); D.ec.duration = D.orig.duration - (ns - D.orig.start); D.ec.start = ns; }
     else if (D.mode === "trim-right") D.ec.duration = clamp(D.orig.duration + dx, 0.02, layerDur - D.ec.start);
-    D.ec.start = applySnap(D.ec.start + D.layer.start) - D.layer.start;
+    if (!e.shiftKey) {
+      // Snap in layer-local time.  Event clip times are stored
+      // relative to layer.start, so add/subtract to snap globally.
+      D.ec.start = applySnap(D.ec.start + D.layer.start) - D.layer.start;
+      if (D.mode === "trim-right") {
+        const endSnapped = applySnap(D.layer.start + D.ec.start + D.ec.duration) - D.layer.start;
+        D.ec.duration = Math.max(0.02, endSnapped - D.ec.start);
+      } else if (D.mode === "trim-left") {
+        const endHeld = D.orig.start + D.orig.duration;
+        D.ec.duration = Math.max(0.02, endHeld - D.ec.start);
+      }
+    }
     D.node.style.left = ((D.layer.start + D.ec.start) * TL.pxPerSec) + "px";
     D.node.style.width = Math.max(6, D.ec.duration * TL.pxPerSec) + "px";
     renderClipInspector();
@@ -1677,11 +1741,20 @@
   }
   function onAudioClipDrag(e) {
     if (!TL.dragAudio) return;
-    const D = TL.dragAudio, dx = (e.clientX - D.startX) / TL.pxPerSec, dur = STATE.duration;
+    const D = TL.dragAudio, dx = tlDeltaFromEvent(e, D.startX), dur = STATE.duration;
     if (D.mode === "move") D.ac.start = clamp(D.orig.start + dx, 0, Math.max(0, dur - D.ac.duration));
     else if (D.mode === "trim-left") { const ns = clamp(D.orig.start + dx, 0, D.orig.start + D.orig.duration - 0.05); D.ac.duration = D.orig.duration - (ns - D.orig.start); D.ac.start = ns; }
     else if (D.mode === "trim-right") D.ac.duration = clamp(D.orig.duration + dx, 0.05, dur - D.ac.start);
-    D.ac.start = applySnap(D.ac.start);
+    if (!e.shiftKey) {
+      D.ac.start = applySnap(D.ac.start);
+      if (D.mode === "trim-right") {
+        const endSnapped = applySnap(D.ac.start + D.ac.duration);
+        D.ac.duration = Math.max(0.05, endSnapped - D.ac.start);
+      } else if (D.mode === "trim-left") {
+        const endHeld = D.orig.start + D.orig.duration;
+        D.ac.duration = Math.max(0.05, endHeld - D.ac.start);
+      }
+    }
     D.node.style.left = (D.ac.start * TL.pxPerSec) + "px";
     D.node.style.width = Math.max(14, D.ac.duration * TL.pxPerSec) + "px";
     renderClipInspector();
@@ -1813,9 +1886,11 @@
     }
     el.clipType.textContent = type; el.clipTrack.textContent = track;
     setSlider("cs", start); setSlider("cd", dur);
-    // dynamic max on start/dur
+    // dynamic max on start/dur — both the range slider AND the numeric input
     const csEl = document.getElementById("ctl-cs"); if (csEl) csEl.max = STATE.duration;
     const cdEl = document.getElementById("ctl-cd"); if (cdEl) cdEl.max = STATE.duration;
+    const csNum = document.getElementById("num-cs"); if (csNum) csNum.max = STATE.duration;
+    const cdNum = document.getElementById("num-cd"); if (cdNum) cdNum.max = STATE.duration;
   }
 
   /* Param slider — `step` is optional; when < 1 the label formats with 2
@@ -3963,14 +4038,135 @@
      The MP4 button never crashes the app. */
   let LAST_WEBM_BLOB = null, ffmpegInstance = null;
 
-  /* ================ S3 — Frame-accurate MP4 export ==================
-     Direct-to-MP4 pipeline using WebCodecs VideoEncoder + mp4-muxer.
-     Replaces the MediaRecorder → ffmpeg.wasm transcode approach with
-     a slow, deterministic async loop where every VideoFrame carries
-     an explicit timestamp.  Recorded duration = totalFrames / fps by
-     construction, no wall-clock inflation possible.
-     Video-only for v1 (audio muxing is a follow-up).  Any failure
-     falls back cleanly to the existing WebM MediaRecorder path.  */
+  /* ================ Audio export ==================================
+     Offline audio mixdown for the export pipeline.  Renders music +
+     SFX/voice clips into a single AudioBuffer via OfflineAudioContext,
+     then feeds it to `AudioEncoder` (AAC) which produces
+     `EncodedAudioChunk`s that mp4-muxer interleaves alongside the
+     video chunks.  Video-source audio (from imported MP4s) is not
+     included in v1 — deferred to a future release. */
+
+  // Returns true if there's anything audible to include in the export.
+  function hasAudioToExport() {
+    if (audio.el && audio.el.src) return true;
+    if (audioClips.some((c) => !c.muted)) return true;
+    return false;
+  }
+
+  // Decode the music track's blob-URL into an AudioBuffer.  Cached on
+  // audio.musicBuffer so repeat exports don't re-fetch.
+  async function decodeMusicBuffer() {
+    if (!audio.el || !audio.el.src) return null;
+    if (audio.musicBuffer) return audio.musicBuffer;
+    try {
+      const resp = await fetch(audio.el.src);
+      const arr = await resp.arrayBuffer();
+      // Decode via a temporary offline context (any sample rate — we
+      // only care about the resulting AudioBuffer, which the export
+      // OfflineAudioContext will happily accept).
+      const tempCtx = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(2, 128, 44100);
+      audio.musicBuffer = await tempCtx.decodeAudioData(arr);
+      return audio.musicBuffer;
+    } catch (e) {
+      console.warn("[Phaser audio] music decode failed:", e);
+      return null;
+    }
+  }
+
+  // Render the full audio scene (music + SFX/voice clips) into one
+  // AudioBuffer of exactly `durationSec` seconds at `sampleRate` Hz.
+  async function renderAudioMixdown(durationSec, sampleRate) {
+    const numChannels = 2;
+    const totalSamples = Math.max(1, Math.ceil(durationSec * sampleRate));
+    const OCCtor = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    if (!OCCtor) throw new Error("OfflineAudioContext unavailable");
+    const oc = new OCCtor(numChannels, totalSamples, sampleRate);
+    const masterGain = mixLevel("master");
+
+    // ---- Music track ----
+    if (audio.el && audio.el.src) {
+      const buf = await decodeMusicBuffer();
+      if (buf) {
+        const src = oc.createBufferSource();
+        src.buffer = buf;
+        // Loop matches the timeline loop setting so extended timelines
+        // hear repeated music instead of silence past the track's end.
+        src.loop = !!STATE.loop;
+        const g = oc.createGain();
+        g.gain.value = mixLevel("music") * masterGain;
+        src.connect(g).connect(oc.destination);
+        src.start(0);
+      }
+    }
+
+    // ---- SFX / voice clips ----
+    for (const clip of audioClips) {
+      if (clip.muted) continue;
+      const sound = sounds.find((s) => s.id === clip.soundId);
+      if (!sound || !sound.buffer) continue;
+      if (clip.start >= durationSec) continue;
+
+      const clipStart = Math.max(0, clip.start);
+      const offset = Math.max(0, -clip.start);
+      const playDur = Math.min(
+        clip.duration - offset,
+        sound.duration - offset,
+        durationSec - clipStart
+      );
+      if (playDur <= 0.001) continue;
+
+      const src = oc.createBufferSource();
+      src.buffer = sound.buffer;
+      const g = oc.createGain();
+      const busGain = (clip.track === "voice") ? mixLevel("voice") : mixLevel("sfx");
+      g.gain.value = (clip.volume || 1) * busGain * masterGain;
+      src.connect(g).connect(oc.destination);
+      try { src.start(clipStart, offset, playDur); } catch (e) {}
+    }
+
+    return await oc.startRendering();
+  }
+
+  // Chunk an AudioBuffer into AudioData objects and push them into a
+  // configured AudioEncoder.  Uses `f32-planar` format — the standard
+  // WebCodecs planar layout.  Yields to the browser periodically so
+  // the UI stays responsive during long mixdowns.
+  async function encodeAudioBufferToAAC(audioBuffer, encoder, chunkFrames) {
+    chunkFrames = chunkFrames || 1024;
+    const numChannels = audioBuffer.numberOfChannels;
+    const sampleRate = audioBuffer.sampleRate;
+    const totalFrames = audioBuffer.length;
+    const channels = [];
+    for (let c = 0; c < numChannels; c++) channels.push(audioBuffer.getChannelData(c));
+
+    for (let offset = 0; offset < totalFrames; offset += chunkFrames) {
+      const framesInChunk = Math.min(chunkFrames, totalFrames - offset);
+      // Planar layout: [ch0 samples..., ch1 samples...]
+      const planar = new Float32Array(framesInChunk * numChannels);
+      for (let c = 0; c < numChannels; c++) {
+        planar.set(channels[c].subarray(offset, offset + framesInChunk), c * framesInChunk);
+      }
+      const tsUs = Math.round((offset / sampleRate) * 1_000_000);
+      const ad = new AudioData({
+        format: "f32-planar",
+        sampleRate,
+        numberOfChannels: numChannels,
+        numberOfFrames: framesInChunk,
+        timestamp: tsUs,
+        data: planar,
+      });
+      try { encoder.encode(ad); } finally { ad.close(); }
+      // Keep queue bounded + yield to the UI once every ~100 chunks.
+      if (encoder.encodeQueueSize > 8) {
+        while (encoder.encodeQueueSize > 4) {
+          await new Promise((r) => setTimeout(r, 2));
+        }
+      } else if ((offset / chunkFrames) % 100 === 0) {
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    }
+  }
+
 
   // ---- mp4-muxer lazy loader (same pattern as mp4box).
   let _mp4MuxerLoadPromise = null;
@@ -4041,16 +4237,41 @@
     if (!codec) { step("no supported H.264 profile", { tried: codecCandidates, W, H }); diag.finalPath = "fallback:codec-unsupported"; return false; }
     step("codec selected", { codec, W, H, bitrate, fps });
 
-    // 4) Build muxer + encoder.
+    // 4) Build muxer + encoders.
+    // Decide up front whether audio will be included.  Requires both an
+    // audible scene and the AudioEncoder/AudioData APIs.  Anything else
+    // → video-only export with a clear status message.
+    const AUDIO_SR = 48000;
+    const AUDIO_CHANNELS = 2;
+    const AUDIO_BITRATE = 128000;
+    const hasAudio = hasAudioToExport();
+    const canEncodeAudio = hasAudio
+      && typeof AudioEncoder !== "undefined"
+      && typeof AudioData !== "undefined";
+    let audioSupported = false;
+    if (canEncodeAudio) {
+      try {
+        const r = await AudioEncoder.isConfigSupported({
+          codec: "mp4a.40.2", sampleRate: AUDIO_SR, numberOfChannels: AUDIO_CHANNELS, bitrate: AUDIO_BITRATE,
+        });
+        audioSupported = !!(r && r.supported);
+      } catch (e) { audioSupported = false; }
+    }
+    step("audio decision", { hasAudio, canEncodeAudio, audioSupported });
+
     let muxer;
     try {
-      muxer = new Muxer.Muxer({
+      const muxerCfg = {
         target: new Muxer.ArrayBufferTarget(),
         video: { codec: "avc", width: W, height: H, frameRate: fps },
         fastStart: "in-memory",
-      });
+      };
+      if (audioSupported) {
+        muxerCfg.audio = { codec: "aac", numberOfChannels: AUDIO_CHANNELS, sampleRate: AUDIO_SR };
+      }
+      muxer = new Muxer.Muxer(muxerCfg);
     } catch (e) { step("muxer construction failed", { error: String(e) }); diag.finalPath = "fallback:muxer-init"; return false; }
-    step("muxer constructed");
+    step("muxer constructed", { withAudio: audioSupported });
 
     let encodeError = null;
     const encoder = new VideoEncoder({
@@ -4068,7 +4289,45 @@
     } catch (e) { step("encoder.configure threw", { error: String(e) }); try { encoder.close(); } catch(_){}; diag.finalPath = "fallback:encoder-configure"; return false; }
     step("encoder configured");
 
-    // 5) Prepare scene canvas + imgs.
+    // Configure the AudioEncoder if audio is going to be muxed.
+    let audioEncoder = null;
+    if (audioSupported) {
+      audioEncoder = new AudioEncoder({
+        output: (chunk, meta) => { try { muxer.addAudioChunk(chunk, meta); } catch (e) { encodeError = e; } },
+        error: (e) => { encodeError = e; step("audio encoder error", { error: String(e) }); },
+      });
+      try {
+        audioEncoder.configure({
+          codec: "mp4a.40.2", sampleRate: AUDIO_SR, numberOfChannels: AUDIO_CHANNELS, bitrate: AUDIO_BITRATE,
+        });
+        step("audio encoder configured");
+      } catch (e) {
+        step("audioEncoder.configure threw", { error: String(e) });
+        try { audioEncoder.close(); } catch(_){}
+        audioEncoder = null;
+      }
+    }
+
+    // 5) Render the audio mixdown BEFORE the video loop.  Audio for
+    // typical short-form durations renders in <200 ms via
+    // OfflineAudioContext, and the muxer interleaves audio + video
+    // chunks by timestamp regardless of encode order.
+    if (audioEncoder) {
+      try {
+        setExportStatus("Rendering audio mixdown…", "work");
+        const audioBuffer = await renderAudioMixdown(EXPORTOPTS.duration, AUDIO_SR);
+        step("audio mixdown rendered", { seconds: audioBuffer.duration.toFixed(2), frames: audioBuffer.length });
+        await encodeAudioBufferToAAC(audioBuffer, audioEncoder);
+        step("audio chunks encoded");
+      } catch (e) {
+        step("audio encode failed — falling back to silent video", { error: String(e && e.message || e) });
+        console.warn("[Phaser MP4 S3] audio encode failed, continuing video-only:", e);
+        try { audioEncoder.close(); } catch(_){}
+        audioEncoder = null;
+      }
+    }
+
+    // 6) Prepare scene canvas + imgs.
     const c = document.createElement("canvas"); c.width = W; c.height = H;
     const ctx = c.getContext("2d", { alpha: false });
     const imgs = await rasterizeAll();
@@ -4077,7 +4336,7 @@
     await initVideoLayersForExport();
     step("scene prepared", { totalFrames });
 
-    // 6) Frame loop — completely wall-clock independent.
+    // 7) Frame loop — completely wall-clock independent.
     const KEYFRAME_INTERVAL = fps * 2;
     const MAX_QUEUE = 8;   // bound in-flight encoder work
     setExportStatus(`Encoding ${totalFrames} frames…`, "work");
@@ -4115,6 +4374,11 @@
     step("flushing encoder", { queueSize: encoder.encodeQueueSize });
     try { await encoder.flush(); } catch (e) { step("flush threw", { error: String(e) }); }
     try { encoder.close(); } catch (e) {}
+    if (audioEncoder) {
+      step("flushing audio encoder", { queueSize: audioEncoder.encodeQueueSize });
+      try { await audioEncoder.flush(); } catch (e) { step("audio flush threw", { error: String(e) }); }
+      try { audioEncoder.close(); } catch (e) {}
+    }
     finalizeVideoLayersAfterExport();
 
     if (encodeError) { step("encode error, aborting", { error: String(encodeError) }); diag.finalPath = "fallback:encode-error"; return false; }
@@ -4123,11 +4387,12 @@
     const buffer = muxer.target.buffer;
     if (!buffer || buffer.byteLength === 0) { step("muxer produced empty buffer"); diag.finalPath = "fallback:empty-output"; return false; }
 
-    step("SUCCESS — saving MP4", { bytes: buffer.byteLength });
+    step("SUCCESS — saving MP4", { bytes: buffer.byteLength, audio: !!audioEncoder });
     diag.finalPath = "s3-success";
     const outName = baseName("mp4");
     downloadBlob(new Blob([buffer], { type: "video/mp4" }), outName);
-    setExportStatus(`Done — ${outName} saved (${(buffer.byteLength / 1024 / 1024).toFixed(1)} MB)`, "done");
+    const audioTag = audioEncoder ? " · with audio" : (hasAudio ? " · video-only (audio encoding unsupported)" : "");
+    setExportStatus(`Done — ${outName} saved (${(buffer.byteLength / 1024 / 1024).toFixed(1)} MB${audioTag})`, "done");
     closeSheet();
     return true;
   }
@@ -4481,6 +4746,12 @@
 
     // ---- Timeline zoom + marker button ----
     if (el.tlZoom) el.tlZoom.addEventListener("input", (e) => { STATE.tlZoom = +e.target.value; renderTimeline(); });
+    // Item 2 — frame-snap toggle.  Reflects STATE.snapFrame (default on).
+    if (el.snapFrameBtn) el.snapFrameBtn.addEventListener("click", () => {
+      STATE.snapFrame = !STATE.snapFrame;
+      el.snapFrameBtn.classList.toggle("is-on", STATE.snapFrame);
+      toast(STATE.snapFrame ? "Frame snap: ON (Shift-drag to bypass)" : "Frame snap: OFF");
+    });
     if (el.markerBtn) el.markerBtn.addEventListener("click", () => {
       const t = STATE.time;
       const exists = markers.find((m) => m.type === "manual" && Math.abs(m.time - t) < 0.05);
@@ -4541,13 +4812,26 @@
     const MIN_CLIP_DUR = 0.05;
     const bindClipSlider = (key, apply) => {
       const s = document.getElementById(`ctl-${key}`), vv = document.getElementById(`val-${key}`);
-      if (!s) return;
-      s.addEventListener("input", (e) => {
-        const v = +e.target.value;
-        if (vv) vv.textContent = (key === "cs" || key === "cd") ? v.toFixed(2) : Math.round(v);
+      const num = document.getElementById(`num-${key}`);
+      // Single commit path — regardless of which input fired.  Numeric
+      // input takes user's typed value; slider takes its value.  Both
+      // funnel through the same clamp + STATE update in `apply`.
+      const commit = (v) => {
+        if (v === null || v === undefined || isNaN(v)) return;
+        if (s && document.activeElement !== s) s.value = v;
+        if (num && document.activeElement !== num) num.value = (+v).toFixed(3);
+        if (vv) vv.textContent = (key === "cs" || key === "cd") ? (+v).toFixed(3) : Math.round(v);
         apply(v);
         renderTimeline(); renderEventButtons(); paintIfPaused();
-      });
+      };
+      if (s) s.addEventListener("input", (e) => commit(+e.target.value));
+      if (num) num.addEventListener("input", (e) => commit(+e.target.value));
+      // Also commit on blur / Enter so users can type a full value like
+      // "1.500" without triggering re-renders on every keystroke.
+      if (num) {
+        num.addEventListener("blur", (e) => commit(+e.target.value));
+        num.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); commit(+e.target.value); num.blur(); } });
+      }
     };
     bindClipSlider("cs", (v) => {
       if (selectedEventClip) {
