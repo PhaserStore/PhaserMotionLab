@@ -52,7 +52,24 @@
     attachSfx: false, attachSfxId: "",
     // live audio runtime
     audioLevel: 0, bassLevel: 0, midLevel: 0, highLevel: 0, beat: 0, peak: 0, buildup: 0,
+    // S2 — Preview render quality.  Affects internal canvas resolution
+    // for WebCodecs-decoded video layers.  Export is unaffected and
+    // always uses source resolution.
+    previewQuality: "medium",   // "low" | "medium" | "high"
   };
+
+  /* S2 — Preview quality → resolution cap (in vertical pixels).
+     "high" leaves the source untouched.  "medium" and "low" cap the
+     canvas height so decoded frames scale down before compositing —
+     smoother scrubbing on high-res sources, negligible visual loss
+     for editing.  Export always uses source resolution regardless. */
+  const PREVIEW_QUALITY_CAPS = { low: 360, medium: 540, high: 99999 };
+  function previewCanvasSizeFor(natW, natH) {
+    const cap = PREVIEW_QUALITY_CAPS[STATE.previewQuality] || PREVIEW_QUALITY_CAPS.medium;
+    if (natH <= cap) return { w: natW, h: natH };
+    const scale = cap / natH;
+    return { w: Math.round(natW * scale), h: Math.round(natH * scale) };
+  }
 
   const CONTROL_GROUPS = {
     beatsync: [
@@ -958,9 +975,13 @@
         // without special-casing.  A fresh VideoSource is built here
         // so each layer has its own decoder + cache (independent
         // playhead per layer).
+        // S2 — canvas is sized to the current preview-quality cap.
+        // CSS scales it to fit the artboard regardless of natural
+        // resolution, so lower internal size ≠ visible size change.
         node = document.createElement("canvas");
-        node.width  = asset.meta.natW;
-        node.height = asset.meta.natH;
+        const cap = previewCanvasSizeFor(asset.meta.natW, asset.meta.natH);
+        node.width  = cap.w;
+        node.height = cap.h;
         node._is_webcodecs_video = true;   // marker used by the render loop
         // Kick off VideoSource creation asynchronously; until it's
         // ready, the canvas stays black.  The initial snapshot is
@@ -1079,6 +1100,8 @@
     // Path B: release the decoder + close all cached VideoFrames.
     // Without this, GPU memory leaks with every deleted video layer.
     if (layer.videoSource) { try { layer.videoSource.close(); } catch (e) {} layer.videoSource = null; }
+    // S2: drop the export-resolution canvas reference so GC can reclaim.
+    if (layer._exportCanvas) layer._exportCanvas = null;
     if (layer.wrap && layer.wrap.parentNode) layer.wrap.parentNode.removeChild(layer.wrap);
     layers.splice(i, 1);
     if (selectedLayer === layer) selectedLayer = null;
@@ -2401,11 +2424,19 @@
      the cache.  Skipped when the loop is behind wall-clock (see the
      export loop for details).  */
   async function paintWebCodecsLayersForExport(t) {
-    const vids = layers.filter((L) => L.kind === "VIDEO" && L.videoSource && L.visible && L.node);
+    const vids = layers.filter((L) => L.kind === "VIDEO" && L.videoSource && L.visible);
     if (!vids.length) return;
     await Promise.all(vids.map(async (L) => {
       const inWindow = t >= L.start - 0.001 && t <= L.start + L.duration + 0.001;
       if (!inWindow) return;
+      // S2 — export uses a SEPARATE full-source-resolution canvas, so
+      // the preview-quality cap on L.node doesn't degrade the export.
+      // Lazily allocate the export canvas the first time we need it.
+      if (!L._exportCanvas || L._exportCanvas.width !== L.natW || L._exportCanvas.height !== L.natH) {
+        L._exportCanvas = document.createElement("canvas");
+        L._exportCanvas.width  = L.natW;
+        L._exportCanvas.height = L.natH;
+      }
       const tSource = sourceTimeAt(L, t);
       // Fast path: sync cache hit.
       let frame = L.videoSource.getFrameSyncIfCached(tSource);
@@ -2414,8 +2445,8 @@
         catch (e) { return; }
       }
       try {
-        const ctx = L.node.getContext("2d");
-        ctx.drawImage(frame, 0, 0, L.node.width, L.node.height);
+        const ctx = L._exportCanvas.getContext("2d");
+        ctx.drawImage(frame, 0, 0, L._exportCanvas.width, L._exportCanvas.height);
       } catch (e) {}
       // Prefetch a rolling window ahead of the current position so
       // subsequent iterations hit the sync cache path.
@@ -2423,6 +2454,22 @@
       const srcOut = L.srcOutPoint || L.videoDuration || 0;
       if (ahead < srcOut) L.videoSource.getFrameAtSourceTime(ahead).catch(() => {});
     }));
+  }
+
+  /* S2 — after rasterizeAll, redirect WebCodecs video layers'
+     imgs[id] entries to point at their full-resolution export canvas
+     rather than the preview-capped layer.node.  Called once at the
+     top of each export loop, after `imgs = await rasterizeAll(...)`. */
+  function redirectImgsToExportCanvases(imgs) {
+    layers.forEach((L) => {
+      if (L.kind !== "VIDEO" || !L.videoSource) return;
+      if (!L._exportCanvas) {
+        L._exportCanvas = document.createElement("canvas");
+        L._exportCanvas.width  = L.natW;
+        L._exportCanvas.height = L.natH;
+      }
+      imgs[L.id] = L._exportCanvas;
+    });
   }
 
   /* ---------------- RENDER LOOP ---------------- */
@@ -3632,6 +3679,7 @@
     setExportStatus(transparent ? "Rendering transparent PNG…" : "Rendering PNG…", "work");
     const { W, H, crop } = exportDims(), c = document.createElement("canvas"); c.width = W; c.height = H;
     const ctx = c.getContext("2d"), imgs = await rasterizeAll();
+    redirectImgsToExportCanvases(imgs);
     await drawExportFrame(ctx, W, H, imgs, STATE.time, { bg: transparent ? null : resolveExportBg(false) }, crop);
     c.toBlob((b) => { downloadBlob(b, transparent ? baseName("transparent.png") : baseName("png")); setExportStatus("Done — PNG saved", "done"); closeSheet(); }, "image/png");
   }
@@ -3642,6 +3690,7 @@
     setExportStatus(`Rendering ${total} frames (${dur}s @ ${fps}fps)…`, "work");
     const { W, H, crop } = exportDims(), c = document.createElement("canvas"); c.width = W; c.height = H;
     const ctx = c.getContext("2d"), imgs = await rasterizeAll(), bg = transparent ? null : resolveExportBg(false);
+    redirectImgsToExportCanvases(imgs);
     for (let f = 0; f < total; f++) { await seekAllVideoLayersTo(f / fps); await paintWebCodecsLayersForExport(f / fps); await drawExportFrame(ctx, W, H, imgs, f / fps, { bg }, crop); await new Promise((res) => c.toBlob((b) => { downloadBlob(b, `phaser-seq-${String(f).padStart(4, "0")}.png`); setTimeout(res, 55); }, "image/png")); if (f % 10 === 0) setExportStatus(`Rendering frame ${f + 1}/${total}…`, "work"); }
     setExportStatus("Done — sequence saved", "done"); closeSheet();
   }
@@ -3664,6 +3713,7 @@
     const c = document.createElement("canvas"); c.width = W; c.height = H;
     const ctx = c.getContext("2d");
     const imgs = await rasterizeAll();
+    redirectImgsToExportCanvases(imgs);
     /* DETERMINISTIC CAPTURE PIPELINE
        Bug we're fixing: prior version used `canvas.captureStream(fps)` +
        requestAnimationFrame(). rAF is throttled in background tabs and
@@ -3824,6 +3874,7 @@
       const c = document.createElement("canvas"); c.width = W; c.height = H;
       const ctx = c.getContext("2d");
       const imgs = await rasterizeAll();
+      redirectImgsToExportCanvases(imgs);
       // Same deterministic capture pattern as exportWebM — every event
       // frame is guaranteed to reach the encoder.
       const useManualCapture = typeof c.captureStream === "function";
@@ -4101,7 +4152,45 @@
     // Keyboard 'M' for marker
     document.addEventListener("keydown", (e) => {
       const typing = e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT";
-      if (e.key === "m" && !typing) { if (el.markerBtn) el.markerBtn.click(); }
+      if (typing) return;
+      if (e.key === "m") { if (el.markerBtn) el.markerBtn.click(); }
+      // S1 — Hide/Show timeline.  Toggles a body class; CSS collapses
+      // the timeline footer and expands the canvas area.  A brief hint
+      // appears in focus mode so users remember how to get back.
+      if (e.key === "h" || e.key === "H") {
+        e.preventDefault();
+        const on = document.body.classList.toggle("focus-mode");
+        // Fit the canvas to the newly-available space.  fitCanvas is
+        // idempotent so calling it here is safe; keeps aspect ratio.
+        try { if (typeof fitCanvas === "function") fitCanvas(); } catch (err) {}
+        toast(on ? "Focus mode — press H to show timeline" : "Timeline shown");
+      }
+    });
+
+    // S2 — Preview quality buttons.  Sets STATE.previewQuality and
+    // resizes existing WebCodecs preview canvases to the new cap.
+    // CSS scales the layer to fit the artboard regardless, so a
+    // lower internal resolution just means fewer pixels per composite
+    // (smoother scrubbing on high-res sources).  Export always uses
+    // the separate full-source-resolution export canvas.
+    document.querySelectorAll(".quality-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const q = btn.getAttribute("data-quality");
+        if (!q || q === STATE.previewQuality) return;
+        STATE.previewQuality = q;
+        document.querySelectorAll(".quality-btn").forEach((b) => b.classList.toggle("active", b === btn));
+        // Resize every WebCodecs video layer's preview canvas.
+        layers.forEach((L) => {
+          if (L.kind !== "VIDEO" || !L.videoSource || !L.node) return;
+          const cap = previewCanvasSizeFor(L.natW, L.natH);
+          if (L.node.width !== cap.w || L.node.height !== cap.h) {
+            L.node.width  = cap.w;
+            L.node.height = cap.h;
+          }
+        });
+        paintIfPaused();
+        toast(`Preview: ${q}`);
+      });
     });
 
     // ---- Selected-clip inspector wiring ----
