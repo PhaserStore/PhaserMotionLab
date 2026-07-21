@@ -3810,6 +3810,175 @@
      The MP4 button never crashes the app. */
   let LAST_WEBM_BLOB = null, ffmpegInstance = null;
 
+  /* ================ S3 — Frame-accurate MP4 export ==================
+     Direct-to-MP4 pipeline using WebCodecs VideoEncoder + mp4-muxer.
+     Replaces the MediaRecorder → ffmpeg.wasm transcode approach with
+     a slow, deterministic async loop where every VideoFrame carries
+     an explicit timestamp.  Recorded duration = totalFrames / fps by
+     construction, no wall-clock inflation possible.
+     Video-only for v1 (audio muxing is a follow-up).  Any failure
+     falls back cleanly to the existing WebM MediaRecorder path.  */
+
+  // ---- mp4-muxer lazy loader (same pattern as mp4box).
+  let _mp4MuxerLoadPromise = null;
+  function loadMP4Muxer() {
+    // The UMD build exposes either window.Mp4Muxer (v5+) or window.mp4Muxer
+    // (older). We check both.
+    const existing = window.Mp4Muxer || window.mp4Muxer;
+    if (existing) return Promise.resolve(existing);
+    if (_mp4MuxerLoadPromise) return _mp4MuxerLoadPromise;
+    console.log("[Phaser MP4 S3] injecting mp4-muxer from CDN");
+    _mp4MuxerLoadPromise = new Promise((resolve) => {
+      const s = document.createElement("script");
+      s.src = "https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.min.js";
+      s.async = true;
+      s.onload = () => {
+        const mod = window.Mp4Muxer || window.mp4Muxer;
+        console.log("[Phaser MP4 S3] mp4-muxer script.onload — Mp4Muxer global present:", !!mod);
+        resolve(mod || null);
+      };
+      s.onerror = () => {
+        console.warn("[Phaser MP4 S3] mp4-muxer script.onerror — CDN load failed");
+        _mp4MuxerLoadPromise = null;
+        resolve(null);
+      };
+      document.head.appendChild(s);
+    });
+    return _mp4MuxerLoadPromise;
+  }
+
+  /* Returns true on success (MP4 saved), false on any failure (caller
+     falls back to WebM).  All failure modes are logged with a distinct
+     prefix so users on Edge can grep DevTools console. */
+  async function exportMP4_S3() {
+    const diag = { steps: [], finalPath: null };
+    const step = (label, extra) => {
+      diag.steps.push({ label, ...(extra || {}) });
+      console.log("[Phaser MP4 S3]", label, extra || "");
+    };
+    window.__phaserMP4Diag = diag;
+
+    // 1) API detection.
+    if (typeof VideoEncoder === "undefined")      { step("VideoEncoder unavailable");      diag.finalPath = "fallback:no-videoencoder"; return false; }
+    if (typeof EncodedVideoChunk === "undefined") { step("EncodedVideoChunk unavailable"); diag.finalPath = "fallback:no-chunk";         return false; }
+    if (typeof VideoFrame === "undefined")        { step("VideoFrame unavailable");        diag.finalPath = "fallback:no-videoframe";    return false; }
+    step("WebCodecs encoder APIs present");
+
+    // 2) mp4-muxer.
+    const Muxer = await loadMP4Muxer();
+    if (!Muxer) { step("mp4-muxer failed to load"); diag.finalPath = "fallback:no-muxer"; return false; }
+    step("mp4-muxer loaded", { hasMuxer: typeof Muxer.Muxer === "function", hasABT: typeof Muxer.ArrayBufferTarget === "function" });
+
+    // 3) Compute encode parameters.
+    const fps = EXPORTOPTS.fps;
+    const totalDur = EXPORTOPTS.duration;
+    const totalFrames = Math.max(1, Math.round(fps * totalDur));
+    const { W, H, crop } = exportDims();
+    const bitrate = bitrateFor(EXPORTOPTS.quality);
+    // Codec: H.264 High Profile, Level 4.0 — safe for Instagram/TikTok/YouTube.
+    // Some encoders don't have High; if the check fails we try Main then Baseline.
+    const codecCandidates = ["avc1.640028", "avc1.4d0028", "avc1.42E01E"];
+    let codec = null, support = null;
+    for (const c of codecCandidates) {
+      try {
+        const r = await VideoEncoder.isConfigSupported({ codec: c, width: W, height: H, bitrate, framerate: fps });
+        if (r && r.supported) { codec = c; support = r; break; }
+      } catch (e) {}
+    }
+    if (!codec) { step("no supported H.264 profile", { tried: codecCandidates, W, H }); diag.finalPath = "fallback:codec-unsupported"; return false; }
+    step("codec selected", { codec, W, H, bitrate, fps });
+
+    // 4) Build muxer + encoder.
+    let muxer;
+    try {
+      muxer = new Muxer.Muxer({
+        target: new Muxer.ArrayBufferTarget(),
+        video: { codec: "avc", width: W, height: H, frameRate: fps },
+        fastStart: "in-memory",
+      });
+    } catch (e) { step("muxer construction failed", { error: String(e) }); diag.finalPath = "fallback:muxer-init"; return false; }
+    step("muxer constructed");
+
+    let encodeError = null;
+    const encoder = new VideoEncoder({
+      output: (chunk, meta) => { try { muxer.addVideoChunk(chunk, meta); } catch (e) { encodeError = e; } },
+      error: (e) => { encodeError = e; step("encoder error", { error: String(e) }); },
+    });
+    try {
+      encoder.configure({
+        codec, width: W, height: H, bitrate, framerate: fps,
+        // Prefer quality over latency — we're exporting, not livestreaming.
+        latencyMode: "quality",
+        // Progressive: avoids interlacing edge cases in players.
+        avc: { format: "avc" },
+      });
+    } catch (e) { step("encoder.configure threw", { error: String(e) }); try { encoder.close(); } catch(_){}; diag.finalPath = "fallback:encoder-configure"; return false; }
+    step("encoder configured");
+
+    // 5) Prepare scene canvas + imgs.
+    const c = document.createElement("canvas"); c.width = W; c.height = H;
+    const ctx = c.getContext("2d", { alpha: false });
+    const imgs = await rasterizeAll();
+    redirectImgsToExportCanvases(imgs);
+    const bg = resolveExportBg(true, false);
+    await initVideoLayersForExport();
+    step("scene prepared", { totalFrames });
+
+    // 6) Frame loop — completely wall-clock independent.
+    const KEYFRAME_INTERVAL = fps * 2;
+    const MAX_QUEUE = 8;   // bound in-flight encoder work
+    setExportStatus(`Encoding ${totalFrames} frames…`, "work");
+    for (let f = 0; f < totalFrames; f++) {
+      if (encodeError) break;
+      const t = f / fps;
+      // Drive video sources — WebCodecs (from cache) and legacy (seek-based).
+      // Neither depends on wall-clock: WebCodecs is a synchronous cache
+      // lookup after prefetch, legacy uses per-frame HTMLVideoElement
+      // seek which is deterministic though slower.
+      await seekAllVideoLayersTo(t);              // legacy layers only (no-op otherwise)
+      await paintWebCodecsLayersForExport(t);     // WebCodecs layers only (no-op otherwise)
+      await drawExportFrame(ctx, W, H, imgs, t, { bg }, crop);
+      // Timestamp is explicit and monotonic — muxer duration = last_ts + 1_frame_us
+      const timestamp_us = Math.round((f * 1_000_000) / fps);
+      const duration_us  = Math.round(1_000_000 / fps);
+      let vf;
+      try {
+        vf = new VideoFrame(c, { timestamp: timestamp_us, duration: duration_us });
+      } catch (e) { step("VideoFrame construction failed at frame " + f, { error: String(e) }); break; }
+      try {
+        encoder.encode(vf, { keyFrame: (f % KEYFRAME_INTERVAL) === 0 });
+      } catch (e) { step("encoder.encode threw at frame " + f, { error: String(e) }); vf.close(); break; }
+      vf.close();
+      // Bound the queue so we don't hold too many encoded chunks in memory.
+      while (encoder.encodeQueueSize > MAX_QUEUE && !encodeError) {
+        await new Promise((r) => setTimeout(r, 4));
+      }
+      if (f % Math.max(1, Math.round(fps / 3)) === 0) {
+        setExportStatus(`Encoding ${f + 1}/${totalFrames}…`, "work");
+      }
+    }
+
+    // 7) Flush + finalize.
+    step("flushing encoder", { queueSize: encoder.encodeQueueSize });
+    try { await encoder.flush(); } catch (e) { step("flush threw", { error: String(e) }); }
+    try { encoder.close(); } catch (e) {}
+    finalizeVideoLayersAfterExport();
+
+    if (encodeError) { step("encode error, aborting", { error: String(encodeError) }); diag.finalPath = "fallback:encode-error"; return false; }
+
+    try { muxer.finalize(); } catch (e) { step("muxer.finalize threw", { error: String(e) }); diag.finalPath = "fallback:muxer-finalize"; return false; }
+    const buffer = muxer.target.buffer;
+    if (!buffer || buffer.byteLength === 0) { step("muxer produced empty buffer"); diag.finalPath = "fallback:empty-output"; return false; }
+
+    step("SUCCESS — saving MP4", { bytes: buffer.byteLength });
+    diag.finalPath = "s3-success";
+    const outName = baseName("mp4");
+    downloadBlob(new Blob([buffer], { type: "video/mp4" }), outName);
+    setExportStatus(`Done — ${outName} saved (${(buffer.byteLength / 1024 / 1024).toFixed(1)} MB)`, "done");
+    closeSheet();
+    return true;
+  }
+
   // Adaptive bitrate — the old 12/16 Mbps was excessive and produced huge
   // files. Recommended range for 1080p Instagram content is 5-9 Mbps.
   function bitrateFor(quality) {
@@ -3836,31 +4005,49 @@
   }
   async function exportMP4() {
     if (!layers.length) { toast("Add a layer first"); return; }
-    // Always reset the cached WebM source so settings changes (duration,
-    // fps, background, clips, quality) actually take effect. The old code
-    // reused LAST_WEBM_BLOB across exports, producing outdated MP4s.
+
+    // ---- Alpha exports route to WebM.  H.264 has no alpha channel; a
+    // transparent PNG sequence or an alpha WebM is the correct output.
+    const wantsAlpha = EXPORTOPTS.transparent && EXPORTOPTS.bg === "transparent";
+    if (wantsAlpha) {
+      toast("Alpha exports use WebM — H.264 has no alpha channel.");
+      setExportStatus("Exporting alpha WebM (VP9)…", "work");
+      // Delegate to the standard WebM export with transparent flag on.
+      // The existing exportWebm handles alpha via VP9-in-WebM.
+      if (el.exportWebmA) el.exportWebmA.click();
+      else if (el.exportWebm) el.exportWebm.click();
+      return;
+    }
+
+    // ---- Try S3 first (frame-accurate, no external deps).
+    setExportStatus("Preparing frame-accurate MP4 export…", "work");
+    const s3ok = await exportMP4_S3();
+    if (s3ok) return;
+
+    // ---- S3 failed: fall back to legacy ffmpeg.wasm transcode if it's
+    // available (usually only on localhost / self-hosted).
     LAST_WEBM_BLOB = null;
-    setExportStatus("Recording source video for MP4…", "work");
+    setExportStatus("Frame-accurate MP4 unavailable — recording WebM to transcode…", "work");
     await recordWebMForMp4();
-    if (!LAST_WEBM_BLOB) { setExportStatus("Could not record source video", "error"); return; }
+    if (!LAST_WEBM_BLOB) { setExportStatus("Could not produce MP4 or WebM", "error"); return; }
     let ff = null; try { ff = await loadFFmpeg(); } catch (e) { console.error("[Phaser] ffmpeg load error:", e); ff = null; }
     if (!ff) {
       downloadBlob(LAST_WEBM_BLOB, baseName("webm"));
-      setExportStatus("MP4 is unavailable (ffmpeg.wasm not loaded) — saved WebM instead. Uncomment the ffmpeg script tags in index.html to enable MP4.", "error");
+      setExportStatus("MP4 unavailable — saved WebM instead. Try Edge or Chrome for frame-accurate MP4 export.", "error");
       return;
     }
     try {
-      setExportStatus("Encoding H.264 MP4…", "work");
+      setExportStatus("Encoding H.264 MP4 via ffmpeg.wasm…", "work");
       const inName = "in.webm", outName = baseName("mp4"), bytes = new Uint8Array(await LAST_WEBM_BLOB.arrayBuffer());
       const crf = EXPORTOPTS.quality === "ultra" || EXPORTOPTS.quality === "2x" ? "16" : "18";
       const args = ["-i", inName, "-c:v", "libx264", "-preset", "veryfast", "-crf", crf, "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-r", String(EXPORTOPTS.fps), "-c:a", "aac", "-b:a", "192k", outName];
       if (ff.api === "new") { await ff.ff.writeFile(inName, bytes); await ff.ff.exec(args); const out = await ff.ff.readFile(outName); downloadBlob(new Blob([out.buffer], { type: "video/mp4" }), outName); }
       else { ff.ff.FS("writeFile", inName, bytes); await ff.ff.run(...args); const out = ff.ff.FS("readFile", outName); downloadBlob(new Blob([out.buffer], { type: "video/mp4" }), outName); }
-      setExportStatus("Done — " + outName + " saved", "done"); closeSheet();
+      setExportStatus("Done — " + outName + " saved (ffmpeg fallback)", "done"); closeSheet();
     } catch (e) {
       console.error("[Phaser] MP4 encode failed:", e);
       downloadBlob(LAST_WEBM_BLOB, baseName("webm"));
-      setExportStatus("MP4 encode failed (" + (e && e.message ? e.message : "unknown") + ") — saved WebM as fallback. See browser console for details.", "error");
+      setExportStatus("MP4 encode failed (" + (e && e.message ? e.message : "unknown") + ") — saved WebM as fallback.", "error");
     }
   }
   function recordWebMForMp4() {
