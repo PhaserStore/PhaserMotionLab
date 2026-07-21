@@ -52,6 +52,15 @@
     </div>
 
     <div class="topbar-right">
+      <!-- S2 — Preview Quality.  Controls the resolution of the internal
+           WebCodecs video canvas used during preview.  Export is
+           unaffected; it always uses source resolution. -->
+      <div class="quality-pill" title="Preview render quality — export always uses source resolution">
+        <span class="quality-lbl">Preview</span>
+        <button class="quality-btn" data-quality="low"    title="360p — smoothest scrubbing">L</button>
+        <button class="quality-btn active" data-quality="medium" title="540p — balanced">M</button>
+        <button class="quality-btn" data-quality="high"   title="720p+ — highest preview quality">H</button>
+      </div>
       <div class="zoom-pill">
         <button class="zoom-btn" id="zoomOut" title="Zoom out">&#8722;</button>
         <span class="zoom-val" id="zoomVal">Fit</span>
@@ -419,7 +428,7 @@
   </div>
 
   <!-- ============ BOTTOM: TIMELINE ============ -->
-  <footer class="timeline">
+  <footer class="timeline" id="timelineRoot">
     <div class="tl-controls">
       <button class="t-btn" id="audioBtn" title="Load MP3">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M4.5 6v4M11.5 6v4M2 7.5v1M14 7.5v1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
@@ -559,6 +568,7 @@
 </div>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div id="focusHint">Focus mode — press H to show timeline</div>
 
 <script src="script.js"></script>
 </body>
