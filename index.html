@@ -259,6 +259,18 @@
           <div id="videoBody">
             <div class="prop-row"><span class="prop-label">Duration</span><span class="color-hex" id="videoDurLabel">—</span></div>
             <div class="prop-row"><span class="prop-label">Decoder</span><span class="video-badge" id="videoDecoderBadge">—</span></div>
+            <!-- v15.3 — Diagnostic panel.  Populated by renderInspector
+                 from layer.videoDiag whenever a video layer is selected.
+                 Shows environmental status + the reason a layer fell
+                 back to the legacy decoder.  Hidden for non-video
+                 layers. -->
+            <div class="video-diag" id="videoDiagBlock">
+              <div class="video-diag-row"><span class="video-diag-key">WebCodecs API</span><span class="video-diag-val" id="diag-webcodecs">—</span></div>
+              <div class="video-diag-row"><span class="video-diag-key">mp4box.js</span><span class="video-diag-val" id="diag-mp4box">—</span></div>
+              <div class="video-diag-row"><span class="video-diag-key">Codec</span><span class="video-diag-val" id="diag-codec">—</span></div>
+              <div class="video-diag-row" id="diag-reason-row"><span class="video-diag-key">Fallback</span><span class="video-diag-val diag-reason" id="diag-reason">—</span></div>
+              <div class="video-diag-hint" id="diag-hint"></div>
+            </div>
             <div class="control"><span class="ctl-label">In point</span><span class="ctl-val" id="val-vin">0.00</span><input type="range" min="0" max="10" step="0.01" value="0" id="ctl-vin"></div>
             <div class="control"><span class="ctl-label">Out point</span><span class="ctl-val" id="val-vout">0.00</span><input type="range" min="0" max="10" step="0.01" value="0" id="ctl-vout"></div>
             <div class="btn-grid" style="margin-top:8px">
