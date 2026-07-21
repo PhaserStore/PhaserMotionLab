@@ -601,10 +601,32 @@
             const entry = trak.mdia.minf.stbl.stsd.entries[0];
             const box = entry.avcC || entry.hvcC || entry.vpcC || entry.av1C;
             if (!box) { reject(new Error("No codec description box")); return; }
-            const stream = new MP4Box.DataStream(undefined, 0, MP4Box.DataStream.BIG_ENDIAN);
+            // DataStream is a TOP-LEVEL GLOBAL in mp4box.all.min.js's UMD
+            // bundle — NOT a property of MP4Box.  My earlier code
+            // assumed the wrong location.  Check window.DataStream +
+            // implicit global + MP4Box.DataStream defensively so a
+            // future mp4box version can add it as a property without
+            // breaking us either way.
+            const DS = (typeof window !== "undefined" && window.DataStream)
+                    || (typeof DataStream !== "undefined" ? DataStream : null)
+                    || (MP4Box && MP4Box.DataStream)
+                    || null;
+            if (!DS || typeof DS.BIG_ENDIAN === "undefined") {
+              reject(new Error("DataStream global not exposed by mp4box.js — library incomplete or version mismatch"));
+              return;
+            }
+            const stream = new DS(undefined, 0, DS.BIG_ENDIAN);
             box.write(stream);
-            // First 8 bytes are the box header (size + type); trim them.
-            description = new Uint8Array(stream.buffer, 8);
+            // DataStream grows its internal buffer in 8 KB chunks, so
+            // `stream.buffer.byteLength` is usually larger than the
+            // bytes actually written.  Use `stream.position` for the
+            // exact written length (falls back to byteLength if
+            // position isn't defined by this DataStream version).
+            // First 8 bytes are the box header (size + type); trim.
+            const written = (typeof stream.position === "number" && stream.position > 0)
+                          ? stream.position
+                          : stream.byteLength;
+            description = new Uint8Array(stream.buffer, 8, Math.max(0, written - 8));
           } catch (e) { reject(new Error("Codec description extraction failed: " + e.message)); return; }
           expected = track.nb_samples;
           if (expected === 0) { reject(new Error("Track has no samples")); return; }
