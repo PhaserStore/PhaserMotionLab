@@ -310,29 +310,41 @@ body.focus-mode .timeline { display: none; }
 body.focus-mode #focusHint { opacity: 1; pointer-events: none; }
 
 /* Clean preview treatment in focus mode — no gradients, no vignette,
-   no glow, no frame shine.  The artboard is presented flat, matching
-   the exported composition as closely as possible.  Everything the
-   user sees inside the artboard is content; nothing outside it is
-   decoration. */
+   no glow, no frame shine, no interior checkerboard, no info readout.
+   The artboard is presented flat, matching the exported composition
+   as closely as possible.  Everything the user sees inside the
+   artboard is content; nothing around or over it is decoration.
+   `!important` used throughout so we cleanly beat the base rules'
+   specificity regardless of what class combinations end up on the
+   elements. */
+
+/* Kill the stage background pattern + purple radial tint. */
 body.focus-mode .stage {
-  background: #0B0B0F;
-  background-image: none;
+  background: #0B0B0F !important;
+  background-image: none !important;
 }
-body.focus-mode .stage::after { display: none; }
-body.focus-mode .artboard {
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+body.focus-mode .stage-col { background: #0B0B0F !important; }
+/* Kill the stage vignette overlay (dark radial gradient at edges). */
+body.focus-mode .stage::after { display: none !important; }
+/* Kill the artboard glow / drop shadow entirely — flat presentation. */
+body.focus-mode .artboard { box-shadow: none !important; }
+/* Kill the artboard frame overlay (white edge + purple inner glow). */
+body.focus-mode .artboard-frame { display: none !important; }
+/* Kill the artboard's interior checkerboard pattern (used to signal
+   transparent-bg projects).  Focus mode always shows a neutral solid
+   surface behind layers, matching the exported composition. */
+body.focus-mode .artboard.checkerboard .artboard-bg,
+body.focus-mode .artboard-bg {
+  background-image: none !important;
+  background-color: #0B0B0F !important;
 }
-body.focus-mode .artboard-frame { display: none; }
-body.focus-mode .stage-readout { display: none; }
-body.focus-mode #focusHint {
-  position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
-  padding: 6px 12px; border-radius: 999px;
-  background: rgba(15, 16, 22, 0.85); color: var(--text-muted);
-  border: 1px solid var(--border);
-  font-size: 11px; letter-spacing: 0.04em;
-  z-index: 100; pointer-events: none;
-  backdrop-filter: blur(8px);
-}
+/* Kill the bottom info pill (Canvas 1080×1080 · Format · Zoom · filename). */
+body.focus-mode .stage-readout { display: none !important; }
+/* Kill any empty-state hint overlay. */
+body.focus-mode .stage-hint { display: none !important; }
+/* Kill the selection box while in focus mode — it's editing UI, not
+   composition content.  Still selectable, just visually clean. */
+body.focus-mode .selection-box { display: none !important; }
 
 #focusHint {
   position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
