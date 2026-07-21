@@ -61,6 +61,13 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; }
 .fmt.active { background: var(--panel-3); color: var(--text); box-shadow: var(--shadow-1), inset 0 1px 0 rgba(255,255,255,0.05); }
 
 .zoom-pill { display: flex; align-items: center; gap: 2px; padding: 3px; background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 10px; }
+
+/* S2 preview quality pill — same shape as zoom pill for consistency. */
+.quality-pill { display: flex; align-items: center; gap: 2px; padding: 3px 3px 3px 8px; background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 10px; margin-right: 8px; }
+.quality-lbl { font-size: 10px; color: var(--text-muted); letter-spacing: 0.06em; text-transform: uppercase; margin-right: 4px; }
+.quality-btn { width: 22px; height: 22px; padding: 0; border-radius: var(--r-xs); font-size: 11px; font-weight: 700; color: var(--text-2); transition: all var(--fast); background: transparent; border: none; cursor: pointer; }
+.quality-btn:hover { background: rgba(255,255,255,0.06); color: var(--text-1); }
+.quality-btn.active { background: var(--accent-soft); color: var(--accent-strong); }
 .zoom-btn { min-width: 26px; height: 26px; padding: 0 7px; border-radius: var(--r-xs); font-size: 12px; font-weight: 600; color: var(--text-2); transition: all var(--fast); }
 .zoom-btn:hover { color: var(--text); background: var(--panel-3); }
 .zoom-val { font-size: 11px; color: var(--text-2); min-width: 40px; text-align: center; font-variant-numeric: tabular-nums; }
@@ -295,6 +302,22 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; }
 
 /* ============ TIMELINE ============ */
 .timeline { display: flex; flex-direction: column; border-top: 1px solid var(--border); background: linear-gradient(180deg, var(--panel), #0D0E12); z-index: 5; min-height: 0; }
+
+/* Focus mode: timeline hidden, canvas expands into the freed space.
+   Toggled by the H key.  The transition is on the timeline itself so
+   the collapse/expand feels intentional rather than snappy. */
+body.focus-mode .timeline { display: none; }
+body.focus-mode #focusHint { opacity: 1; pointer-events: none; }
+#focusHint {
+  position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+  padding: 6px 12px; border-radius: 999px;
+  background: rgba(15, 16, 22, 0.85); color: var(--text-muted);
+  border: 1px solid var(--border);
+  font-size: 11px; letter-spacing: 0.04em;
+  opacity: 0; transition: opacity 220ms ease;
+  z-index: 100; pointer-events: none;
+  backdrop-filter: blur(8px);
+}
 .tl-controls { display: flex; align-items: center; gap: 9px; padding: 9px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .t-btn { width: 34px; height: 34px; border-radius: var(--r-sm); display: flex; align-items: center; justify-content: center; color: var(--text-2); transition: all var(--fast); }
 .t-btn:hover { color: var(--text); background: var(--panel-2); }
