@@ -166,6 +166,12 @@
     // --- HIGH-END micrographic presets ---
     { key: "lostSignal",      label: "Lost Signal",      defDur: 0.45, group: "signal" },
     { key: "vectorBeam",      label: "Vector Beam",      defDur: 0.35, group: "motion" },
+    // --- ADVANCED effects (canvas-processed) ---
+    // Pixel Sweep uses the rasterize → process → composite pipeline
+    // rather than the CSS-effect pipeline the other 34 events use.
+    // Works on text / SVG / image / video uniformly because the
+    // rasterizer already handles all four kinds.
+    { key: "pixelSweep",      label: "Pixel Sweep",      defDur: 0.60, group: "signal" },
   ];
   const FX_EVENT_KEYS = new Set(FX_EVENTS.map((f) => f.key));
   const FX_EVENT_GROUPS = [
@@ -216,6 +222,13 @@
         trailCount: 4, trailOpacity: 55, trailSpread: 10,
         glowStrength: 20, flickerAmount: 25, freezeDuration: 0.08,
         sourceFlash: 45, growthEasing: "hard" };
+      // Pixel Sweep — Phase 1 defaults.  Progress is driven by the
+      // clip's own time normalization (0 at clip.start → 1 at
+      // clip.end).  Direction/sampleWidth/trailLength/sampleMode/
+      // preserveAlpha are user-tunable.
+      case "pixelSweep":    return { ...base, intensity: 100,
+        direction: "right", sampleWidth: 2, trailLength: 40,
+        sampleMode: "center", preserveAlpha: true };
       default: return { ...base };
     }
   }
@@ -251,6 +264,13 @@
       ["freezeDuration", "Freeze (s)",    0,   1, 0.01],
       ["sourceFlash",    "Source flash",  0, 100],
       // growthEasing handled as hard/ease seg control
+    ],
+    // Pixel Sweep — Phase 1 params.  Direction handled as 4-way seg
+    // control (shared code path with vectorBeam).
+    pixelSweep: [
+      ["sampleWidth",  "Sample width (px)",  1,  32, 1],
+      ["trailLength",  "Trail length (%)",   0, 100, 1],
+      // sampleMode handled as 2-way seg control (see below)
     ],
   };
 
@@ -1827,13 +1847,15 @@
         const p = selectedEventClip.ec.params;
         paramsHost.appendChild(makeParamSlider("intensity", "Intensity", p.intensity, 0, 100, (v) => { p.intensity = v; renderTimeline(); renderEventButtons(); paintIfPaused(); }));
         paramsHost.appendChild(makeParamSlider("opacityMix", "Opacity mix", p.opacityMix ?? 100, 0, 100, (v) => { p.opacityMix = v; renderTimeline(); renderEventButtons(); paintIfPaused(); }));
-        // Direction segmented control — 4-way for vectorBeam, 3-way
-        // (right/left/both) for lostSignal, 2-way (0/1) for legacy events.
+        // Direction segmented control — 4-way for vectorBeam +
+        // pixelSweep, 3-way (right/left/both) for lostSignal, 2-way
+        // (0/1) for legacy events.
         if (p.direction !== undefined || p.corruptionDirection !== undefined) {
           const isVector = selectedEventClip.ec.fxKey === "vectorBeam";
+          const isPixelSweep = selectedEventClip.ec.fxKey === "pixelSweep";
           const isLostSignal = selectedEventClip.ec.fxKey === "lostSignal";
           const paramKey = isLostSignal ? "corruptionDirection" : "direction";
-          const options = isVector
+          const options = (isVector || isPixelSweep)
             ? [["right","→"],["left","←"],["down","↓"],["up","↑"]]
             : isLostSignal
               ? [["right","→"],["left","←"],["both","↔"]]
@@ -1847,7 +1869,7 @@
             b.className = "mini-btn" + (String(currentVal) === v ? " active" : "");
             b.textContent = l;
             b.addEventListener("click", () => {
-              p[paramKey] = (isVector || isLostSignal) ? v : +v;
+              p[paramKey] = (isVector || isPixelSweep || isLostSignal) ? v : +v;
               renderClipInspector(); renderTimeline(); renderEventButtons(); paintIfPaused();
             });
             btns.appendChild(b);
@@ -1882,6 +1904,38 @@
             btns.appendChild(b);
           });
           row.appendChild(btns); paramsHost.appendChild(row);
+        }
+        // Pixel Sweep — sample mode seg (Center / Average).  Center is
+        // sharpest; Average bilinearly averages the sample band which
+        // reduces flicker on detailed sources at cost of some
+        // softness.  Preserve Alpha shown as a toggle button.
+        if (selectedEventClip.ec.fxKey === "pixelSweep") {
+          const row = document.createElement("div"); row.className = "prop-row";
+          row.innerHTML = `<span class="prop-label">Sample mode</span>`;
+          const btns = document.createElement("div"); btns.className = "seg-mini";
+          [["center","Center"],["average","Average"]].forEach(([v, l]) => {
+            const b = document.createElement("button");
+            b.className = "mini-btn" + ((p.sampleMode ?? "center") === v ? " active" : "");
+            b.textContent = l;
+            b.addEventListener("click", () => {
+              p.sampleMode = v;
+              renderClipInspector(); renderTimeline(); renderEventButtons(); paintIfPaused();
+            });
+            btns.appendChild(b);
+          });
+          row.appendChild(btns); paramsHost.appendChild(row);
+
+          // Preserve Alpha toggle
+          const paRow = document.createElement("div"); paRow.className = "prop-row";
+          paRow.innerHTML = `<span class="prop-label">Preserve alpha</span>`;
+          const paBtn = document.createElement("button");
+          paBtn.className = "mini-btn" + ((p.preserveAlpha !== false) ? " active" : "");
+          paBtn.textContent = (p.preserveAlpha !== false) ? "On" : "Off";
+          paBtn.addEventListener("click", () => {
+            p.preserveAlpha = !(p.preserveAlpha !== false);
+            renderClipInspector(); paintIfPaused();
+          });
+          paRow.appendChild(paBtn); paramsHost.appendChild(paRow);
         }
       }
     } else if (hasAud) {
@@ -2861,7 +2915,64 @@
     layer.wrap.style.filter = `blur(${blur.toFixed(2)}px) ` + (rgb ? `drop-shadow(${rgb.toFixed(1)}px 0 0 rgba(255,60,80,0.5)) drop-shadow(${(-rgb).toFixed(1)}px 0 0 rgba(60,180,255,0.5)) ` : "") + (glow ? `drop-shadow(0 0 ${glow.toFixed(1)}px rgba(122,92,255,0.6))` : "");
 
     if (layer.kind === "SVG" && layer.subLayers && layer.subLayers.length) animateSubLayers(layer, t, sig, allowT);
+    // ---- PIXEL SWEEP preview overlay ----
+    // If a pixelSweep clip is active at sceneTime, render an overlay
+    // canvas on top of the layer's normal content.  Same processing
+    // function that export uses, so preview == export.
+    updatePixelSweepPreview(layer, sceneTime);
     return { hud, hudFlicker, flash, flashA, scanBoost, breakup, radarBar };
+  }
+
+  /* Manages the per-layer pixelSweep preview overlay canvas.
+     - If there's an active pixelSweep clip at t: creates (once) an
+       overlay canvas inside layer.wrap, populates it with the swept
+       result, shows the overlay, hides the underlying layer node.
+     - If no active clip: hides the overlay, restores the underlying
+       layer node.
+     Overlay uses `position:absolute; inset:0; width/height:100%` so
+     it inherits layer.wrap's transform, opacity, and filter — the
+     effect composites cleanly with all existing CSS effects. */
+  function updatePixelSweepPreview(layer, t) {
+    const clip = (t !== undefined) ? activePixelSweepAt(layer, t) : null;
+    if (!clip) {
+      // No active sweep: hide overlay if present, restore underlying node.
+      if (layer._pixelSweepOverlay) {
+        layer._pixelSweepOverlay.style.display = "none";
+      }
+      if (layer.node && layer._pixelSweepUnderlyingHidden) {
+        layer.node.style.visibility = "";
+        layer._pixelSweepUnderlyingHidden = false;
+      }
+      return;
+    }
+    // Active sweep: ensure overlay canvas exists.
+    if (!layer._pixelSweepOverlay) {
+      const c = document.createElement("canvas");
+      c.className = "layer-pixel-sweep";
+      c.style.position = "absolute";
+      c.style.inset = "0";
+      c.style.width = "100%";
+      c.style.height = "100%";
+      c.style.pointerEvents = "none";
+      layer.wrap.appendChild(c);
+      layer._pixelSweepOverlay = c;
+    }
+    const source = getLayerSourceCanvas(layer);
+    if (!source) return;
+    const sw = source.naturalWidth || source.videoWidth || source.width || layer.natW;
+    const sh = source.naturalHeight || source.videoHeight || source.height || layer.natH;
+    // Match overlay canvas resolution to the source so pixel sampling
+    // is 1:1.  CSS then scales to layer.wrap.
+    if (layer._pixelSweepOverlay.width !== sw) layer._pixelSweepOverlay.width = sw;
+    if (layer._pixelSweepOverlay.height !== sh) layer._pixelSweepOverlay.height = sh;
+    const progress = pixelSweepProgress(clip, layer, t);
+    applyPixelSweep(source, { ...clip.params, progress }, layer._pixelSweepOverlay);
+    layer._pixelSweepOverlay.style.display = "";
+    // Hide the underlying layer node so we're only seeing the sweep.
+    if (layer.node && !layer._pixelSweepUnderlyingHidden) {
+      layer.node.style.visibility = "hidden";
+      layer._pixelSweepUnderlyingHidden = true;
+    }
   }
 
   // Position a layer using ONLY its base transform — no effects, no scene
@@ -2894,7 +3005,13 @@
     // <video> element updates its displayed frame when the seek
     // completes, which is fine for preview.
     layers.forEach((L) => { if (L.kind === "VIDEO") syncOrPaintVideoLayer(L, STATE.time, false); });
-    layers.forEach((layer) => { if (!layer.wrap) return; if (!layer.visible) { layer.wrap.style.opacity = "0"; return; } placeLayerStatic(layer); });
+    layers.forEach((layer) => {
+      if (!layer.wrap) return;
+      if (!layer.visible) { layer.wrap.style.opacity = "0"; return; }
+      placeLayerStatic(layer);
+      // Ensure pixel-sweep overlay is cleared for static frames.
+      updatePixelSweepPreview(layer, STATE.time);
+    });
     el.artboard.style.setProperty("--scanline-op", 0);
     el.artboard.style.setProperty("--noise-op", 0);
     if (hudLayer) hudLayer.style.display = "none";
@@ -3233,6 +3350,284 @@
     return STATE.bgColor;
   }
 
+  /* ================ PIXEL SWEEP =====================================
+     Rasterize-based effect: samples one column (horizontal sweep) or
+     row (vertical sweep) of the source at the current scanline
+     position, then stretches that column/row across a trail region.
+     Uses Canvas 2D `drawImage` for the stretch — nearest-neighbor by
+     default, so trails stay sharp and digital, not blurred.
+     Shared code path for preview + export.  All four layer kinds
+     (text, SVG, image, video) are handled uniformly because the
+     source has already been rasterized to a canvas/image by the
+     caller. */
+
+  // Given a normalized progress [0..1], returns { headPx, tailPx }
+  // positions in source coordinates.  Progress is remapped so both
+  // ends are off-screen at 0 and 1 → clean start + clean end.
+  function _pixelSweepPositions(progress, dim, trailLenPct, direction) {
+    const trailPx = (trailLenPct / 100) * dim;
+    // Off-screen span: head enters from -trailLength, exits at dim+trailLength
+    const range = dim + trailPx * 2;
+    // Head starts at -trailLength (LTR/TTB) or dim+trailLength (RTL/BTT)
+    if (direction === "right" || direction === "down") {
+      const head = -trailPx + progress * range;
+      const tail = head - trailPx;
+      return { head, tail, trailPx, forward: true };
+    } else {
+      const head = dim + trailPx - progress * range;
+      const tail = head + trailPx;
+      return { head, tail, trailPx, forward: false };
+    }
+  }
+
+  /* applyPixelSweep(source, params, output)
+     source: HTMLCanvasElement | HTMLImageElement | HTMLVideoElement
+             — anything drawImage accepts
+     params: { direction, sampleWidth, trailLength, sampleMode,
+               preserveAlpha, progress, intensity, opacityMix }
+     output: HTMLCanvasElement (optional; created if not passed)
+     Returns: the output canvas containing the swept result.
+  */
+  function applyPixelSweep(source, params, output) {
+    // Determine source dimensions.  For canvases: width/height.  For
+    // images: naturalWidth/Height (or width/height if not present).
+    const sw = source.naturalWidth || source.videoWidth || source.width;
+    const sh = source.naturalHeight || source.videoHeight || source.height;
+    if (!sw || !sh) return source;   // nothing to do
+
+    const out = output || document.createElement("canvas");
+    out.width = sw; out.height = sh;
+    const octx = out.getContext("2d");
+    // Clear anything previous — we're painting the full result.
+    octx.clearRect(0, 0, sw, sh);
+
+    const p = params || {};
+    const direction   = p.direction   || "right";
+    const sampleWidth = Math.max(1, Math.min(32, p.sampleWidth || 2));
+    const trailLenPct = Math.max(0, Math.min(100, p.trailLength || 40));
+    const sampleMode  = p.sampleMode  || "center";
+    const preserveAlpha = p.preserveAlpha !== false;
+    const progress    = Math.max(0, Math.min(1, p.progress ?? 0));
+    const intensity   = Math.max(0, Math.min(1, (p.intensity ?? 100) / 100));
+
+    const isHorizontal = direction === "right" || direction === "left";
+    const dim = isHorizontal ? sw : sh;
+    const pos = _pixelSweepPositions(progress, dim, trailLenPct, direction);
+    let head = pos.head, tail = pos.tail;
+
+    // If tail > head, swap so we always have [low, high] band.
+    let bandLo = Math.min(head, tail), bandHi = Math.max(head, tail);
+    const bandWidth = bandHi - bandLo;
+
+    // Head and tail can both be off-screen — in that case, either
+    // nothing to draw (both outside dim) or the whole source is
+    // visible.  If band is entirely outside [0, dim], no effect: just
+    // copy source through.
+    if (bandHi <= 0 || bandLo >= dim || bandWidth <= 0 || intensity <= 0.001) {
+      octx.drawImage(source, 0, 0, sw, sh);
+      return out;
+    }
+
+    // Clamp the trail band to the source dimensions so drawImage
+    // doesn't error on out-of-range source rects.
+    const clampedLo = Math.max(0, bandLo);
+    const clampedHi = Math.min(dim, bandHi);
+
+    // Sample position: the scanline head.  Clamped to [0, dim-1] so we
+    // never sample outside the source.  When head is off-screen (e.g.
+    // just entering from the left), we still sample the nearest edge.
+    const sampleAt = Math.max(0, Math.min(dim - 1, Math.round(head)));
+
+    // --- Step 1: draw the source WHERE THE BAND ISN'T.
+    // Two clip regions (outside the band).  If either region has zero
+    // width/height, skip it — drawImage into a zero-area clip is a
+    // no-op, but the extra save/restore is wasted work.
+    if (isHorizontal) {
+      if (clampedLo > 0 || clampedHi < sw) {
+        octx.save();
+        octx.beginPath();
+        if (clampedLo > 0)  octx.rect(0, 0, clampedLo, sh);
+        if (clampedHi < sw) octx.rect(clampedHi, 0, sw - clampedHi, sh);
+        octx.clip();
+        octx.drawImage(source, 0, 0, sw, sh);
+        octx.restore();
+      }
+    } else {
+      if (clampedLo > 0 || clampedHi < sh) {
+        octx.save();
+        octx.beginPath();
+        if (clampedLo > 0)  octx.rect(0, 0, sw, clampedLo);
+        if (clampedHi < sh) octx.rect(0, clampedHi, sw, sh - clampedHi);
+        octx.clip();
+        octx.drawImage(source, 0, 0, sw, sh);
+        octx.restore();
+      }
+    }
+
+    // --- Step 2: draw the stretched sample INSIDE the band.
+    // For sample width == 1 or center mode: sample a 1px column/row
+    // directly.  For average mode with sampleWidth > 1: sample a wider
+    // band into a 1-column intermediate canvas with bilinear filtering
+    // (which averages the samples), then stretch that 1-column across
+    // the trail with nearest-neighbor (sharp).
+    const useAverage = (sampleMode === "average" && sampleWidth > 1);
+    const halfW = Math.floor(sampleWidth / 2);
+    const stretchDstLo = clampedLo, stretchDstW = clampedHi - clampedLo;
+
+    // Sharp horizontal/vertical stretch — no smoothing along the trail.
+    octx.imageSmoothingEnabled = false;
+
+    if (isHorizontal) {
+      if (useAverage) {
+        // Sample a sampleWidth-wide vertical band, reduce to 1px column.
+        const inter = document.createElement("canvas");
+        inter.width = 1; inter.height = sh;
+        const ictx = inter.getContext("2d");
+        ictx.imageSmoothingEnabled = true;
+        const srcX = Math.max(0, Math.min(sw - sampleWidth, sampleAt - halfW));
+        ictx.drawImage(source, srcX, 0, sampleWidth, sh, 0, 0, 1, sh);
+        octx.drawImage(inter, 0, 0, 1, sh, stretchDstLo, 0, stretchDstW, sh);
+      } else {
+        // Direct 1-pixel-column sample stretched across the trail.
+        octx.drawImage(source, sampleAt, 0, 1, sh, stretchDstLo, 0, stretchDstW, sh);
+      }
+    } else {
+      // Vertical sweep — sample a 1px row, stretch across the trail height.
+      if (useAverage) {
+        const inter = document.createElement("canvas");
+        inter.width = sw; inter.height = 1;
+        const ictx = inter.getContext("2d");
+        ictx.imageSmoothingEnabled = true;
+        const srcY = Math.max(0, Math.min(sh - sampleWidth, sampleAt - halfW));
+        ictx.drawImage(source, 0, srcY, sw, sampleWidth, 0, 0, sw, 1);
+        octx.drawImage(inter, 0, 0, sw, 1, 0, stretchDstLo, sw, stretchDstW);
+      } else {
+        octx.drawImage(source, 0, sampleAt, sw, 1, 0, stretchDstLo, sw, stretchDstW);
+      }
+    }
+
+    // --- Step 3: intensity blending.
+    // If intensity < 1, blend the swept result with the original.
+    // Simple approach: draw the source on top at (1 - intensity) alpha.
+    if (intensity < 0.999) {
+      octx.globalAlpha = 1 - intensity;
+      octx.drawImage(source, 0, 0, sw, sh);
+      octx.globalAlpha = 1;
+    }
+
+    // Preserve Alpha: if OFF, we don't want to filter transparent
+    // areas.  Currently the sample of a transparent column produces
+    // transparent trails — which IS the preserve-alpha behavior.
+    // "Affect Transparent Areas" is a phase 2 add — for now the
+    // parameter is a placeholder and the effect always preserves alpha.
+    // (Explicit variable read below just to acknowledge the intent.)
+    void preserveAlpha;
+
+    return out;
+  }
+
+  /* Rasterization cache for pixel-sweep source frames.
+     Static layers (SVG, IMG, TEXT) are rasterized once per session and
+     reused — the canvas content doesn't change between frames.  Video
+     layers must be rasterized every frame because the source frame
+     changes with time.  The cache key is the layer id + a version
+     counter incremented whenever the layer's static content changes.
+     Video layers always miss the cache and rasterize fresh. */
+  const _pixelSweepRasterCache = new Map();   // layer.id → { canvas, version }
+  function invalidatePixelSweepCache(layerId) {
+    if (layerId == null) _pixelSweepRasterCache.clear();
+    else _pixelSweepRasterCache.delete(layerId);
+  }
+
+  // Returns a canvas (or the underlying element for IMG/VIDEO) that
+  // represents the layer's current visual state.  Synchronous — used
+  // by preview + export.  For SVG layers we cache a rasterized canvas
+  // because serializing + decoding the SVG on every frame would be
+  // very expensive.
+  function getLayerSourceCanvas(layer) {
+    if (layer.kind === "IMG") return layer.node;
+    if (layer.kind === "VIDEO") {
+      // WebCodecs path: layer.node is a canvas that already holds the
+      // current frame (populated by the RAF loop / export sync).
+      if (layer.videoSource) return layer._exportCanvas || layer.node;
+      // Legacy path: the <video> element itself is a valid
+      // CanvasImageSource; drawImage samples the current frame.
+      return layer.node;
+    }
+    // SVG / TEXT / SVG-with-sublayers: rasterize + cache.
+    const cached = _pixelSweepRasterCache.get(layer.id);
+    if (cached && cached.canvas && cached.loaded) return cached.canvas;
+    // If a rasterization is in-flight, return the (possibly blank)
+    // canvas that will be populated by the async decode.  Avoid
+    // spinning up a second one for the same layer.
+    if (cached && cached.canvas) return cached.canvas;
+
+    const w = layer.natW || 512, h = layer.natH || 512;
+    const c = document.createElement("canvas"); c.width = w; c.height = h;
+    const ctx = c.getContext("2d");
+    const entry = { canvas: c, version: 1, loaded: false };
+    _pixelSweepRasterCache.set(layer.id, entry);
+    // Rasterize the SVG via serialize → Blob URL → Image → drawImage.
+    try {
+      const svgStr = new XMLSerializer().serializeToString(layer.node);
+      const url = URL.createObjectURL(new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" }));
+      const img = new Image();
+      img.onload = () => {
+        try { ctx.clearRect(0, 0, w, h); ctx.drawImage(img, 0, 0, w, h); } catch (e) {}
+        URL.revokeObjectURL(url);
+        entry.loaded = true;
+        // Trigger a preview repaint so the pixel sweep re-runs with
+        // the now-populated source.  Without this the first frame
+        // after creating a clip would show a blank sweep.
+        try { paintIfPaused(); } catch (e) {}
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); };
+      img.src = url;
+    } catch (e) {}
+    return c;
+  }
+
+  // Called when a layer's static content changes (added, edited,
+  // etc.) so the next Pixel Sweep pass re-rasterizes.
+  window.__phaser_invalidatePixelSweep = invalidatePixelSweepCache;
+
+  // Returns the pixelSweep clip active at time `t` for a layer, or
+  // null if none.  There's only ever one active pixelSweep at a time
+  // per layer (event clips don't overlap by design), so this returns
+  // a single clip.
+  function activePixelSweepAt(layer, t) {
+    if (!layer.clips || !layer.clips.length) return null;
+    for (const c of layer.clips) {
+      if (c.fxKey !== "pixelSweep") continue;
+      if (c.enabled === false) continue;
+      const start = layer.start + c.start;
+      const end = start + c.duration;
+      if (t >= start - 0.001 && t <= end + 0.001) return c;
+    }
+    return null;
+  }
+
+  // Compute clip-time-normalized progress [0..1].  Called by both
+  // preview and export so the effect is frame-accurate against the
+  // timeline clock, not against wall time.
+  function pixelSweepProgress(clip, layer, t) {
+    const start = layer.start + clip.start;
+    const dur = Math.max(0.001, clip.duration);
+    return Math.max(0, Math.min(1, (t - start) / dur));
+  }
+
+  // Buffer canvases reused across frames to avoid GC pressure.  One
+  // per layer keyed by id.
+  const _pixelSweepOutputBuffer = new Map();
+  function getPixelSweepOutputCanvas(layerId, w, h) {
+    let c = _pixelSweepOutputBuffer.get(layerId);
+    if (!c) { c = document.createElement("canvas"); _pixelSweepOutputBuffer.set(layerId, c); }
+    if (c.width !== w) c.width = w;
+    if (c.height !== h) c.height = h;
+    return c;
+  }
+
+
   function layerToImage(layer) {
     return new Promise((resolve) => {
       // IMG layers already have an <img> in layer.node — draw directly.
@@ -3374,7 +3769,20 @@
     drawList.forEach((layer) => {
       if (!layer.visible) return;
       if (t < layer.start - 0.001 || t > layer.start + layer.duration + 0.001) return;
-      const img = imgs[layer.id]; if (!img) return;
+      const rawImg = imgs[layer.id]; if (!rawImg) return;
+      // Pixel Sweep: check for an active pixelSweep clip and, if one
+      // exists, run the layer's rasterized image through the sweep
+      // processor.  Uses the same function as preview so behavior is
+      // identical.  Frame-accurate: progress is derived from the
+      // clip's window relative to the current time `t`.
+      let img = rawImg;
+      const psClip = activePixelSweepAt(layer, t);
+      if (psClip) {
+        const progress = pixelSweepProgress(psClip, layer, t);
+        const buf = getPixelSweepOutputCanvas(layer.id, layer.natW || 512, layer.natH || 512);
+        applyPixelSweep(rawImg, { ...psClip.params, progress }, buf);
+        img = buf;
+      }
 
       const T = layer.transform;
       const lt = t - layer.start + layer.recipe.delay;
