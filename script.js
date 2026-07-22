@@ -3385,21 +3385,34 @@
              — anything drawImage accepts
      params: { direction, sampleWidth, trailLength, sampleMode,
                preserveAlpha, progress, intensity, opacityMix }
-     output: HTMLCanvasElement (optional; created if not passed)
+     output: HTMLCanvasElement (optional; created if not passed).
+             If passed with pre-set width/height, those dimensions are
+             RESPECTED.  Source is scaled into the output resolution
+             during processing.  This is critical when the source is
+             an SVG-derived HTMLImageElement whose naturalWidth may
+             be the browser's default (300×150) rather than the
+             layer's true dimensions.
      Returns: the output canvas containing the swept result.
   */
   function applyPixelSweep(source, params, output) {
-    // Determine source dimensions.  For canvases: width/height.  For
-    // images: naturalWidth/Height (or width/height if not present).
-    const sw = source.naturalWidth || source.videoWidth || source.width;
-    const sh = source.naturalHeight || source.videoHeight || source.height;
-    if (!sw || !sh) return source;   // nothing to do
+    // Source dimensions — used only to compute source-coord sample
+    // positions.  The OUTPUT canvas dimensions drive the sweep math.
+    const srcW = source.naturalWidth || source.videoWidth || source.width;
+    const srcH = source.naturalHeight || source.videoHeight || source.height;
+    if (!srcW || !srcH) return output || source;
 
     const out = output || document.createElement("canvas");
-    out.width = sw; out.height = sh;
+    // Respect the output canvas's incoming dimensions if it was
+    // pre-sized by the caller.  Only fall back to source dimensions
+    // when the caller didn't specify.  This is the fix for the
+    // export regression where an SVG-Image at 300×150 was
+    // clobbering a properly-sized buf back down to 300×150.
+    const outW = out.width  || srcW;
+    const outH = out.height || srcH;
+    if (out.width  !== outW) out.width  = outW;
+    if (out.height !== outH) out.height = outH;
     const octx = out.getContext("2d");
-    // Clear anything previous — we're painting the full result.
-    octx.clearRect(0, 0, sw, sh);
+    octx.clearRect(0, 0, outW, outH);
 
     const p = params || {};
     const direction   = p.direction   || "right";
@@ -3411,118 +3424,96 @@
     const intensity   = Math.max(0, Math.min(1, (p.intensity ?? 100) / 100));
 
     const isHorizontal = direction === "right" || direction === "left";
-    const dim = isHorizontal ? sw : sh;
+    // Sweep math operates in OUTPUT coordinates so the trail band is
+    // sized correctly regardless of the source-to-output ratio.
+    const dim = isHorizontal ? outW : outH;
     const pos = _pixelSweepPositions(progress, dim, trailLenPct, direction);
     let head = pos.head, tail = pos.tail;
 
-    // If tail > head, swap so we always have [low, high] band.
     let bandLo = Math.min(head, tail), bandHi = Math.max(head, tail);
     const bandWidth = bandHi - bandLo;
 
-    // Head and tail can both be off-screen — in that case, either
-    // nothing to draw (both outside dim) or the whole source is
-    // visible.  If band is entirely outside [0, dim], no effect: just
-    // copy source through.
+    // No effect region visible — draw source scaled to full output.
     if (bandHi <= 0 || bandLo >= dim || bandWidth <= 0 || intensity <= 0.001) {
-      octx.drawImage(source, 0, 0, sw, sh);
+      octx.drawImage(source, 0, 0, srcW, srcH, 0, 0, outW, outH);
       return out;
     }
 
-    // Clamp the trail band to the source dimensions so drawImage
-    // doesn't error on out-of-range source rects.
     const clampedLo = Math.max(0, bandLo);
     const clampedHi = Math.min(dim, bandHi);
 
-    // Sample position: the scanline head.  Clamped to [0, dim-1] so we
-    // never sample outside the source.  When head is off-screen (e.g.
-    // just entering from the left), we still sample the nearest edge.
-    const sampleAt = Math.max(0, Math.min(dim - 1, Math.round(head)));
+    // Sample position in OUTPUT coords, converted to source coords.
+    const sampleAtOut = Math.max(0, Math.min(dim - 1, Math.round(head)));
+    const srcScaleX = srcW / outW;
+    const srcScaleY = srcH / outH;
+    const sampleAtSrc = isHorizontal
+      ? Math.max(0, Math.min(srcW - 1, Math.round(sampleAtOut * srcScaleX)))
+      : Math.max(0, Math.min(srcH - 1, Math.round(sampleAtOut * srcScaleY)));
 
-    // --- Step 1: draw the source WHERE THE BAND ISN'T.
-    // Two clip regions (outside the band).  If either region has zero
-    // width/height, skip it — drawImage into a zero-area clip is a
-    // no-op, but the extra save/restore is wasted work.
+    // Step 1: draw source (scaled to output res) outside the band.
     if (isHorizontal) {
-      if (clampedLo > 0 || clampedHi < sw) {
+      if (clampedLo > 0 || clampedHi < outW) {
         octx.save();
         octx.beginPath();
-        if (clampedLo > 0)  octx.rect(0, 0, clampedLo, sh);
-        if (clampedHi < sw) octx.rect(clampedHi, 0, sw - clampedHi, sh);
+        if (clampedLo > 0)   octx.rect(0, 0, clampedLo, outH);
+        if (clampedHi < outW) octx.rect(clampedHi, 0, outW - clampedHi, outH);
         octx.clip();
-        octx.drawImage(source, 0, 0, sw, sh);
+        octx.drawImage(source, 0, 0, srcW, srcH, 0, 0, outW, outH);
         octx.restore();
       }
     } else {
-      if (clampedLo > 0 || clampedHi < sh) {
+      if (clampedLo > 0 || clampedHi < outH) {
         octx.save();
         octx.beginPath();
-        if (clampedLo > 0)  octx.rect(0, 0, sw, clampedLo);
-        if (clampedHi < sh) octx.rect(0, clampedHi, sw, sh - clampedHi);
+        if (clampedLo > 0)   octx.rect(0, 0, outW, clampedLo);
+        if (clampedHi < outH) octx.rect(0, clampedHi, outW, outH - clampedHi);
         octx.clip();
-        octx.drawImage(source, 0, 0, sw, sh);
+        octx.drawImage(source, 0, 0, srcW, srcH, 0, 0, outW, outH);
         octx.restore();
       }
     }
 
-    // --- Step 2: draw the stretched sample INSIDE the band.
-    // For sample width == 1 or center mode: sample a 1px column/row
-    // directly.  For average mode with sampleWidth > 1: sample a wider
-    // band into a 1-column intermediate canvas with bilinear filtering
-    // (which averages the samples), then stretch that 1-column across
-    // the trail with nearest-neighbor (sharp).
+    // Step 2: draw the stretched sample INSIDE the band.
     const useAverage = (sampleMode === "average" && sampleWidth > 1);
-    const halfW = Math.floor(sampleWidth / 2);
     const stretchDstLo = clampedLo, stretchDstW = clampedHi - clampedLo;
+    const srcSampleW = Math.max(1, Math.round(sampleWidth * (isHorizontal ? srcScaleX : srcScaleY)));
+    const halfSrcW = Math.floor(srcSampleW / 2);
 
-    // Sharp horizontal/vertical stretch — no smoothing along the trail.
     octx.imageSmoothingEnabled = false;
 
     if (isHorizontal) {
       if (useAverage) {
-        // Sample a sampleWidth-wide vertical band, reduce to 1px column.
         const inter = document.createElement("canvas");
-        inter.width = 1; inter.height = sh;
+        inter.width = 1; inter.height = outH;
         const ictx = inter.getContext("2d");
         ictx.imageSmoothingEnabled = true;
-        const srcX = Math.max(0, Math.min(sw - sampleWidth, sampleAt - halfW));
-        ictx.drawImage(source, srcX, 0, sampleWidth, sh, 0, 0, 1, sh);
-        octx.drawImage(inter, 0, 0, 1, sh, stretchDstLo, 0, stretchDstW, sh);
+        const srcX = Math.max(0, Math.min(srcW - srcSampleW, sampleAtSrc - halfSrcW));
+        ictx.drawImage(source, srcX, 0, srcSampleW, srcH, 0, 0, 1, outH);
+        octx.drawImage(inter, 0, 0, 1, outH, stretchDstLo, 0, stretchDstW, outH);
       } else {
-        // Direct 1-pixel-column sample stretched across the trail.
-        octx.drawImage(source, sampleAt, 0, 1, sh, stretchDstLo, 0, stretchDstW, sh);
+        octx.drawImage(source, sampleAtSrc, 0, 1, srcH, stretchDstLo, 0, stretchDstW, outH);
       }
     } else {
-      // Vertical sweep — sample a 1px row, stretch across the trail height.
       if (useAverage) {
         const inter = document.createElement("canvas");
-        inter.width = sw; inter.height = 1;
+        inter.width = outW; inter.height = 1;
         const ictx = inter.getContext("2d");
         ictx.imageSmoothingEnabled = true;
-        const srcY = Math.max(0, Math.min(sh - sampleWidth, sampleAt - halfW));
-        ictx.drawImage(source, 0, srcY, sw, sampleWidth, 0, 0, sw, 1);
-        octx.drawImage(inter, 0, 0, sw, 1, 0, stretchDstLo, sw, stretchDstW);
+        const srcY = Math.max(0, Math.min(srcH - srcSampleW, sampleAtSrc - halfSrcW));
+        ictx.drawImage(source, 0, srcY, srcW, srcSampleW, 0, 0, outW, 1);
+        octx.drawImage(inter, 0, 0, outW, 1, 0, stretchDstLo, outW, stretchDstW);
       } else {
-        octx.drawImage(source, 0, sampleAt, sw, 1, 0, stretchDstLo, sw, stretchDstW);
+        octx.drawImage(source, 0, sampleAtSrc, srcW, 1, 0, stretchDstLo, outW, stretchDstW);
       }
     }
 
-    // --- Step 3: intensity blending.
-    // If intensity < 1, blend the swept result with the original.
-    // Simple approach: draw the source on top at (1 - intensity) alpha.
     if (intensity < 0.999) {
       octx.globalAlpha = 1 - intensity;
-      octx.drawImage(source, 0, 0, sw, sh);
+      octx.drawImage(source, 0, 0, srcW, srcH, 0, 0, outW, outH);
       octx.globalAlpha = 1;
     }
 
-    // Preserve Alpha: if OFF, we don't want to filter transparent
-    // areas.  Currently the sample of a transparent column produces
-    // transparent trails — which IS the preserve-alpha behavior.
-    // "Affect Transparent Areas" is a phase 2 add — for now the
-    // parameter is a placeholder and the effect always preserves alpha.
-    // (Explicit variable read below just to acknowledge the intent.)
     void preserveAlpha;
-
     return out;
   }
 
@@ -3623,6 +3614,21 @@
     let c = _pixelSweepOutputBuffer.get(layerId);
     if (!c) { c = document.createElement("canvas"); _pixelSweepOutputBuffer.set(layerId, c); }
     if (c.width !== w) c.width = w;
+    if (c.height !== h) c.height = h;
+    return c;
+  }
+
+  // Per-layer reusable canvas for the export-path pre-rasterization
+  // step.  Separate from the output buffer because both are needed
+  // simultaneously (source and destination of applyPixelSweep).
+  // Purpose: hold a bitmap of the layer rendered at layer.natW × natH
+  // BEFORE the sweep runs.  Fixes the SVG-Image-at-browser-default-
+  // dimensions bug that caused export distortion.
+  const _pixelSweepPreSourceBuffer = new Map();
+  function getPixelSweepPreSource(layerId, w, h) {
+    let c = _pixelSweepPreSourceBuffer.get(layerId);
+    if (!c) { c = document.createElement("canvas"); _pixelSweepPreSourceBuffer.set(layerId, c); }
+    if (c.width  !== w) c.width  = w;
     if (c.height !== h) c.height = h;
     return c;
   }
@@ -3775,12 +3781,32 @@
       // processor.  Uses the same function as preview so behavior is
       // identical.  Frame-accurate: progress is derived from the
       // clip's window relative to the current time `t`.
+      //
+      // CRITICAL FIX (v18.1): for SVG-derived rawImg elements, the
+      // browser's default SVG rasterization dimensions (typically
+      // 300×150 for SVGs without explicit width/height attributes)
+      // do NOT match layer.natW/natH.  Pre-rasterize into a canvas
+      // sized to layer.natW × natH before running the sweep.  This
+      // mirrors what getLayerSourceCanvas does in preview and
+      // guarantees preview == export.  Without this pre-rasterize
+      // step, applyPixelSweep would produce a low-res 300×150 output
+      // that the final drawImage would then stretch to dw×dh,
+      // producing distortion.
       let img = rawImg;
       const psClip = activePixelSweepAt(layer, t);
       if (psClip) {
+        const natW = layer.natW || rawImg.naturalWidth || rawImg.width || 512;
+        const natH = layer.natH || rawImg.naturalHeight || rawImg.height || 512;
+        const preSrc = getPixelSweepPreSource(layer.id, natW, natH);
+        const pctx = preSrc.getContext("2d");
+        pctx.clearRect(0, 0, natW, natH);
+        // Browser rasterizes SVG at natW × natH here — high enough
+        // resolution that the eventual drawImage scale to dw×dh
+        // stays faithful.
+        pctx.drawImage(rawImg, 0, 0, natW, natH);
         const progress = pixelSweepProgress(psClip, layer, t);
-        const buf = getPixelSweepOutputCanvas(layer.id, layer.natW || 512, layer.natH || 512);
-        applyPixelSweep(rawImg, { ...psClip.params, progress }, buf);
+        const buf = getPixelSweepOutputCanvas(layer.id, natW, natH);
+        applyPixelSweep(preSrc, { ...psClip.params, progress }, buf);
         img = buf;
       }
 
