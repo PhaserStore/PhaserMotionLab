@@ -1675,6 +1675,12 @@
 
   function onClipDrag(e) {
     if (!TL.dragClip) return;
+    // Precision: require >2px of real movement before we start
+    // committing changes.  Prevents accidental frame jumps from
+    // sub-pixel mouse jitter when the user meant a click-select.
+    const rawPx = Math.abs(e.clientX - TL.startX);
+    if (!TL.dragClip._moved && rawPx < 2) return;
+    TL.dragClip._moved = true;
     const dx = tlDeltaFromEvent(e, TL.startX), { layer } = TL.dragClip, o = TL.orig, D = STATE.duration;
     if (TL.mode === "move") layer.start = clamp(o.start + dx, 0, Math.max(0, D - layer.duration));
     else if (TL.mode === "trim-left") { const ns = clamp(o.start + dx, 0, o.start + o.duration - 0.2); layer.duration = o.duration - (ns - o.start); layer.start = ns; }
@@ -1710,6 +1716,9 @@
   }
   function onEventClipDrag(e) {
     if (!TL.dragEvent) return;
+    const rawPx = Math.abs(e.clientX - TL.dragEvent.startX);
+    if (!TL.dragEvent._moved && rawPx < 2) return;
+    TL.dragEvent._moved = true;
     const D = TL.dragEvent, dx = tlDeltaFromEvent(e, D.startX), layerDur = D.layer.duration;
     if (D.mode === "move") D.ec.start = clamp(D.orig.start + dx, 0, Math.max(0, layerDur - D.ec.duration));
     else if (D.mode === "trim-left") { const ns = clamp(D.orig.start + dx, 0, D.orig.start + D.orig.duration - 0.02); D.ec.duration = D.orig.duration - (ns - D.orig.start); D.ec.start = ns; }
@@ -1741,6 +1750,9 @@
   }
   function onAudioClipDrag(e) {
     if (!TL.dragAudio) return;
+    const rawPx = Math.abs(e.clientX - TL.dragAudio.startX);
+    if (!TL.dragAudio._moved && rawPx < 2) return;
+    TL.dragAudio._moved = true;
     const D = TL.dragAudio, dx = tlDeltaFromEvent(e, D.startX), dur = STATE.duration;
     if (D.mode === "move") D.ac.start = clamp(D.orig.start + dx, 0, Math.max(0, dur - D.ac.duration));
     else if (D.mode === "trim-left") { const ns = clamp(D.orig.start + dx, 0, D.orig.start + D.orig.duration - 0.05); D.ac.duration = D.orig.duration - (ns - D.orig.start); D.ac.start = ns; }
@@ -2968,7 +2980,17 @@
     hudLayer.style.display = "block"; hudLayer.style.opacity = (0.5 + 0.5 * flicker * (0.6 + 0.4 * Math.sin(t * 8))).toFixed(2);
   }
   function updateFlash(color, alpha) { if (!flashOverlay) { flashOverlay = document.createElement("div"); flashOverlay.className = "fx fx-flash"; el.artboard.appendChild(flashOverlay); } if (color && alpha > 0) { flashOverlay.style.background = color; flashOverlay.style.opacity = alpha; } else flashOverlay.style.opacity = 0; }
-  function updatePlayheads(t) { const pct = STATE.duration ? (t / STATE.duration) : 0; if (el.tlPlayhead) el.tlPlayhead.style.left = (pct * (el.tlTracks.clientWidth || 0)) + "px"; if (el.timecode) el.timecode.textContent = t.toFixed(1) + "s"; }
+  function updatePlayheads(t) {
+    // Use integer px for the playhead's `left` so sub-pixel rounding
+    // in the compositor doesn't produce visible drift while scrubbing.
+    // Timecode uses 3 decimals for millisecond-level readout.
+    const pct = STATE.duration ? (t / STATE.duration) : 0;
+    if (el.tlPlayhead) {
+      const px = Math.round(pct * (el.tlTracks.clientWidth || 0));
+      el.tlPlayhead.style.left = px + "px";
+    }
+    if (el.timecode) el.timecode.textContent = t.toFixed(3) + "s";
+  }
   function togglePlay() {
     STATE.playing = !STATE.playing;
     const show = (i, p) => { if (i) i.style.display = STATE.playing ? "none" : "block"; if (p) p.style.display = STATE.playing ? "block" : "none"; };
@@ -4771,10 +4793,32 @@
       if (e.key === "h" || e.key === "H") {
         e.preventDefault();
         const on = document.body.classList.toggle("focus-mode");
-        // Fit the canvas to the newly-available space.  fitCanvas is
-        // idempotent so calling it here is safe; keeps aspect ratio.
-        try { if (typeof fitCanvas === "function") fitCanvas(); } catch (err) {}
+        // Wait for the browser to recompute the grid layout (topbar+
+        // stage 2-row grid instead of topbar+stage+timeline 3-row).
+        // Only then does el.stage.clientHeight reflect the new size,
+        // so `fitZoom` reads the correct available space.
+        requestAnimationFrame(() => {
+          try { if (typeof fitZoom === "function" && STATE.zoomMode === "fit") fitZoom(); } catch (err) {}
+        });
         toast(on ? "Focus mode — press H to show timeline" : "Timeline shown");
+      }
+      // ---- Frame-stepping keyboard navigation ----
+      // Arrow Left / Right = 1 frame.  Shift adds ×10.  Home/End jump.
+      // Guarded by `!typing` (above) so form fields keep normal behavior.
+      const fps = STATE.fps || 30;
+      const step = e.shiftKey ? (10 / fps) : (1 / fps);
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        if (typeof seekTo === "function") seekTo(STATE.time - step);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        if (typeof seekTo === "function") seekTo(STATE.time + step);
+      } else if (e.key === "Home") {
+        e.preventDefault();
+        if (typeof seekTo === "function") seekTo(0);
+      } else if (e.key === "End") {
+        e.preventDefault();
+        if (typeof seekTo === "function") seekTo(STATE.duration);
       }
     });
 
@@ -4900,21 +4944,79 @@
       }
     });
 
-    // ---- Click on timeline ruler seeks the playhead ----
-    if (el.tlRuler) el.tlRuler.addEventListener("click", (e) => {
-      const rect = el.tlRuler.getBoundingClientRect();
-      const t = clamp((e.clientX - rect.left) / TL.pxPerSec, 0, STATE.duration);
-      STATE.time = t; rafStart = performance.now() - t * 1000;
+    // ---- Playhead scrubbing: ruler click, playhead grab, and drag.
+    // Also arrow-key frame stepping.  A single seekTo() function is the
+    // canonical way to move the timeline clock; every entry point
+    // funnels through it so behavior is identical whether you grab the
+    // playhead, click the ruler, drag, or use keyboard.
+    function seekTo(t, opts) {
+      opts = opts || {};
+      t = clamp(t, 0, STATE.duration || 0);
+      // Snap to frame if snapFrame is on AND caller didn't request raw.
+      if (STATE.snapFrame && !opts.raw) {
+        const fps = STATE.fps || 30;
+        t = Math.round(t * fps) / fps;
+      }
+      STATE.time = t;
+      // Keep the playback clock in sync so pressing Play resumes from
+      // the current timeline position, not from where playback started.
+      rafStart = performance.now() - t * 1000;
       updatePlayheads(t);
       if (STATE.playing) {
-        stopAllAudioClipSources(); schedulePlayback(t);
-        if (audio.ready) { try { audio.el.currentTime = t; } catch (err) {} }
-        // Force video layers to re-seek immediately — the drift-based
-        // sync in frame() would only pick this up on the next RAF.
+        stopAllAudioClipSources();
+        schedulePlayback(t);
+        if (audio.ready && audio.el) { try { audio.el.currentTime = t; } catch (err) {} }
+        // Video layers: re-seek immediately (both WebCodecs + legacy).
         layers.forEach((L) => { if (L.kind === "VIDEO") syncOrPaintVideoLayer(L, t, true); });
+      } else {
+        paintIfPaused();
       }
-      else { paintIfPaused(); }
-    });
+    }
+
+    // Shared drag state for ruler / playhead scrubbing.
+    let scrub = null;   // { rulerRect, active: bool }
+    function tFromClientX(clientX) {
+      const rect = el.tlRuler.getBoundingClientRect();
+      return clamp((clientX - rect.left) / TL.pxPerSec, 0, STATE.duration || 0);
+    }
+    function startScrub(e) {
+      if (e.button !== 0) return;   // left-button only
+      e.preventDefault();
+      scrub = { active: true };
+      if (el.tlPlayhead) el.tlPlayhead.classList.add("is-scrubbing");
+      document.body.style.userSelect = "none";
+      seekTo(tFromClientX(e.clientX));
+      document.addEventListener("mousemove", onScrubMove);
+      document.addEventListener("mouseup", endScrub);
+    }
+    function onScrubMove(e) {
+      if (!scrub || !scrub.active) return;
+      // Shift-drag = 10× finer (bypass snap AND scale the delta down).
+      // For scrubbing this means the cursor moves 10× the distance to
+      // move 1 frame — good for fine positioning.  We compute the base
+      // position and then offset by the shifted delta.
+      if (e.shiftKey) {
+        // Convert current cursor position to time, then move by 1/10
+        // of the delta from the last position.
+        const now = tFromClientX(e.clientX);
+        const prev = STATE.time;
+        seekTo(prev + (now - prev) / 10, { raw: true });
+      } else {
+        seekTo(tFromClientX(e.clientX));
+      }
+    }
+    function endScrub() {
+      scrub = null;
+      if (el.tlPlayhead) el.tlPlayhead.classList.remove("is-scrubbing");
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onScrubMove);
+      document.removeEventListener("mouseup", endScrub);
+    }
+    // Ruler: mousedown starts a scrub, mousemove continues, mouseup ends.
+    // Replaces the previous click-only handler.
+    if (el.tlRuler) el.tlRuler.addEventListener("mousedown", startScrub);
+    // Playhead disc: users can grab the visible disc directly.
+    if (el.tlPlayhead) el.tlPlayhead.addEventListener("mousedown", startScrub);
 
     // resize -> refit + relayout timeline
     // ============ CANVAS DIRECT MANIPULATION ============
