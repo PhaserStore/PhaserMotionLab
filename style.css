@@ -361,9 +361,14 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; }
 .timeline { display: flex; flex-direction: column; border-top: 1px solid var(--border); background: linear-gradient(180deg, var(--panel), #0D0E12); z-index: 5; min-height: 0; }
 
 /* Focus mode: timeline hidden, canvas expands into the freed space.
-   Toggled by the H key.  The transition is on the timeline itself so
-   the collapse/expand feels intentional rather than snappy. */
+   The critical piece is collapsing the grid template — merely
+   `display: none` on the timeline leaves the third row reserved,
+   which is exactly what was blocking the stage from expanding. */
+body.focus-mode .app { grid-template-rows: var(--topbar-h) 1fr; }
 body.focus-mode .timeline { display: none; }
+/* Toast: normally floats above the timeline; reposition to sit above
+   the (now-visible) focus-mode hint pill. */
+body.focus-mode .toast { bottom: 60px; }
 body.focus-mode #focusHint { opacity: 1; pointer-events: none; }
 
 /* Clean preview treatment in focus mode — no gradients, no vignette,
@@ -482,7 +487,17 @@ body.focus-mode .selection-box { display: none !important; }
 .tl-clip.audio.muted { opacity: 0.35; filter: grayscale(0.4); }
 
 .tl-playhead { position: absolute; top: 22px; bottom: 0; width: 1.5px; background: var(--accent-2); box-shadow: 0 0 10px var(--accent-glow); left: 0; z-index: 3; pointer-events: none; }
-.tl-playhead::before { content: ""; position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: 9px; height: 9px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 10px var(--accent-glow); }
+/* Playhead handle at the top — the grabbable disc.  Enlarged hit
+   area so it's easy to catch the pointer at any zoom level.  The
+   pseudo-element itself gets pointer-events auto because the parent
+   is disabled (line above) to let clicks pass through the vertical
+   line down to the tracks. */
+.tl-playhead::before { content: ""; position: absolute; top: -6px; left: 50%; transform: translateX(-50%); width: 14px; height: 14px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 10px var(--accent-glow); pointer-events: auto; cursor: grab; }
+.tl-playhead.is-scrubbing::before { cursor: grabbing; transform: translateX(-50%) scale(1.15); }
+/* Wider invisible hit region around the vertical line so grabbing
+   is forgiving. */
+.tl-playhead::after { content: ""; position: absolute; top: 0; bottom: 0; left: 50%; transform: translateX(-50%); width: 12px; pointer-events: auto; cursor: ew-resize; }
+.tl-ruler { cursor: crosshair; }
 
 .tl-zoom { display: flex; align-items: center; gap: 6px; }
 .tl-zoom input[type=range] { width: 110px; accent-color: var(--accent); }
