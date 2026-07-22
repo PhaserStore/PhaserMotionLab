@@ -4730,8 +4730,24 @@
     step("muxer constructed", { withAudio: audioSupported });
 
     let encodeError = null;
+    // v18.2 diagnostics — track how many chunks reach the muxer for
+    // each track so we can prove whether the video track is actually
+    // being written when audio is also present.  Also record the
+    // timestamp range so we can see if either track stopped early.
+    const muxStats = {
+      video: { count: 0, firstTs: null, lastTs: null, keyframes: 0 },
+      audio: { count: 0, firstTs: null, lastTs: null },
+    };
     const encoder = new VideoEncoder({
-      output: (chunk, meta) => { try { muxer.addVideoChunk(chunk, meta); } catch (e) { encodeError = e; } },
+      output: (chunk, meta) => {
+        try {
+          muxer.addVideoChunk(chunk, meta);
+          muxStats.video.count++;
+          if (muxStats.video.firstTs === null) muxStats.video.firstTs = chunk.timestamp;
+          muxStats.video.lastTs = chunk.timestamp;
+          if (chunk.type === "key") muxStats.video.keyframes++;
+        } catch (e) { encodeError = e; step("addVideoChunk threw", { error: String(e), atTs: chunk && chunk.timestamp }); }
+      },
       error: (e) => { encodeError = e; step("encoder error", { error: String(e) }); },
     });
     try {
@@ -4749,7 +4765,14 @@
     let audioEncoder = null;
     if (audioSupported) {
       audioEncoder = new AudioEncoder({
-        output: (chunk, meta) => { try { muxer.addAudioChunk(chunk, meta); } catch (e) { encodeError = e; } },
+        output: (chunk, meta) => {
+          try {
+            muxer.addAudioChunk(chunk, meta);
+            muxStats.audio.count++;
+            if (muxStats.audio.firstTs === null) muxStats.audio.firstTs = chunk.timestamp;
+            muxStats.audio.lastTs = chunk.timestamp;
+          } catch (e) { encodeError = e; step("addAudioChunk threw", { error: String(e), atTs: chunk && chunk.timestamp }); }
+        },
         error: (e) => { encodeError = e; step("audio encoder error", { error: String(e) }); },
       });
       try {
@@ -4764,26 +4787,8 @@
       }
     }
 
-    // 5) Render the audio mixdown BEFORE the video loop.  Audio for
-    // typical short-form durations renders in <200 ms via
-    // OfflineAudioContext, and the muxer interleaves audio + video
-    // chunks by timestamp regardless of encode order.
-    if (audioEncoder) {
-      try {
-        setExportStatus("Rendering audio mixdown…", "work");
-        const audioBuffer = await renderAudioMixdown(EXPORTOPTS.duration, AUDIO_SR);
-        step("audio mixdown rendered", { seconds: audioBuffer.duration.toFixed(2), frames: audioBuffer.length });
-        await encodeAudioBufferToAAC(audioBuffer, audioEncoder);
-        step("audio chunks encoded");
-      } catch (e) {
-        step("audio encode failed — falling back to silent video", { error: String(e && e.message || e) });
-        console.warn("[Phaser MP4 S3] audio encode failed, continuing video-only:", e);
-        try { audioEncoder.close(); } catch(_){}
-        audioEncoder = null;
-      }
-    }
-
-    // 6) Prepare scene canvas + imgs.
+    // 5) Prepare scene canvas + imgs.  BEFORE the video loop (which
+    // needs them) and BEFORE audio encoding (which is independent).
     const c = document.createElement("canvas"); c.width = W; c.height = H;
     const ctx = c.getContext("2d", { alpha: false });
     const imgs = await rasterizeAll();
@@ -4792,7 +4797,15 @@
     await initVideoLayersForExport();
     step("scene prepared", { totalFrames });
 
-    // 7) Frame loop — completely wall-clock independent.
+    // 6) Video frame loop.  Runs FIRST — mp4-muxer expects the video
+    // track's first sample (a keyframe at ts=0) to reach the muxer
+    // before other-track samples stack up.  When we encoded audio
+    // first, the muxer had audio samples covering the full duration
+    // in its buffer BEFORE seeing any video samples; some builds
+    // silently produced audio-only output in that case.
+    //
+    // See v16→v18.2 changelog: this reorder is the fix for the
+    // "graphics + audio → graphics disappear" export regression.
     const KEYFRAME_INTERVAL = fps * 2;
     const MAX_QUEUE = 8;   // bound in-flight encoder work
     setExportStatus(`Encoding ${totalFrames} frames…`, "work");
@@ -4826,14 +4839,46 @@
       }
     }
 
-    // 7) Flush + finalize.
-    step("flushing encoder", { queueSize: encoder.encodeQueueSize });
-    try { await encoder.flush(); } catch (e) { step("flush threw", { error: String(e) }); }
+    // 7) Flush video encoder BEFORE encoding audio.  This ensures every
+    // video chunk has reached the muxer (via the output callback)
+    // before we start feeding audio samples.  Keeps the tracks
+    // strictly separated in encode-order and prevents any
+    // race-adjacent behavior where audio chunks might arrive while
+    // video is still draining.
+    step("flushing video encoder", { queueSize: encoder.encodeQueueSize });
+    try { await encoder.flush(); } catch (e) { step("video flush threw", { error: String(e) }); }
     try { encoder.close(); } catch (e) {}
+    step("video encoder flushed", { chunks: muxStats.video.count, keyframes: muxStats.video.keyframes,
+      firstTs: muxStats.video.firstTs, lastTs: muxStats.video.lastTs });
+
+    // 8) Render + encode audio LAST — after video is fully committed.
+    //    Audio mixdown is offline via OfflineAudioContext (fast: <200ms
+    //    for typical short-form durations), then chunked to AAC via
+    //    AudioEncoder.  The muxer interleaves samples by timestamp
+    //    when finalize() is called; encoding order doesn't affect the
+    //    final MP4 layout so long as tracks are internally monotonic.
     if (audioEncoder) {
-      step("flushing audio encoder", { queueSize: audioEncoder.encodeQueueSize });
-      try { await audioEncoder.flush(); } catch (e) { step("audio flush threw", { error: String(e) }); }
-      try { audioEncoder.close(); } catch (e) {}
+      try {
+        setExportStatus("Rendering audio mixdown…", "work");
+        const audioBuffer = await renderAudioMixdown(EXPORTOPTS.duration, AUDIO_SR);
+        step("audio mixdown rendered", { seconds: audioBuffer.duration.toFixed(2), frames: audioBuffer.length, sampleRate: audioBuffer.sampleRate });
+        await encodeAudioBufferToAAC(audioBuffer, audioEncoder);
+        step("audio chunks enqueued", { queueSize: audioEncoder.encodeQueueSize });
+        // CRITICAL: flush the audio encoder so every chunk reaches
+        // the muxer before we finalize.  Without this some chunks
+        // stay pending in the encoder's internal queue and never
+        // reach the muxer, producing shorter audio track duration
+        // than intended (or none at all).
+        await audioEncoder.flush();
+        step("audio encoder flushed", { chunks: muxStats.audio.count,
+          firstTs: muxStats.audio.firstTs, lastTs: muxStats.audio.lastTs });
+        try { audioEncoder.close(); } catch (e) {}
+      } catch (e) {
+        step("audio encode failed — continuing video-only", { error: String(e && e.message || e) });
+        console.warn("[Phaser MP4 S3] audio encode failed, continuing video-only:", e);
+        try { audioEncoder.close(); } catch(_){}
+        audioEncoder = null;
+      }
     }
     finalizeVideoLayersAfterExport();
 
@@ -4843,12 +4888,19 @@
     const buffer = muxer.target.buffer;
     if (!buffer || buffer.byteLength === 0) { step("muxer produced empty buffer"); diag.finalPath = "fallback:empty-output"; return false; }
 
-    step("SUCCESS — saving MP4", { bytes: buffer.byteLength, audio: !!audioEncoder });
+    step("SUCCESS — saving MP4", {
+      bytes: buffer.byteLength,
+      video: muxStats.video,
+      audio: muxStats.audio,
+      audioSupported: !!audioEncoder,
+    });
     diag.finalPath = "s3-success";
+    diag.muxStats = muxStats;
     const outName = baseName("mp4");
     downloadBlob(new Blob([buffer], { type: "video/mp4" }), outName);
-    const audioTag = audioEncoder ? " · with audio" : (hasAudio ? " · video-only (audio encoding unsupported)" : "");
-    setExportStatus(`Done — ${outName} saved (${(buffer.byteLength / 1024 / 1024).toFixed(1)} MB${audioTag})`, "done");
+    const audioTag = audioEncoder ? ` · with audio (${muxStats.audio.count} chunks)` : (hasAudio ? " · video-only (audio encoding unsupported)" : "");
+    const videoTag = ` · ${muxStats.video.count} video chunks`;
+    setExportStatus(`Done — ${outName} saved (${(buffer.byteLength / 1024 / 1024).toFixed(1)} MB${videoTag}${audioTag})`, "done");
     closeSheet();
     return true;
   }
