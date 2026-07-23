@@ -3634,7 +3634,7 @@
   }
 
 
-  function layerToImage(layer) {
+  function layerToImage(layer, targetW, targetH) {
     return new Promise((resolve) => {
       // IMG layers already have an <img> in layer.node — draw directly.
       // VIDEO layers have a <video> in layer.node — <video> is a valid
@@ -3643,12 +3643,94 @@
       // both seek the video before drawing, so both sample the same
       // frame at the same timeline t.
       if (layer.kind === "IMG" || layer.kind === "VIDEO") { resolve(layer.node); return; }
+      // ---- SVG rasterization ----
+      // v18.3 SHARPNESS FIX: previously we returned an
+      // HTMLImageElement from a Blob URL.  For SVGs with only a
+      // viewBox (no explicit width/height attributes), the browser
+      // defaults naturalWidth to 150 — so drawImage(img@150, ..., dw)
+      // at export destinations like 1080 or 2160 becomes a 7×-14×
+      // BITMAP upscale.  Thin wireframe strokes vanish.
+      //
+      // Now we rasterize into a canvas at the LARGER of:
+      //   - the target export dimensions (typically artboard size)
+      //   - 2× the SVG's declared natW/natH (so preview also gets
+      //     high-quality rasterization when no target is passed)
+      // capped at 4096 to avoid GPU/VRAM limits on extreme resolutions.
+      // Preserves aspect ratio.  The resulting canvas is a proper
+      // bitmap CanvasImageSource; downstream drawImage calls will
+      // downsample crisply instead of upsampling from a low-res
+      // browser-default bitmap.
+      const natW = layer.natW || 400;
+      const natH = layer.natH || 400;
+      const cap = 4096;
+      const aspect = natW / natH;
+      // Target scale: pick the largest reasonable rasterization scale
+      // given the requested destination.  If no target passed (preview
+      // path), default to 2× viewBox so preview overlay is crisp too.
+      const scale = Math.min(
+        cap / Math.max(natW, natH),
+        Math.max(
+          2,
+          (targetW || 0) / natW,
+          (targetH || 0) / natH
+        )
+      );
+      const rasterW = Math.max(1, Math.round(natW * scale));
+      const rasterH = Math.max(1, Math.round(natH * scale));
+
       const svgStr = new XMLSerializer().serializeToString(layer.node);
       const url = URL.createObjectURL(new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" }));
-      const img = new Image(); img.onload = () => { URL.revokeObjectURL(url); resolve(img); }; img.onerror = () => { URL.revokeObjectURL(url); resolve(null); }; img.src = url;
+      const svgImg = new Image();
+      svgImg.onload = () => {
+        const c = document.createElement("canvas");
+        c.width = rasterW; c.height = rasterH;
+        const ctx = c.getContext("2d");
+        // Enable high-quality smoothing for the vector→bitmap step —
+        // this is the ONLY step where interpolation matters, since
+        // it's SVG's antialiased rendering being written to pixels.
+        // Downstream bitmap-to-bitmap operations should keep
+        // imageSmoothing enabled by default too (default in canvas
+        // 2D is true) — that gives smooth downscaling to final dst.
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(svgImg, 0, 0, rasterW, rasterH);
+        URL.revokeObjectURL(url);
+        // Instrumentation (v18.3): log dimensions so we can prove the
+        // pipeline is now high-res.  Emitted once per layer per export
+        // cycle since rasterizeAll runs at export start.
+        try {
+          console.log("[Phaser SVG raster]", {
+            layer: layer.id, name: layer.name,
+            svg_viewBox: layer.node.getAttribute("viewBox"),
+            svg_width_attr: layer.node.getAttribute("width"),
+            svg_height_attr: layer.node.getAttribute("height"),
+            natW, natH,
+            rasterCanvasSize: { w: rasterW, h: rasterH },
+            targetSize: { w: targetW, h: targetH },
+            devicePixelRatio: window.devicePixelRatio,
+            scale: scale.toFixed(3),
+          });
+        } catch (e) {}
+        resolve(c);
+      };
+      svgImg.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+      svgImg.src = url;
     });
   }
-  async function rasterizeAll() { const imgs = {}; for (const l of layers) imgs[l.id] = await layerToImage(l); return imgs; }
+  async function rasterizeAll(exportW, exportH) {
+    const imgs = {};
+    // Log the export target once so users can correlate with the
+    // per-layer raster logs.
+    try {
+      console.log("[Phaser export raster] rasterizeAll target:", {
+        exportW, exportH,
+        artboard: STATE.format,
+        devicePixelRatio: window.devicePixelRatio,
+      });
+    } catch (e) {}
+    for (const l of layers) imgs[l.id] = await layerToImage(l, exportW, exportH);
+    return imgs;
+  }
 
   // Which layers to draw: whole comp or just the selected layer.
   function exportLayers() { return (EXPORTOPTS.target === "layer" && selectedLayer) ? [selectedLayer] : layers; }
@@ -3795,17 +3877,20 @@
       let img = rawImg;
       const psClip = activePixelSweepAt(layer, t);
       if (psClip) {
-        const natW = layer.natW || rawImg.naturalWidth || rawImg.width || 512;
-        const natH = layer.natH || rawImg.naturalHeight || rawImg.height || 512;
-        const preSrc = getPixelSweepPreSource(layer.id, natW, natH);
+        // v18.3: use the raster source's ACTUAL dimensions, which are
+        // now export-resolution (per the layerToImage sharpness fix).
+        // Previously we hard-coded layer.natW × natH here, which for
+        // an SVG at natW=400 exported at 1080 would downsample the
+        // high-res source back to 400 before sweeping.  Now we
+        // sweep at full raster resolution.
+        const srcW = rawImg.naturalWidth || rawImg.width || layer.natW || 512;
+        const srcH = rawImg.naturalHeight || rawImg.height || layer.natH || 512;
+        const preSrc = getPixelSweepPreSource(layer.id, srcW, srcH);
         const pctx = preSrc.getContext("2d");
-        pctx.clearRect(0, 0, natW, natH);
-        // Browser rasterizes SVG at natW × natH here — high enough
-        // resolution that the eventual drawImage scale to dw×dh
-        // stays faithful.
-        pctx.drawImage(rawImg, 0, 0, natW, natH);
+        pctx.clearRect(0, 0, srcW, srcH);
+        pctx.drawImage(rawImg, 0, 0, srcW, srcH);
         const progress = pixelSweepProgress(psClip, layer, t);
-        const buf = getPixelSweepOutputCanvas(layer.id, natW, natH);
+        const buf = getPixelSweepOutputCanvas(layer.id, srcW, srcH);
         applyPixelSweep(preSrc, { ...psClip.params, progress }, buf);
         img = buf;
       }
@@ -4362,7 +4447,7 @@
     const transparent = tOverride !== undefined ? tOverride : (EXPORTOPTS.transparent || EXPORTOPTS.bg === "transparent");
     setExportStatus(transparent ? "Rendering transparent PNG…" : "Rendering PNG…", "work");
     const { W, H, crop } = exportDims(), c = document.createElement("canvas"); c.width = W; c.height = H;
-    const ctx = c.getContext("2d"), imgs = await rasterizeAll();
+    const ctx = c.getContext("2d"), imgs = await rasterizeAll(W, H);
     redirectImgsToExportCanvases(imgs);
     await drawExportFrame(ctx, W, H, imgs, STATE.time, { bg: transparent ? null : resolveExportBg(false) }, crop);
     c.toBlob((b) => { downloadBlob(b, transparent ? baseName("transparent.png") : baseName("png")); setExportStatus("Done — PNG saved", "done"); closeSheet(); }, "image/png");
@@ -4373,7 +4458,7 @@
     const fps = EXPORTOPTS.fps, dur = EXPORTOPTS.duration, total = Math.round(fps * dur);
     setExportStatus(`Rendering ${total} frames (${dur}s @ ${fps}fps)…`, "work");
     const { W, H, crop } = exportDims(), c = document.createElement("canvas"); c.width = W; c.height = H;
-    const ctx = c.getContext("2d"), imgs = await rasterizeAll(), bg = transparent ? null : resolveExportBg(false);
+    const ctx = c.getContext("2d"), imgs = await rasterizeAll(W, H), bg = transparent ? null : resolveExportBg(false);
     redirectImgsToExportCanvases(imgs);
     for (let f = 0; f < total; f++) { await seekAllVideoLayersTo(f / fps); await paintWebCodecsLayersForExport(f / fps); await drawExportFrame(ctx, W, H, imgs, f / fps, { bg }, crop); await new Promise((res) => c.toBlob((b) => { downloadBlob(b, `phaser-seq-${String(f).padStart(4, "0")}.png`); setTimeout(res, 55); }, "image/png")); if (f % 10 === 0) setExportStatus(`Rendering frame ${f + 1}/${total}…`, "work"); }
     setExportStatus("Done — sequence saved", "done"); closeSheet();
@@ -4396,7 +4481,7 @@
     const { W, H, crop } = exportDims();
     const c = document.createElement("canvas"); c.width = W; c.height = H;
     const ctx = c.getContext("2d");
-    const imgs = await rasterizeAll();
+    const imgs = await rasterizeAll(W, H);
     redirectImgsToExportCanvases(imgs);
     /* DETERMINISTIC CAPTURE PIPELINE
        Bug we're fixing: prior version used `canvas.captureStream(fps)` +
@@ -4791,7 +4876,7 @@
     // needs them) and BEFORE audio encoding (which is independent).
     const c = document.createElement("canvas"); c.width = W; c.height = H;
     const ctx = c.getContext("2d", { alpha: false });
-    const imgs = await rasterizeAll();
+    const imgs = await rasterizeAll(W, H);
     redirectImgsToExportCanvases(imgs);
     const bg = resolveExportBg(true, false);
     await initVideoLayersForExport();
@@ -4986,7 +5071,7 @@
       const { W, H, crop } = exportDims();
       const c = document.createElement("canvas"); c.width = W; c.height = H;
       const ctx = c.getContext("2d");
-      const imgs = await rasterizeAll();
+      const imgs = await rasterizeAll(W, H);
       redirectImgsToExportCanvases(imgs);
       // Same deterministic capture pattern as exportWebM — every event
       // frame is guaranteed to reach the encoder.
