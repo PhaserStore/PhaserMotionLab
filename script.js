@@ -4800,8 +4800,27 @@
     // → video-only export with a clear status message.
     const AUDIO_SR = 48000;
     const AUDIO_CHANNELS = 2;
-    const AUDIO_BITRATE = 128000;
+    // v18.5: raised from 128k to 192k.  AAC-LC at 128kbps is
+    // near-transparent for spoken voice but loses subtle spectral
+    // detail on music (cymbal shimmer, string harmonics).  192k is
+    // the broadcast quality tier — indistinguishable from source for
+    // typical short-form content.  Trade-off: ~50% larger audio
+    // track, still small relative to video track size.
+    const AUDIO_BITRATE = 192000;
     const hasAudio = hasAudioToExport();
+    // v18.5 audio diagnostics — record source vs export characteristics
+    // so users can see any resample or sample-rate mismatch.
+    const audioDiag = {
+      source_hasMusicEl: !!(audio.el && audio.el.src),
+      source_musicSampleRate: (audio.musicBuffer && audio.musicBuffer.sampleRate) || null,
+      source_musicChannels: (audio.musicBuffer && audio.musicBuffer.numberOfChannels) || null,
+      source_sfxClipCount: audioClips.length,
+      export_sampleRate: AUDIO_SR,
+      export_channels: AUDIO_CHANNELS,
+      export_bitrate: AUDIO_BITRATE,
+      export_codec: "mp4a.40.2",
+    };
+    step("audio diagnostics", audioDiag);
     const canEncodeAudio = hasAudio
       && typeof AudioEncoder !== "undefined"
       && typeof AudioData !== "undefined";
@@ -4851,14 +4870,36 @@
       },
       error: (e) => { encodeError = e; step("encoder error", { error: String(e) }); },
     });
+
+    // v18.5 COLOR-SPACE INVESTIGATION
+    // Symptom reported: lifted blacks + desaturated colors in exported
+    // MP4 vs preview canvas.  Suspected cause: encoder produces
+    // limited-range (16–235) YUV without writing the corresponding
+    // range flag into the H.264 SPS VUI, so players default to
+    // full-range interpretation → limited-range values render lifted.
+    //
+    // WebCodecs spec: colorSpace is a property of VideoFrame, NOT of
+    // VideoEncoderConfig.  We set it at VideoFrame construction time
+    // (see frame loop below).  This tells the encoder the source
+    // colorimetry so it can write correct VUI flags.
+    //
+    // Chrome's actual behavior with this flag varies by version and
+    // hardware.  Full instrumentation below lets users report what
+    // their browser actually does.
+    const videoConfig = {
+      codec, width: W, height: H, bitrate, framerate: fps,
+      latencyMode: "quality",
+      avc: { format: "avc" },
+    };
+    step("VideoEncoder config", {
+      codec: videoConfig.codec,
+      width: videoConfig.width, height: videoConfig.height,
+      bitrate: videoConfig.bitrate, framerate: videoConfig.framerate,
+      avc: videoConfig.avc,
+      note: "colorSpace applied at VideoFrame construction, not encoder config (per WebCodecs spec)",
+    });
     try {
-      encoder.configure({
-        codec, width: W, height: H, bitrate, framerate: fps,
-        // Prefer quality over latency — we're exporting, not livestreaming.
-        latencyMode: "quality",
-        // Progressive: avoids interlacing edge cases in players.
-        avc: { format: "avc" },
-      });
+      encoder.configure(videoConfig);
     } catch (e) { step("encoder.configure threw", { error: String(e) }); try { encoder.close(); } catch(_){}; diag.finalPath = "fallback:encoder-configure"; return false; }
     step("encoder configured");
 
@@ -4920,13 +4961,68 @@
       await seekAllVideoLayersTo(t);              // legacy layers only (no-op otherwise)
       await paintWebCodecsLayersForExport(t);     // WebCodecs layers only (no-op otherwise)
       await drawExportFrame(ctx, W, H, imgs, t, { bg }, crop);
+      // v18.5 debug: dump one frame as PNG BEFORE it enters the
+      // encoder.  Users can compare this PNG against the preview
+      // canvas and against a frame extracted from the final MP4
+      // — differences between {preview, PNG} isolate rendering
+      // issues; differences between {PNG, MP4 frame} isolate
+      // encoder issues.  Triggered by setting
+      // `window.__phaserDumpFrame = <frameIndex>` before export.
+      if (window.__phaserDumpFrame != null && Number(window.__phaserDumpFrame) === f) {
+        try {
+          c.toBlob((b) => {
+            if (!b) return;
+            const url = URL.createObjectURL(b);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `phaser-preencode-frame-${f}.png`;
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 5000);
+            step("pre-encode frame PNG dumped", { frame: f, bytes: b.size });
+          }, "image/png");
+        } catch (e) { step("frame dump failed", { error: String(e) }); }
+      }
       // Timestamp is explicit and monotonic — muxer duration = last_ts + 1_frame_us
       const timestamp_us = Math.round((f * 1_000_000) / fps);
       const duration_us  = Math.round(1_000_000 / fps);
+      // v18.5: pass explicit colorSpace to VideoFrame.  Per WebCodecs
+      // spec, colorSpace is a VideoFrame property, not an encoder
+      // property.  Chrome propagates this through the encoder so the
+      // H.264 SPS VUI gets correct color_primaries / transfer_
+      // characteristics / matrix_coefficients / video_full_range_flag.
+      // Actual respect for this flag varies by Chrome version + HW
+      // accelerator; the diagnostic log at frame 0 records what
+      // Chrome actually reports after construction.
       let vf;
       try {
-        vf = new VideoFrame(c, { timestamp: timestamp_us, duration: duration_us });
+        vf = new VideoFrame(c, {
+          timestamp: timestamp_us,
+          duration: duration_us,
+          // Full-range sRGB → BT.709 matrix path.  Canvas source is
+          // already sRGB/full-range so this is truthful metadata.
+          colorSpace: {
+            primaries: "bt709",
+            transfer:  "iec61966-2-1",   // sRGB gamma
+            matrix:    "bt709",
+            fullRange: true,
+          },
+        });
       } catch (e) { step("VideoFrame construction failed at frame " + f, { error: String(e) }); break; }
+      // Log the actual VideoFrame colorSpace once so users can see
+      // what Chrome ended up using (may differ from requested).
+      if (f === 0) {
+        try {
+          step("VideoFrame colorSpace at frame 0", {
+            primaries: vf.colorSpace && vf.colorSpace.primaries,
+            transfer:  vf.colorSpace && vf.colorSpace.transfer,
+            matrix:    vf.colorSpace && vf.colorSpace.matrix,
+            fullRange: vf.colorSpace && vf.colorSpace.fullRange,
+            format: vf.format,
+            codedWidth: vf.codedWidth,
+            codedHeight: vf.codedHeight,
+          });
+        } catch (e) {}
+      }
       try {
         encoder.encode(vf, { keyFrame: (f % KEYFRAME_INTERVAL) === 0 });
       } catch (e) { step("encoder.encode threw at frame " + f, { error: String(e) }); vf.close(); break; }
