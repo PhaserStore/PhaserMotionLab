@@ -3664,17 +3664,21 @@
       const natH = layer.natH || 400;
       const cap = 4096;
       const aspect = natW / natH;
-      // Target scale: pick the largest reasonable rasterization scale
-      // given the requested destination.  If no target passed (preview
-      // path), default to 2× viewBox so preview overlay is crisp too.
-      const scale = Math.min(
-        cap / Math.max(natW, natH),
-        Math.max(
-          2,
-          (targetW || 0) / natW,
-          (targetH || 0) / natH
-        )
+      // Target scale: rasterize at 2× the export destination so the
+      // eventual downsample to the final canvas provides supersampling
+      // antialiasing.  Without this, thin wireframe strokes (< 1px in
+      // export destination coords) lose contrast during the 1:1 or
+      // near-1:1 downsample.  Rasterizing at 2× target means every
+      // destination pixel receives ~4 source samples, giving proper
+      // AA even for sub-pixel strokes.  Capped at 4096 for VRAM.
+      // If no target passed (preview path), default to 2× viewBox
+      // so preview overlay also gets crisp AA.
+      const desiredScale = Math.max(
+        2,                                     // 2× viewBox minimum
+        ((targetW || 0) * 2) / natW,           // 2× target width
+        ((targetH || 0) * 2) / natH            // 2× target height
       );
+      const scale = Math.min(cap / Math.max(natW, natH), desiredScale);
       const rasterW = Math.max(1, Math.round(natW * scale));
       const rasterH = Math.max(1, Math.round(natH * scale));
 
@@ -3830,6 +3834,18 @@
     const transparent = !opts.bg;
     ctx.globalCompositeOperation = "source-over";
     ctx.globalAlpha = 1;
+    // v18.4: force high-quality downsample.  Default browser
+    // `imageSmoothingQuality` is "low" (bilinear).  When we downsample
+    // the oversampled raster (2× target) to the destination, bilinear
+    // over-averages sub-pixel wireframe strokes and softens them.
+    // "high" uses bicubic/lanczos which preserves stroke contrast
+    // through 2× downsample.  Debug hook lets us bypass to compare.
+    if (window.__phaserForceNoSmoothing) {
+      ctx.imageSmoothingEnabled = false;
+    } else {
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+    }
     ctx.clearRect(0, 0, W, H);
 
     if (!transparent) {
