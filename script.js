@@ -3634,6 +3634,310 @@
   }
 
 
+  /* ================ EXPORT DIAGNOSTICS (Phase 1) =====================
+     Three-way capture + bitstream inspection for the MP4 export path.
+     Triggered by setting `window.__phaserExportDiag = { frameIndex }`
+     before running an export.
+     Captures:
+       1. Pre-encode PNG — the export canvas at that frame index
+       2. Decoded MP4 frame PNG — extracted from the final MP4 via
+          <video> playback
+       3. SPS VUI parse from the first video chunk metadata
+       4. `colr` atom scan from the muxed MP4 bytes
+       5. Numeric histograms for preencode vs decoded MP4 frame
+     Delivers all artifacts as downloads + a diag-report.json.
+     Also attaches everything to `window.__phaserMP4Diag.phase1`.
+     ==================================================================== */
+
+  const _exportDiag = {
+    active: false,
+    frameIndex: 0,
+    frameTimestampSec: 0,
+    captures: {},   // populated during export
+    report: {},
+  };
+
+  // ---- SPS VUI parser ------------------------------------------------
+  // Strips RBSP emulation-prevention bytes (00 00 03 → 00 00), then
+  // walks the SPS syntax to extract VUI color-info fields.
+  function _stripEmulationPrevention(bytes) {
+    const out = [];
+    let zeros = 0;
+    for (let i = 0; i < bytes.length; i++) {
+      const b = bytes[i];
+      if (zeros === 2 && b === 0x03) { zeros = 0; continue; }
+      if (b === 0x00) zeros++; else zeros = 0;
+      out.push(b);
+    }
+    return new Uint8Array(out);
+  }
+  class _BitReader {
+    constructor(bytes) { this.bytes = bytes; this.pos = 0; }
+    u(n) {
+      let v = 0;
+      for (let i = 0; i < n; i++) {
+        const byteIdx = this.pos >> 3;
+        const bitIdx  = 7 - (this.pos & 7);
+        v = (v << 1) | ((this.bytes[byteIdx] >> bitIdx) & 1);
+        this.pos++;
+      }
+      return v;
+    }
+    // Unsigned Exp-Golomb
+    ue() {
+      let leadingZeros = 0;
+      while (this.u(1) === 0 && leadingZeros < 32) leadingZeros++;
+      if (leadingZeros === 0) return 0;
+      return (1 << leadingZeros) - 1 + this.u(leadingZeros);
+    }
+    // Signed Exp-Golomb
+    se() {
+      const v = this.ue();
+      return (v % 2 === 0) ? -(v >> 1) : ((v + 1) >> 1);
+    }
+  }
+  function parseSpsVui(spsBytes) {
+    try {
+      // Detect and skip NAL unit header (first byte of an SPS NAL is
+      // 0x67 = nal_ref_idc=3, nal_unit_type=7).
+      let start = 0;
+      if (spsBytes[0] === 0x67) start = 1;
+      const rbsp = _stripEmulationPrevention(spsBytes.slice(start));
+      const br = new _BitReader(rbsp);
+
+      const profile_idc = br.u(8);
+      br.u(8);   // constraint_set flags + reserved
+      const level_idc = br.u(8);
+      br.ue();   // seq_parameter_set_id
+
+      const highProfiles = new Set([100,110,122,244,44,83,86,118,128,138,139,134,135]);
+      let chroma_format_idc = 1;
+      if (highProfiles.has(profile_idc)) {
+        chroma_format_idc = br.ue();
+        if (chroma_format_idc === 3) br.u(1);
+        br.ue();  // bit_depth_luma_minus8
+        br.ue();  // bit_depth_chroma_minus8
+        br.u(1);  // qpprime_y_zero_transform_bypass_flag
+        const seq_scaling_matrix_present_flag = br.u(1);
+        if (seq_scaling_matrix_present_flag) {
+          return { parseError: "custom scaling list — parser skipped further fields" };
+        }
+      }
+
+      br.ue();  // log2_max_frame_num_minus4
+      const pic_order_cnt_type = br.ue();
+      if (pic_order_cnt_type === 0) {
+        br.ue();
+      } else if (pic_order_cnt_type === 1) {
+        br.u(1); br.se(); br.se();
+        const num = br.ue();
+        for (let i = 0; i < num; i++) br.se();
+      }
+      br.ue();  // max_num_ref_frames
+      br.u(1);  // gaps_in_frame_num_value_allowed_flag
+      br.ue();  // pic_width_in_mbs_minus1
+      br.ue();  // pic_height_in_map_units_minus1
+      const frame_mbs_only_flag = br.u(1);
+      if (!frame_mbs_only_flag) br.u(1);
+      br.u(1);  // direct_8x8_inference_flag
+      const frame_cropping_flag = br.u(1);
+      if (frame_cropping_flag) { br.ue(); br.ue(); br.ue(); br.ue(); }
+
+      const vui_parameters_present_flag = br.u(1);
+      const result = {
+        profile_idc, level_idc, chroma_format_idc,
+        vui_parameters_present_flag,
+        video_signal_type_present_flag: 0,
+        video_full_range_flag: null,
+        colour_description_present_flag: 0,
+        colour_primaries: null,
+        transfer_characteristics: null,
+        matrix_coefficients: null,
+      };
+      if (vui_parameters_present_flag) {
+        const aspect_ratio_info_present_flag = br.u(1);
+        if (aspect_ratio_info_present_flag) {
+          const aspect_ratio_idc = br.u(8);
+          if (aspect_ratio_idc === 255) { br.u(16); br.u(16); }
+        }
+        const overscan_info_present_flag = br.u(1);
+        if (overscan_info_present_flag) br.u(1);
+        const video_signal_type_present_flag = br.u(1);
+        result.video_signal_type_present_flag = video_signal_type_present_flag;
+        if (video_signal_type_present_flag) {
+          br.u(3);  // video_format
+          result.video_full_range_flag = br.u(1);
+          const colour_description_present_flag = br.u(1);
+          result.colour_description_present_flag = colour_description_present_flag;
+          if (colour_description_present_flag) {
+            result.colour_primaries = br.u(8);
+            result.transfer_characteristics = br.u(8);
+            result.matrix_coefficients = br.u(8);
+          }
+        }
+      }
+      // Human interpretation
+      const primaryNames  = {1:"BT.709", 5:"BT.601-PAL", 6:"BT.601-NTSC", 9:"BT.2020"};
+      const transferNames = {1:"BT.709", 6:"BT.601", 13:"sRGB", 14:"BT.2020-10", 16:"PQ", 18:"HLG"};
+      const matrixNames   = {0:"RGB (Identity)", 1:"BT.709", 5:"BT.601", 9:"BT.2020"};
+      const parts = [];
+      if (result.colour_primaries != null) parts.push("primaries=" + (primaryNames[result.colour_primaries] || result.colour_primaries));
+      if (result.transfer_characteristics != null) parts.push("transfer=" + (transferNames[result.transfer_characteristics] || result.transfer_characteristics));
+      if (result.matrix_coefficients != null) parts.push("matrix=" + (matrixNames[result.matrix_coefficients] || result.matrix_coefficients));
+      if (result.video_full_range_flag != null) parts.push("range=" + (result.video_full_range_flag ? "FULL" : "LIMITED"));
+      result.interpretation = parts.join(", ") || "SPS has no VUI color info — players will default to limited-range BT.601/709";
+      return result;
+    } catch (e) {
+      return { parseError: String(e && e.message || e) };
+    }
+  }
+
+  // ---- colr atom scanner ---------------------------------------------
+  // MP4 boxes are nested but "colr" is a small leaf with a known
+  // structure.  Byte-scan for the type code is reliable enough for
+  // diagnostics — the string "colr" isn't likely to occur in the mdat
+  // payload by chance.
+  function findColrAtom(mp4Bytes) {
+    try {
+      const bytes = new Uint8Array(mp4Bytes);
+      // Search for the 4-byte type code "colr" (0x63 0x6F 0x6C 0x72)
+      for (let i = 4; i < bytes.length - 12; i++) {
+        if (bytes[i] === 0x63 && bytes[i+1] === 0x6F && bytes[i+2] === 0x6C && bytes[i+3] === 0x72) {
+          // The 4 bytes before this are the box size (uint32 BE)
+          const boxSize = new DataView(bytes.buffer, bytes.byteOffset + i - 4, 4).getUint32(0, false);
+          // 4 bytes after "colr" = colour_type
+          const type = String.fromCharCode(bytes[i+4], bytes[i+5], bytes[i+6], bytes[i+7]);
+          if (type === "nclx" || type === "nclc") {
+            const primaries = (bytes[i+8] << 8) | bytes[i+9];
+            const transfer  = (bytes[i+10] << 8) | bytes[i+11];
+            const matrix    = (bytes[i+12] << 8) | bytes[i+13];
+            const result = { found: true, offset: i - 4, boxSize, type, primaries, transfer, matrix };
+            if (type === "nclx") {
+              const flags = bytes[i+14];
+              result.fullRange = (flags & 0x80) !== 0;
+            } else {
+              result.fullRange = null;   // legacy nclc has no range flag
+            }
+            return result;
+          }
+        }
+      }
+      return { found: false, note: "No colr atom in MP4 container. Players will read range/primaries from SPS VUI only. Missing colr can cause playback inconsistency across players." };
+    } catch (e) {
+      return { found: false, error: String(e && e.message || e) };
+    }
+  }
+
+  // ---- Histogram / color measurement ---------------------------------
+  async function computeImageStats(pngBlob) {
+    if (!pngBlob) return null;
+    return new Promise((resolve) => {
+      const url = URL.createObjectURL(pngBlob);
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const c = document.createElement("canvas");
+          c.width = img.naturalWidth; c.height = img.naturalHeight;
+          const ctx = c.getContext("2d");
+          ctx.drawImage(img, 0, 0);
+          const d = ctx.getImageData(0, 0, c.width, c.height).data;
+          let pureBlack = 0, nearBlack = 0, lumaSum = 0, lumaSqSum = 0, maxCyanSat = 0;
+          const pxCount = d.length / 4;
+          for (let i = 0; i < d.length; i += 4) {
+            const r = d[i], g = d[i+1], b = d[i+2];
+            if (r <= 2 && g <= 2 && b <= 2) pureBlack++;
+            if (r <= 5 && g <= 5 && b <= 5) nearBlack++;
+            const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            lumaSum += luma;
+            lumaSqSum += luma * luma;
+            // Cyan detection: high G, high B, low R → measure saturation of these pixels
+            if (r < g && r < b && g > 128 && b > 128) {
+              const maxC = Math.max(g, b);
+              const minC = Math.min(r, g, b);
+              const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
+              if (sat > maxCyanSat) maxCyanSat = sat;
+            }
+          }
+          const meanLuma = lumaSum / pxCount;
+          const varLuma = (lumaSqSum / pxCount) - (meanLuma * meanLuma);
+          const stdLuma = Math.sqrt(Math.max(0, varLuma));
+          URL.revokeObjectURL(url);
+          resolve({
+            dimensions: { w: c.width, h: c.height },
+            total_pixels: pxCount,
+            pure_black_pixels: pureBlack,
+            pure_black_pct: (pureBlack / pxCount * 100).toFixed(3) + "%",
+            near_black_pixels: nearBlack,
+            near_black_pct: (nearBlack / pxCount * 100).toFixed(3) + "%",
+            mean_luma: meanLuma.toFixed(2),
+            luma_stddev: stdLuma.toFixed(2),
+            peak_cyan_saturation: maxCyanSat.toFixed(3),
+          });
+        } catch (e) { URL.revokeObjectURL(url); resolve({ error: String(e) }); }
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+      img.src = url;
+    });
+  }
+
+  // ---- Delivery: download each artifact + JSON report -----------------
+  function _downloadBlob(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+  async function deliverDiagArtifacts(diag) {
+    const f = diag.frameIndex;
+    if (diag.captures.preencodePng)     _downloadBlob(diag.captures.preencodePng,     `phaser-diag-${f}-1-preencode.png`);
+    if (diag.captures.decodedFramePng)  _downloadBlob(diag.captures.decodedFramePng,  `phaser-diag-${f}-2-mp4decoded.png`);
+    const jsonBlob = new Blob([JSON.stringify(diag.report, null, 2)], { type: "application/json" });
+    _downloadBlob(jsonBlob, `phaser-diag-${f}-3-report.json`);
+  }
+
+  // ---- Extract a frame from the muxed MP4 via <video> playback --------
+  // Uses Chrome's video element to decode + present.  This captures the
+  // "as-played-by-Chrome" pixel data — which is what users actually see
+  // when they play the MP4.  If Chrome misinterprets color metadata,
+  // this reproduces that misinterpretation, making it visible in the
+  // downloaded PNG for direct comparison.
+  async function extractMp4FrameAsPng(mp4Buffer, targetSec, W, H) {
+    return new Promise((resolve) => {
+      let url = null;
+      const v = document.createElement("video");
+      v.muted = true;
+      const cleanup = () => {
+        if (url) { URL.revokeObjectURL(url); url = null; }
+      };
+      const timeout = setTimeout(() => { cleanup(); resolve({ error: "timeout waiting for video decode" }); }, 8000);
+      v.addEventListener("error", () => { clearTimeout(timeout); cleanup(); resolve({ error: "video element error: " + (v.error && v.error.message) }); });
+      v.addEventListener("loadedmetadata", () => {
+        // Clamp target within video's range
+        const t = Math.max(0, Math.min(v.duration - 0.01, targetSec));
+        v.currentTime = t;
+      });
+      v.addEventListener("seeked", async () => {
+        // Wait one more frame for actual paint
+        await new Promise(r => setTimeout(r, 120));
+        try {
+          const c = document.createElement("canvas");
+          c.width = v.videoWidth || W; c.height = v.videoHeight || H;
+          c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+          const blob = await new Promise(r => c.toBlob(r, "image/png"));
+          clearTimeout(timeout); cleanup();
+          resolve({ blob, videoWidth: v.videoWidth, videoHeight: v.videoHeight });
+        } catch (e) {
+          clearTimeout(timeout); cleanup();
+          resolve({ error: String(e) });
+        }
+      }, { once: true });
+      url = URL.createObjectURL(new Blob([mp4Buffer], { type: "video/mp4" }));
+      v.src = url;
+    });
+  }
+
+
   function layerToImage(layer, targetW, targetH) {
     return new Promise((resolve) => {
       // IMG layers already have an <img> in layer.node — draw directly.
@@ -4764,6 +5068,17 @@
     };
     window.__phaserMP4Diag = diag;
 
+    // Phase 1 diagnostics activation
+    if (window.__phaserExportDiag && window.__phaserExportDiag.frameIndex != null) {
+      _exportDiag.active = true;
+      _exportDiag.frameIndex = Number(window.__phaserExportDiag.frameIndex);
+      _exportDiag.captures = {};
+      _exportDiag.report = {};
+      step("Phase 1 diagnostics ACTIVE", { targetFrame: _exportDiag.frameIndex });
+    } else {
+      _exportDiag.active = false;
+    }
+
     // 1) API detection.
     if (typeof VideoEncoder === "undefined")      { step("VideoEncoder unavailable");      diag.finalPath = "fallback:no-videoencoder"; return false; }
     if (typeof EncodedVideoChunk === "undefined") { step("EncodedVideoChunk unavailable"); diag.finalPath = "fallback:no-chunk";         return false; }
@@ -4866,6 +5181,14 @@
           if (muxStats.video.firstTs === null) muxStats.video.firstTs = chunk.timestamp;
           muxStats.video.lastTs = chunk.timestamp;
           if (chunk.type === "key") muxStats.video.keyframes++;
+          // Phase 1 diag: capture the SPS description from the very
+          // first chunk's metadata.  Chrome emits `meta.decoderConfig
+          // .description` with the AVCDecoderConfigurationRecord
+          // (avcC contents) which contains the SPS bytes we need.
+          if (_exportDiag.active && !_exportDiag.captures.avcCDescription
+              && meta && meta.decoderConfig && meta.decoderConfig.description) {
+            _exportDiag.captures.avcCDescription = new Uint8Array(meta.decoderConfig.description).slice();
+          }
         } catch (e) { encodeError = e; step("addVideoChunk threw", { error: String(e), atTs: chunk && chunk.timestamp }); }
       },
       error: (e) => { encodeError = e; step("encoder error", { error: String(e) }); },
@@ -4961,7 +5284,19 @@
       await seekAllVideoLayersTo(t);              // legacy layers only (no-op otherwise)
       await paintWebCodecsLayersForExport(t);     // WebCodecs layers only (no-op otherwise)
       await drawExportFrame(ctx, W, H, imgs, t, { bg }, crop);
-      // v18.5 debug: dump one frame as PNG BEFORE it enters the
+      // Phase 1 diag: capture pre-encode PNG at target frame.  This
+      // is the canvas EXACTLY as it enters new VideoFrame(canvas, ...).
+      // The diff between this PNG and the decoded-MP4 PNG proves what
+      // the encoder+muxer does to the pixels.
+      if (_exportDiag.active && f === _exportDiag.frameIndex) {
+        try {
+          const pngBlob = await new Promise((res) => c.toBlob(res, "image/png"));
+          _exportDiag.captures.preencodePng = pngBlob;
+          _exportDiag.frameTimestampSec = t;
+          step("diag: pre-encode PNG captured", { frame: f, bytes: pngBlob && pngBlob.size });
+        } catch (e) { step("diag: pre-encode capture failed", { error: String(e) }); }
+      }
+      // Legacy v18.5 debug: dump one frame as PNG BEFORE it enters the
       // encoder.  Users can compare this PNG against the preview
       // canvas and against a frame extracted from the final MP4
       // — differences between {preview, PNG} isolate rendering
@@ -5099,6 +5434,80 @@
     const videoTag = ` · ${muxStats.video.count} video chunks`;
     setExportStatus(`Done — ${outName} saved (${(buffer.byteLength / 1024 / 1024).toFixed(1)} MB${videoTag}${audioTag})`, "done");
     closeSheet();
+
+    // Phase 1 diagnostics: after MP4 is saved, run bitstream + container
+    // inspection, extract the target frame from the MP4 via <video>
+    // playback, compute histograms, and download all artifacts + a
+    // diag-report.json.  Happens asynchronously — export return value
+    // is not delayed.
+    if (_exportDiag.active) {
+      (async () => {
+        try {
+          setExportStatus("Running Phase 1 diagnostics…", "work");
+          // 1. Parse SPS VUI from captured avcC description
+          if (_exportDiag.captures.avcCDescription) {
+            // The description is an AVCDecoderConfigurationRecord.
+            // Skip the record header to find the first SPS.
+            // Layout: 5 bytes header + 1 byte (numSPS with reserved bits)
+            //         + 2 bytes SPS length + SPS bytes ...
+            const desc = _exportDiag.captures.avcCDescription;
+            let sps = null;
+            try {
+              const numSps = desc[5] & 0x1F;
+              if (numSps >= 1) {
+                const spsLen = (desc[6] << 8) | desc[7];
+                sps = desc.slice(8, 8 + spsLen);
+              }
+            } catch (e) { /* leave sps=null */ }
+            _exportDiag.report.sps_vui = sps
+              ? parseSpsVui(sps)
+              : { error: "Could not extract SPS from avcC description", descLength: desc.length };
+          } else {
+            _exportDiag.report.sps_vui = { error: "No avcC description was captured from any chunk" };
+          }
+          step("diag: SPS VUI parsed", _exportDiag.report.sps_vui);
+
+          // 2. Scan MP4 for colr atom
+          _exportDiag.report.container_colr = findColrAtom(buffer);
+          step("diag: colr atom scan", _exportDiag.report.container_colr);
+
+          // 3. Extract decoded MP4 frame via <video> playback
+          const extractResult = await extractMp4FrameAsPng(buffer, _exportDiag.frameTimestampSec, W, H);
+          if (extractResult && extractResult.blob) {
+            _exportDiag.captures.decodedFramePng = extractResult.blob;
+            step("diag: decoded MP4 frame extracted", { size: extractResult.blob.size, videoW: extractResult.videoWidth, videoH: extractResult.videoHeight });
+          } else {
+            _exportDiag.report.mp4_frame_extract = { error: (extractResult && extractResult.error) || "unknown" };
+            step("diag: MP4 frame extraction failed", _exportDiag.report.mp4_frame_extract);
+          }
+
+          // 4. Compute histograms for pre-encode and decoded frame
+          _exportDiag.report.histograms = {
+            preencode: await computeImageStats(_exportDiag.captures.preencodePng),
+            mp4_decoded: await computeImageStats(_exportDiag.captures.decodedFramePng),
+          };
+          step("diag: histograms computed", _exportDiag.report.histograms);
+
+          // 5. Deliver all artifacts
+          _exportDiag.report.captures_summary = {
+            frameIndex: _exportDiag.frameIndex,
+            frameTimestampSec: _exportDiag.frameTimestampSec,
+            hadPreencodePng: !!_exportDiag.captures.preencodePng,
+            hadDecodedFramePng: !!_exportDiag.captures.decodedFramePng,
+            hadAvcCDescription: !!_exportDiag.captures.avcCDescription,
+            mp4_size_bytes: buffer.byteLength,
+            preview_screenshot: "Manual capture required — press H, seek to target time, screenshot the stage before running export next time",
+          };
+          await deliverDiagArtifacts(_exportDiag);
+          diag.phase1 = _exportDiag.report;
+          setExportStatus(`Phase 1 diagnostics complete — check downloads folder`, "done");
+        } catch (e) {
+          step("diag: post-export diagnostics failed", { error: String(e) });
+        } finally {
+          _exportDiag.active = false;
+        }
+      })();
+    }
     return true;
   }
 
