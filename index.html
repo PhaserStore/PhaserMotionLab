@@ -176,19 +176,27 @@
     <!-- ---- CENTER STAGE ---- -->
     <main class="stage-col">
       <div class="stage" id="stage">
-        <div class="artboard-scaler" id="artboardScaler">
-          <!-- The artboard is the real export canvas. It is sized in real
-               pixels and scaled to fit via transform: scale(zoom). -->
-          <div class="artboard" id="artboard">
-            <div class="artboard-bg" id="artboardBg"></div>
-            <div class="layer-host" id="layerHost"></div>
-            <div class="fx fx-scanlines" id="fxScanlines" aria-hidden="true"></div>
-            <div class="fx fx-noise" id="fxNoise" aria-hidden="true"></div>
-            <div class="fx fx-vignette" id="fxVignette" aria-hidden="true"></div>
-            <!-- canvas frame = fixed artboard/export boundary -->
-            <div class="artboard-frame" id="artboardFrame" aria-hidden="true"></div>
-            <!-- selection box = selected layer only (different style) -->
-            <div class="selection-box" id="selectionBox" hidden aria-hidden="true"></div>
+        <!-- v18.9: stage-workspace is the scrollable inner area.  When
+             zoomed >100%, it grows beyond the stage viewport and
+             scrollbars appear on .stage.  When at or below fit, it
+             matches the stage size and centers the artboard.  The
+             surrounding padding gives room to pan "past" the artboard
+             edges — matching Photoshop / Figma workspace behavior. -->
+        <div class="stage-workspace" id="stageWorkspace">
+          <div class="artboard-scaler" id="artboardScaler">
+            <!-- The artboard is the real export canvas. It is sized in real
+                 pixels and scaled to fit via transform: scale(zoom). -->
+            <div class="artboard" id="artboard">
+              <div class="artboard-bg" id="artboardBg"></div>
+              <div class="layer-host" id="layerHost"></div>
+              <div class="fx fx-scanlines" id="fxScanlines" aria-hidden="true"></div>
+              <div class="fx fx-noise" id="fxNoise" aria-hidden="true"></div>
+              <div class="fx fx-vignette" id="fxVignette" aria-hidden="true"></div>
+              <!-- canvas frame = fixed artboard/export boundary -->
+              <div class="artboard-frame" id="artboardFrame" aria-hidden="true"></div>
+              <!-- selection box = selected layer only (different style) -->
+              <div class="selection-box" id="selectionBox" hidden aria-hidden="true"></div>
+            </div>
           </div>
         </div>
         <div class="stage-hint" id="stageHint">
