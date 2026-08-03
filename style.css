@@ -182,13 +182,33 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; }
 .layer-row { display: flex; align-items: center; gap: 8px; padding: 8px 9px; border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--panel-2); transition: all var(--fast); cursor: pointer; }
 .layer-row:hover { border-color: var(--border-strong); }
 .layer-row.selected { border-color: var(--accent); background: var(--accent-soft); }
-/* v19.4: multi-selection secondary highlight — softer than primary
-   so users can see the "one that drives the inspector" vs "also
-   selected for group operations". */
+/* v19.5: multi-selection visuals — both primary AND secondary get a
+   clear accent treatment so users can immediately see the full
+   selection.  Primary keeps the strongest highlight (drives the
+   inspector), secondary uses a distinct left-border stripe so the
+   difference is unambiguous. */
 .layer-row.multi-selected {
-  border-color: color-mix(in oklab, var(--accent) 60%, var(--border) 40%);
-  background: color-mix(in oklab, var(--accent-soft) 55%, transparent 45%);
+  border-color: var(--accent);
+  background: color-mix(in oklab, var(--accent-soft) 70%, transparent 30%);
+  position: relative;
 }
+.layer-row.multi-selected::before {
+  content: "";
+  position: absolute;
+  left: -1px; top: -1px; bottom: -1px;
+  width: 3px;
+  background: var(--accent);
+  border-radius: var(--r-sm) 0 0 var(--r-sm);
+}
+.layer-row.selected::before {
+  content: "";
+  position: absolute;
+  left: -1px; top: -1px; bottom: -1px;
+  width: 3px;
+  background: var(--accent);
+  border-radius: var(--r-sm) 0 0 var(--r-sm);
+}
+.layer-row.selected { position: relative; }
 .layer-row.hidden-layer { opacity: 0.45; }
 .layer-row.locked-layer .layer-title::after { content: " \1F512"; font-size: 9px; }
 .layer-drag { color: var(--text-3); cursor: grab; display: flex; }
