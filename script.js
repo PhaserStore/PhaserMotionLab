@@ -378,7 +378,7 @@
     zoomFitAllBtn: $("#zoomFitAllBtn"), zoomToSelBtn: $("#zoomToSelBtn"),
     tcGoto: $("#tcGoto"),
     // v19.0 Text Tool + text inspector + playhead frame + status bar
-    toolText: $("#toolText"),
+    toolStrip: $("#toolStrip"), toolSelect: $("#toolSelect"), toolText: $("#toolText"),
     textGroup: $("#textGroup"),
     textContent: $("#textContent"), textFontFamily: $("#textFontFamily"),
     textSize: $("#textSize"), textSizeRange: $("#textSizeRange"),
@@ -1223,8 +1223,9 @@
      Auto-reverts to "select" after one placement. */
   function setTool(name) {
     STATE.tool = name || "select";
-    // Update tool button visuals
-    if (el.toolText) el.toolText.classList.toggle("is-active", STATE.tool === "text");
+    // v19.1: update all tool-strip buttons.  Select vs Text vs future.
+    if (el.toolSelect) el.toolSelect.classList.toggle("is-active", STATE.tool === "select");
+    if (el.toolText)   el.toolText.classList.toggle("is-active", STATE.tool === "text");
     // Update stage cursor
     if (el.stage) el.stage.classList.toggle("tool-text-active", STATE.tool === "text");
   }
@@ -1265,32 +1266,41 @@
     renderTimeline();
   }
 
-  /* Inline text editing overlay.  Positioned in stage space (not
-     artboard space) so it doesn't get transformed by the scaler. */
+  /* v19.1 Inline text editing overlay.  Positioned in stage space so
+     it renders on top of the layer's on-canvas text.  Font metrics are
+     multiplied by STATE.zoom so the editor visually MATCHES the text
+     it's editing rather than shrinking to a fixed cap. */
   let _activeTextEditor = null;
   function startTextEdit(layer) {
     if (!layer || layer.kind !== "TEXT" || _activeTextEditor) return;
-    // Compute the layer wrap's on-screen rect, use that to position textarea.
+    // Layer's on-screen bounds in viewport coords, then offset into stage
+    // coordinate space (which is scrolled).
     const wrapRect = layer.wrap.getBoundingClientRect();
     const stageRect = el.stage.getBoundingClientRect();
     const ta = document.createElement("textarea");
     ta.className = "text-edit-overlay";
     ta.value = layer.textStyle.text;
-    // Position relative to viewport, then offset for stage scroll
-    ta.style.left = (wrapRect.left - stageRect.left + el.stage.scrollLeft) + "px";
-    ta.style.top  = (wrapRect.top  - stageRect.top  + el.stage.scrollTop) + "px";
-    ta.style.minWidth = Math.max(80, wrapRect.width) + "px";
-    ta.style.minHeight = Math.max(28, wrapRect.height) + "px";
-    // Apply font style to the editor so what-you-type looks like the result
+    ta.setAttribute("spellcheck", "false");
+    ta.style.left  = (wrapRect.left - stageRect.left + el.stage.scrollLeft) + "px";
+    ta.style.top   = (wrapRect.top  - stageRect.top  + el.stage.scrollTop) + "px";
+    ta.style.width = Math.max(80, wrapRect.width)  + "px";
+    ta.style.height = Math.max(28, wrapRect.height) + "px";
+    // Match visual font metrics 1:1 with what's on-canvas.
     ta.style.fontFamily = `"${layer.textStyle.fontFamily}", ${TEXT_FONT_STACK}`;
-    ta.style.fontSize   = Math.min(48, layer.textStyle.fontSize * STATE.zoom) + "px";
+    // The layer wrap is already scaled by STATE.zoom for the on-canvas
+    // preview.  Since our overlay lives in stage-space (not artboard-
+    // space), we scale font-size by zoom to match visually.
+    ta.style.fontSize   = (layer.textStyle.fontSize * (STATE.zoom || 1)) + "px";
     ta.style.fontWeight = layer.textStyle.fontWeight;
     ta.style.color      = layer.textStyle.color;
+    ta.style.lineHeight = layer.textStyle.lineHeight || 1.2;
     ta.style.textAlign  = layer.textStyle.align === "start" ? "left" : layer.textStyle.align === "end" ? "right" : "center";
+    if (layer.textStyle.letterSpacing) ta.style.letterSpacing = (layer.textStyle.letterSpacing * layer.textStyle.fontSize * (STATE.zoom || 1)).toFixed(2) + "px";
     el.stage.appendChild(ta);
     _activeTextEditor = { textarea: ta, layer };
-    ta.focus();
-    ta.select();
+    // Auto-select the placeholder so the user's first keypress replaces it.
+    // Small timeout so focus() applies reliably.
+    requestAnimationFrame(() => { ta.focus(); ta.select(); });
     const finalize = () => {
       if (!_activeTextEditor) return;
       const newText = ta.value;
@@ -1448,15 +1458,45 @@
   function updateHintVisibility() { el.stageHint.style.display = layers.length ? "none" : ""; }
 
   function duplicateLayer(layer) {
-    const asset = assets.find((a) => a.id === layer.assetId);
-    if (!asset) { toast("Original asset not in library"); return; }
-    addLayerFromAsset(asset);
-    const dup = layers[layers.length - 1];
-    dup.transform = { ...layer.transform, cx: layer.transform.cx + 4, cy: layer.transform.cy + 4 };
+    /* v19.1: duplicate produces a copy AT THE EXACT SAME POSITION.
+       Any offset is annoying when duplication is used to build
+       variations from a fixed anchor.  Also handles text layers
+       (no asset in the library) and preserves every editable field
+       so the copy is truly identical. */
+    let dup = null;
+    if (layer.kind === "TEXT") {
+      // Rebuild the text layer from its textStyle.
+      const s = layer.textStyle;
+      dup = createTextLayerAt();  // creates at center by default
+      // Overwrite defaults with the source's style + transform
+      dup.textStyle = JSON.parse(JSON.stringify(s));
+      buildTextLayerSVG(dup);
+    } else {
+      const asset = assets.find((a) => a.id === layer.assetId);
+      if (!asset) { toast("Original asset not in library"); return; }
+      addLayerFromAsset(asset);
+      dup = layers[layers.length - 1];
+    }
+    // Copy the transform verbatim — SAME position, scale, rotation, opacity.
+    dup.transform = { ...layer.transform };
     dup.allowTransform = layer.allowTransform;
-    dup.clips = layer.clips.map((c) => ({ ...c, id: ++idSeq }));
-    dup.start = layer.start; dup.duration = layer.duration;
-    renderLayers(); renderTimeline(); paintIfPaused();
+    dup.clips = layer.clips.map((c) => ({
+      ...c,
+      id: ++idSeq,
+      params: c.params ? JSON.parse(JSON.stringify(c.params)) : {},
+    }));
+    dup.start = layer.start;
+    dup.duration = layer.duration;
+    dup.visible = layer.visible;
+    dup.locked = layer.locked;
+    dup.name = layer.name + " copy";
+    // Video-specific fields.
+    if (layer.kind === "VIDEO") {
+      dup.srcInPoint = layer.srcInPoint;
+      dup.srcOutPoint = layer.srcOutPoint;
+      dup.speed = layer.speed;
+    }
+    renderLayers(); renderTimeline(); renderInspector(); paintIfPaused();
   }
   function deleteLayer(layer) {
     const i = layers.indexOf(layer); if (i < 0) return;
@@ -1622,6 +1662,11 @@
     // v19.0: Text panel — visible only for TEXT layers.
     if (el.textGroup) {
       el.textGroup.hidden = !isText;
+      // v19.1: toggle a class on the right panel-scroll so CSS `order`
+      // promotes the text group to the top when a text layer is
+      // selected, without any DOM mutation.
+      const rightScroll = el.textGroup.closest(".panel-scroll");
+      if (rightScroll) rightScroll.classList.toggle("text-layer-selected", isText);
       if (isText) {
         const s = selectedLayer.textStyle;
         // populate — guard against clobbering focused input
@@ -6177,19 +6222,85 @@
 
     /* v19.0 Text Tool wiring.  Click T to activate; next click on
        artboard creates text; Escape cancels. */
+    if (el.toolSelect) el.toolSelect.addEventListener("click", () => setTool("select"));
     if (el.toolText) {
       el.toolText.addEventListener("click", () => {
         setTool(STATE.tool === "text" ? "select" : "text");
       });
     }
+    /* v19.1 — Keyboard split:
+       - Tool activation (T for text) is NO LONGER a keyboard shortcut.
+         Content creation happens via the left tool strip only.
+       - T / E / B / C now navigate right-inspector sections.
+       - Ctrl/Cmd+Shift+> / < adjust font size on selected text layer.
+       Escape still cancels an active non-select tool. */
+    function scrollInspectorTo(sectionId) {
+      const target = document.getElementById(sectionId);
+      if (!target) return;
+      // Un-hide first if it was hidden by conditional visibility
+      // (Transform is always visible when a layer is selected).
+      const scroller = target.closest(".panel-scroll");
+      if (scroller) {
+        // Compute offset relative to scroller
+        const trect = target.getBoundingClientRect();
+        const srect = scroller.getBoundingClientRect();
+        scroller.scrollTop += (trect.top - srect.top) - 6;
+      } else {
+        target.scrollIntoView({ block: "start", behavior: "smooth" });
+      }
+      // Brief flash so user knows which section is active
+      target.classList.add("inspector-nav-flash");
+      setTimeout(() => target.classList.remove("inspector-nav-flash"), 600);
+    }
+    // Font-size step: keep it Photoshop-like — 2px baseline, 10× with Alt.
+    function nudgeTextFontSize(dir, big) {
+      if (!selectedLayer || selectedLayer.kind !== "TEXT") return;
+      const step = big ? 10 : 2;
+      const cur = selectedLayer.textStyle.fontSize || 64;
+      const next = clamp(cur + dir * step, 4, 800);
+      updateTextLayer(selectedLayer, { fontSize: next });
+      renderInspector();
+    }
     document.addEventListener("keydown", (e) => {
-      // Global "T" shortcut to toggle text tool (only when not typing)
       const typing = e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable);
       if (typing) return;
+      // Escape cancels tool mode / text edit overlay
       if (e.key === "Escape" && STATE.tool !== "select") { setTool("select"); e.preventDefault(); return; }
-      if ((e.key === "t" || e.key === "T") && !e.ctrlKey && !e.metaKey && !e.altKey) {
+
+      // Ctrl/Cmd+Shift+> / <  — font-size nudge on selected text layer.
+      // e.key on "." with shift → ">"; on "," with shift → "<".  We also
+      // accept the direct ">" / "<" characters in case the browser
+      // resolves them.  Alt held = 10× step.
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey) {
+        if (e.key === ">" || e.key === "." || e.code === "Period") {
+          e.preventDefault();
+          nudgeTextFontSize(+1, e.altKey);
+          return;
+        }
+        if (e.key === "<" || e.key === "," || e.code === "Comma") {
+          e.preventDefault();
+          nudgeTextFontSize(-1, e.altKey);
+          return;
+        }
+      }
+
+      // Right-inspector navigation shortcuts.  Plain key (no modifier).
+      // Guarded so text tool remains mouse-driven.
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const k = (e.key || "").toLowerCase();
+      const nav = { t: "transformGroup", e: "fxGroup", b: null /* handled below */, c: "colorGroup" };
+      if (k === "t") { e.preventDefault(); scrollInspectorTo("transformGroup"); return; }
+      if (k === "e") { e.preventDefault(); scrollInspectorTo("fxGroup"); return; }
+      if (k === "c") { e.preventDefault(); scrollInspectorTo("colorGroup"); return; }
+      if (k === "b") {
+        // Background lives in the RIGHT panel's last "Background" group.
+        // Look for a heading matching "Background" to be robust to id changes.
         e.preventDefault();
-        setTool(STATE.tool === "text" ? "select" : "text");
+        const groups = document.querySelectorAll(".panel-right .prop-group");
+        for (const g of groups) {
+          const h = g.querySelector("h3");
+          if (h && /background/i.test(h.textContent || "")) { scrollInspectorTo(g.id || (g.id = "bgGroupAuto")); return; }
+        }
       }
     });
     // Click on stage while text tool is active — create a text layer.
@@ -6209,9 +6320,9 @@
         }
         const layer = createTextLayerAt(pt.x, pt.y);
         setTool("select");
-        // Immediately open the editor so user can start typing.
-        // Give the DOM a moment to lay out before positioning the overlay.
-        setTimeout(() => startTextEdit(layer), 60);
+        // v19.1: enter edit mode immediately.  Two RAFs so layout has
+        // definitely happened (layer wrap positioned, size measured).
+        requestAnimationFrame(() => requestAnimationFrame(() => startTextEdit(layer)));
       });
     }
 
@@ -7119,7 +7230,7 @@
     requestAnimationFrame(() => fitZoom());
     setTimeout(() => { fitZoom(); renderTimeline(); }, 120);
     // Test hook: expose internals for automated verification (harmless in production).
-    window.__phaserDebug = { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport };
+    window.__phaserDebug = { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, duplicateLayer, createTextLayerAt };
   }
   document.addEventListener("DOMContentLoaded", init);
 })();
