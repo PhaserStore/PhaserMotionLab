@@ -7,6 +7,10 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <!-- v19.0 Text Tool — curated font selection.  Weights limited to what
+       we expose in the Font Weight dropdown so we don't inflate the
+       initial download. -->
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700;900&family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Roboto+Mono:wght@400;500;700&family=Space+Mono:wght@400;700&family=Michroma&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
   <!-- GSAP optional (preset intro pop). App runs fully without it. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js" defer></script>
@@ -108,6 +112,19 @@
       <div class="panel-scroll">
         <!-- ASSETS TAB -->
         <section class="tab-view active" data-view="assets">
+          <div class="section-head"><span>Create</span></div>
+          <!-- v19.0 Text Tool.  Click activates text-tool mode; the next
+               click on the artboard creates a text layer at that
+               position.  Modal Photoshop-style tool. -->
+          <div class="tool-row">
+            <button class="tool-btn" id="toolText" title="Text tool — click, then click on the canvas to create a text layer">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <path d="M4 4h10M9 4v10M6 14h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span>Text</span>
+            </button>
+          </div>
+
           <div class="section-head"><span>Import</span></div>
           <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Upload SVG or images">
             <div class="dz-glow"></div>
@@ -204,15 +221,9 @@
           <p class="hint-title">Empty canvas</p>
           <p class="hint-sub">Import files, then click an asset to place it</p>
         </div>
-        <div class="stage-readout">
-          <span>Canvas <b id="readoutCanvas">1080 × 1080</b></span>
-          <span class="dot">·</span>
-          <span>Format <b id="readoutFormat">Post 1:1</b></span>
-          <span class="dot">·</span>
-          <span>Zoom <b id="readoutZoom">Fit</b></span>
-          <span class="dot">·</span>
-          <span id="readoutSel">No layer selected</span>
-        </div>
+        <!-- v19.0: stage-readout moved to bottom status bar (below timeline).
+             Keeping the info out of the artwork area maximizes canvas
+             workspace and prevents UI from covering the design. -->
       </div>
     </main>
 
@@ -285,6 +296,59 @@
               <button class="mini-btn" id="vFitTrim" title="Set layer duration to match the trimmed range">Fit layer to trim</button>
               <button class="mini-btn" id="vResetTrim" title="Reset In/Out to the full source range">Reset trim</button>
             </div>
+          </div>
+        </section>
+
+        <!-- TEXT (only shown for text layers, v19.0) -->
+        <section class="prop-group" id="textGroup" hidden>
+          <div class="group-head"><h3>Text</h3></div>
+          <div class="control"><span class="ctl-label">Content</span>
+            <input type="text" id="textContent" class="ctl-num" style="min-width:0; flex:1; width:auto; text-align:left" placeholder="Type text…" />
+          </div>
+          <div class="control"><span class="ctl-label">Font</span>
+            <select id="textFontFamily" class="ctl-num" style="min-width:0; flex:1; width:auto; padding: 2px 6px">
+              <option value="Inter">Inter</option>
+              <option value="Roboto">Roboto</option>
+              <option value="Space Grotesk">Space Grotesk</option>
+              <option value="IBM Plex Mono">IBM Plex Mono</option>
+              <option value="JetBrains Mono">JetBrains Mono</option>
+              <option value="Roboto Mono">Roboto Mono</option>
+              <option value="Space Mono">Space Mono</option>
+              <option value="Michroma">Michroma</option>
+            </select>
+          </div>
+          <div class="control"><span class="ctl-label">Size</span>
+            <input type="number" min="8" max="800" step="1" value="64" id="textSize" class="ctl-num" />
+            <input type="range" min="8" max="400" step="1" value="64" id="textSizeRange" />
+          </div>
+          <div class="control"><span class="ctl-label">Weight</span>
+            <select id="textWeight" class="ctl-num" style="min-width:0; flex:1; width:auto; padding: 2px 6px">
+              <option value="400">Regular (400)</option>
+              <option value="500">Medium (500)</option>
+              <option value="600">Semibold (600)</option>
+              <option value="700">Bold (700)</option>
+              <option value="900">Black (900)</option>
+            </select>
+          </div>
+          <div class="prop-row">
+            <span class="prop-label">Color</span>
+            <div class="color-cell">
+              <input type="color" id="textColor" value="#FFFFFF" class="color-input" />
+              <span class="color-hex" id="textColorHex">#FFFFFF</span>
+            </div>
+          </div>
+          <div class="control"><span class="ctl-label">Align</span>
+            <div class="seg" id="textAlignSeg" style="flex:1">
+              <button class="seg-btn" data-align="start">L</button>
+              <button class="seg-btn active" data-align="middle">C</button>
+              <button class="seg-btn" data-align="end">R</button>
+            </div>
+          </div>
+          <div class="control"><span class="ctl-label">Letter</span>
+            <input type="number" min="-20" max="80" step="0.5" value="0" id="textLetterSpacing" class="ctl-num" title="Letter spacing in em (0 = default)" />
+          </div>
+          <div class="control"><span class="ctl-label">Line ht</span>
+            <input type="number" min="0.5" max="4" step="0.05" value="1.2" id="textLineHeight" class="ctl-num" title="Line height multiplier (1.2 = 120%)" />
           </div>
         </section>
 
@@ -479,9 +543,12 @@
       <button class="t-btn active" id="loopBtn" data-on="true" title="Loop">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 6a5 5 0 018-1.5M13 10a5 5 0 01-8 1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M11 2.5V5H8.5M5 13.5V11h2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
-      <span class="timecode" id="timecode">0.0s</span>
-      <!-- v18.8 timecode goto: accepts "1.500" (seconds) or "45f" (frame) -->
-      <input type="text" id="tcGoto" class="tc-goto" placeholder="Go to…" title="Jump playhead: type seconds like 1.5 or frames like 45f then Enter" />
+      <!-- v19.0 Playhead position input.  Always visible; live-updates
+           during playback; direct entry accepts seconds ("1.500"),
+           frames ("45f"), or timecode ("00:00:01:15") — Enter to commit,
+           Escape reverts. -->
+      <input type="text" id="timecode" class="timecode timecode-input" value="0.000" title="Playhead position — type seconds (1.5), frames (45f), or timecode (00:00:01:15)" />
+      <span class="timecode-frame" id="timecodeFrame">0f</span>
       <div class="divider-v small"></div>
       <span class="tl-label">Duration</span>
       <div class="seg" id="durSegTl">
@@ -541,6 +608,21 @@
       <div class="tl-playhead" id="tlPlayhead"></div>
     </div>
   </footer>
+
+  <!-- v19.0 Status bar — canvas info relocated here from floating over
+       the artboard.  Keeps artwork area clean, provides room for future
+       filename / project metadata. -->
+  <div class="status-bar" id="statusBar">
+    <span class="sb-item">Canvas <b id="readoutCanvas">1080 × 1080</b></span>
+    <span class="sb-sep">·</span>
+    <span class="sb-item">Format <b id="readoutFormat">Post 1:1</b></span>
+    <span class="sb-sep">·</span>
+    <span class="sb-item">Zoom <b id="readoutZoom">Fit</b></span>
+    <span class="sb-sep">·</span>
+    <span class="sb-item" id="readoutSel">No layer selected</span>
+    <span class="sb-spacer"></span>
+    <span class="sb-item sb-item-muted" id="readoutFilename"></span>
+  </div>
 </div>
 
 <!-- ============ EXPORT MODAL ============ -->
