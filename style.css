@@ -122,6 +122,9 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; }
    ahead of all order:0 siblings — perfect for "pin text controls to
    top when a text layer is selected" without any DOM mutation. */
 .panel-right .panel-scroll.text-layer-selected #textGroup { order: -1; }
+/* v19.2: same treatment for shape layers — pin the Shape group at
+   the top when a shape layer is selected. */
+.panel-right .panel-scroll.shape-layer-selected #shapeGroup { order: -1; }
 
 /* v19.1: brief flash when T/E/B/C jumps to a section, so the user
    sees which one just got focused. */
@@ -573,6 +576,19 @@ body.focus-mode .selection-box { display: none !important; }
 .stage.tool-text-active,
 .stage.tool-text-active .stage-workspace,
 .stage.tool-text-active .artboard { cursor: text !important; }
+
+/* v19.2: cursors for shape tools + drag-preview outline. */
+.stage.tool-shape-active,
+.stage.tool-shape-active .stage-workspace,
+.stage.tool-shape-active .artboard { cursor: crosshair !important; }
+.shape-drag-preview {
+  position: absolute;
+  pointer-events: none;
+  border: 1.5px dashed var(--accent);
+  background: rgba(122, 92, 255, 0.08);
+  border-radius: 2px;
+  z-index: 300;
+}
 
 /* v19.0 Inline text edit overlay — appears over a text layer during
    double-click editing.  Positioned in JS to match the SVG text bounds. */
