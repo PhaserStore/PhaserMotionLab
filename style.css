@@ -719,7 +719,22 @@ body.focus-mode .status-bar { display: none !important; }
 .fx-event-grid { display: flex; flex-direction: column; gap: 4px; margin: 10px 0 4px; }
 .fx-event-grid-inner { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 4px; }
 .fx-event-group-hd { font-size: 9px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-3); margin: 10px 0 4px; padding-left: 2px; opacity: 0.75; }
-.fx-event { display: flex; align-items: center; gap: 6px; padding: 7px 9px; border-radius: var(--r-xs); border: 1px dashed rgba(156,134,255,0.4); background: rgba(122,92,255,0.06); color: var(--text-2); font-size: 11px; font-weight: 500; transition: all var(--fast); text-align: left; }
+.fx-event { display: flex; align-items: center; gap: 6px; padding: 7px 9px; border-radius: var(--r-xs); border: 1px dashed rgba(156,134,255,0.4); background: rgba(122,92,255,0.06); color: var(--text-2); font-size: 11px; font-weight: 500; transition: all var(--fast); text-align: left; position: relative; }
+/* v19.3: multi-instance count badge — appears when a layer has ≥2
+   clips of this effect.  Compact ×N pill on the button's right edge. */
+.fx-count {
+  margin-left: auto;
+  padding: 1px 5px;
+  background: var(--accent);
+  color: var(--panel);
+  font-size: 9px;
+  font-weight: 700;
+  border-radius: 8px;
+  min-width: 18px;
+  text-align: center;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
 .fx-event:hover { color: var(--text); border-color: var(--accent-2); background: var(--accent-soft); }
 .fx-event .fx-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 6px var(--accent-glow); flex-shrink: 0; }
 
