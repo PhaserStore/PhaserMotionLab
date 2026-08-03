@@ -39,6 +39,8 @@
     beatSensitivity: 55, bassReaction: 70, midReaction: 50, highReaction: 55,
     smoothing: 60, peakThreshold: 60, motionIntensity: 65, syncTightness: 65,
     audioReactive: true, snapBeat: false, autoKeyframes: false, snapFrame: true,
+    // v18.8 timeline precision — magnetic snapping for clip edges
+    snapPlayhead: true, snapClipEdges: true,
     // output
     bgMode: "custom", bgColor: "#0B0B0F", bgColor2: "#1A1030",
     format: { w: 1080, h: 1080, label: "Post 1:1" },
@@ -368,6 +370,10 @@
     tlBody: $("#tlBody"), tlRuler: $("#tlRuler"), tlTracks: $("#tlTracks"), tlEmpty: $("#tlEmpty"), tlPlayhead: $("#tlPlayhead"),
     tlAudioTracks: $("#tlAudioTracks"), tlTracksWrap: $("#tlTracksWrap"), durSegTl: $("#durSegTl"),
     tlZoom: $("#tlZoom"), markerBtn: $("#markerBtn"), snapFrameBtn: $("#snapFrameBtn"),
+    // v18.8 timeline precision — snap toggles + zoom helpers + timecode goto
+    snapPlayheadBtn: $("#snapPlayheadBtn"), snapClipsBtn: $("#snapClipsBtn"),
+    zoomFitAllBtn: $("#zoomFitAllBtn"), zoomToSelBtn: $("#zoomToSelBtn"),
+    tcGoto: $("#tcGoto"),
     // export
     exportBtn: $("#exportBtn"), exportSheet: $("#exportSheet"), exportClose: $("#exportClose"),
     exportPng: $("#exportPng"), exportPngT: $("#exportPngT"), exportSeq: $("#exportSeq"), exportSeqT: $("#exportSeqT"),
@@ -1722,17 +1728,18 @@
     // Snap ALL editable edges on each mousemove.  Shift-drag suppresses
     // snap so users can nudge sub-frame during precise adjustments.
     if (!e.shiftKey) {
-      layer.start = applySnap(layer.start);
-      // For trim, snap the OPPOSITE edge (start+duration) too so the
-      // trailing edge lands on a frame boundary as well.
+      // v18.8 magnetic snap.  Layer times are absolute; excludeClip
+      // is the layer itself so we don't self-snap its opposite edge.
+      if (TL.mode === "move" || TL.mode === "trim-left") {
+        layer.start = applyMagneticSnap(layer.start, layer);
+        if (TL.mode === "trim-left") {
+          const endHeld = o.start + o.duration;
+          layer.duration = Math.max(0.2, endHeld - layer.start);
+        }
+      }
       if (TL.mode === "trim-right") {
-        const endSnapped = applySnap(layer.start + layer.duration);
+        const endSnapped = applyMagneticSnap(layer.start + layer.duration, layer);
         layer.duration = Math.max(0.2, endSnapped - layer.start);
-      } else if (TL.mode === "trim-left") {
-        // trim-left already snapped layer.start; recompute duration to
-        // keep the trailing edge in its original position.
-        const endHeld = o.start + o.duration;
-        layer.duration = Math.max(0.2, endHeld - layer.start);
       }
     }
     const c = TL.dragClip.clip; c.style.left = (layer.start * TL.pxPerSec) + "px"; c.style.width = Math.max(14, layer.duration * TL.pxPerSec) + "px";
@@ -1758,15 +1765,21 @@
     else if (D.mode === "trim-left") { const ns = clamp(D.orig.start + dx, 0, D.orig.start + D.orig.duration - 0.02); D.ec.duration = D.orig.duration - (ns - D.orig.start); D.ec.start = ns; }
     else if (D.mode === "trim-right") D.ec.duration = clamp(D.orig.duration + dx, 0.02, layerDur - D.ec.start);
     if (!e.shiftKey) {
-      // Snap in layer-local time.  Event clip times are stored
-      // relative to layer.start, so add/subtract to snap globally.
-      D.ec.start = applySnap(D.ec.start + D.layer.start) - D.layer.start;
+      // v18.8: magnetic snap to playhead + other clip edges.  Runs in
+      // absolute scene time; event clip times are stored layer-local.
+      if (D.mode === "move" || D.mode === "trim-left") {
+        const abs = D.layer.start + D.ec.start;
+        const snapped = applyMagneticSnap(abs, D.ec);
+        D.ec.start = snapped - D.layer.start;
+        if (D.mode === "trim-left") {
+          const endHeld = D.orig.start + D.orig.duration;
+          D.ec.duration = Math.max(0.02, endHeld - D.ec.start);
+        }
+      }
       if (D.mode === "trim-right") {
-        const endSnapped = applySnap(D.layer.start + D.ec.start + D.ec.duration) - D.layer.start;
-        D.ec.duration = Math.max(0.02, endSnapped - D.ec.start);
-      } else if (D.mode === "trim-left") {
-        const endHeld = D.orig.start + D.orig.duration;
-        D.ec.duration = Math.max(0.02, endHeld - D.ec.start);
+        const endAbs = D.layer.start + D.ec.start + D.ec.duration;
+        const snapped = applyMagneticSnap(endAbs, D.ec);
+        D.ec.duration = Math.max(0.02, snapped - (D.layer.start + D.ec.start));
       }
     }
     D.node.style.left = ((D.layer.start + D.ec.start) * TL.pxPerSec) + "px";
@@ -1792,13 +1805,19 @@
     else if (D.mode === "trim-left") { const ns = clamp(D.orig.start + dx, 0, D.orig.start + D.orig.duration - 0.05); D.ac.duration = D.orig.duration - (ns - D.orig.start); D.ac.start = ns; }
     else if (D.mode === "trim-right") D.ac.duration = clamp(D.orig.duration + dx, 0.05, dur - D.ac.start);
     if (!e.shiftKey) {
-      D.ac.start = applySnap(D.ac.start);
+      // v18.8: magnetic snap.  Audio clip times are absolute.
+      if (D.mode === "move" || D.mode === "trim-left") {
+        const snapped = applyMagneticSnap(D.ac.start, D.ac);
+        D.ac.start = snapped;
+        if (D.mode === "trim-left") {
+          const endHeld = D.orig.start + D.orig.duration;
+          D.ac.duration = Math.max(0.05, endHeld - D.ac.start);
+        }
+      }
       if (D.mode === "trim-right") {
-        const endSnapped = applySnap(D.ac.start + D.ac.duration);
-        D.ac.duration = Math.max(0.05, endSnapped - D.ac.start);
-      } else if (D.mode === "trim-left") {
-        const endHeld = D.orig.start + D.orig.duration;
-        D.ac.duration = Math.max(0.05, endHeld - D.ac.start);
+        const endAbs = D.ac.start + D.ac.duration;
+        const snapped = applyMagneticSnap(endAbs, D.ac);
+        D.ac.duration = Math.max(0.05, snapped - D.ac.start);
       }
     }
     D.node.style.left = (D.ac.start * TL.pxPerSec) + "px";
@@ -1965,12 +1984,32 @@
       if (enBtn) enBtn.style.display = "none";
     }
     el.clipType.textContent = type; el.clipTrack.textContent = track;
-    setSlider("cs", start); setSlider("cd", dur);
+    // v18.8: the Start slider represents ABSOLUTE scene time (0..STATE.duration)
+    // to match both the numeric inspector display and the bindClipSlider("cs")
+    // handler that reads scene time and stores layer-local.  For event clips
+    // this means adding layer.start; audio clips are already absolute.
+    const startAbsForSlider = hasEvt ? (selectedEventClip.layer.start + start) : start;
+    setSlider("cs", startAbsForSlider); setSlider("cd", dur);
     // dynamic max on start/dur — both the range slider AND the numeric input
     const csEl = document.getElementById("ctl-cs"); if (csEl) csEl.max = STATE.duration;
     const cdEl = document.getElementById("ctl-cd"); if (cdEl) cdEl.max = STATE.duration;
     const csNum = document.getElementById("num-cs"); if (csNum) csNum.max = STATE.duration;
     const cdNum = document.getElementById("num-cd"); if (cdNum) cdNum.max = STATE.duration;
+    // v18.8 timeline precision: populate End (seconds + frame) and frame
+    // equivalents for Start/Duration.  Only update inputs that aren't
+    // currently focused so live editing doesn't get clobbered.
+    const fps = STATE.fps || 30;
+    const setNumIf = (id, val) => {
+      const n = document.getElementById(id);
+      if (n && document.activeElement !== n) n.value = val;
+    };
+    const startAbs = hasEvt ? (selectedEventClip.layer.start + start) : start;
+    setNumIf("num-cs", (+startAbs).toFixed(3));
+    setNumIf("num-cs-f", Math.round(startAbs * fps));
+    setNumIf("num-ce", (+(startAbs + dur)).toFixed(3));
+    setNumIf("num-ce-f", Math.round((startAbs + dur) * fps));
+    setNumIf("num-cd", (+dur).toFixed(3));
+    setNumIf("num-cd-f", Math.round(dur * fps));
   }
 
   /* Param slider — `step` is optional; when < 1 the label formats with 2
@@ -2281,11 +2320,99 @@
     return t;
   }
   function snapTimeToFrame(t) { const fps = STATE.fps || 30; return Math.round(t * fps) / fps; }
+
+  /* v18.8: fit-all and zoom-to-range helpers.
+     - zoomFitAll() sets tlZoom so the full duration fills the visible
+       timeline body width.
+     - zoomToRange(startSec, endSec) sets tlZoom so the specified span
+       fills ~60% of the visible width, then scrolls to center it. */
+  function zoomFitAll() {
+    STATE.tlZoom = 1;
+    if (el.tlZoom) el.tlZoom.value = 1;
+    if (el.tlBody) el.tlBody.scrollLeft = 0;
+    renderTimeline();
+  }
+  function zoomToRange(startSec, endSec) {
+    const dur = Math.max(0.05, endSec - startSec);
+    const bodyW = (el.tlBody && el.tlBody.clientWidth) || 800;
+    // At zoom=1, pxPerSec = bodyW / STATE.duration.  We want the
+    // range's pixel width ≈ 0.6 * bodyW.
+    const desiredPxPerSec = (0.6 * bodyW) / dur;
+    const baseline = bodyW / STATE.duration;
+    const desiredZoom = Math.max(0.25, Math.min(16, desiredPxPerSec / baseline));
+    STATE.tlZoom = desiredZoom;
+    if (el.tlZoom) el.tlZoom.value = desiredZoom;
+    renderTimeline();
+    // Center the range in the visible window after re-layout.
+    requestAnimationFrame(() => {
+      const centerSec = (startSec + endSec) / 2;
+      const centerPx = centerSec * TL.pxPerSec;
+      if (el.tlBody) el.tlBody.scrollLeft = centerPx - bodyW / 2;
+    });
+  }
+
   // Apply whichever snap modes are enabled. Called by clip drag handlers.
   function applySnap(t) {
     if (STATE.snapBeat) t = snapTimeToBeat(t);
     if (STATE.snapFrame) t = snapTimeToFrame(t);
     return t;
+  }
+
+  /* v18.8 magnetic snap.  Called during clip drag/trim to snap an
+     edge to nearby "hot" targets: the playhead + other clip edges.
+     Only fires within a small tolerance window measured in pixels,
+     scaled to the current timeline zoom so behavior is consistent
+     regardless of zoom level.  Returns the possibly-adjusted absolute
+     time.  Also returns a flag so the drag code can flash a snap
+     indicator.
+     `t` = absolute scene time (not layer-local).
+     `excludeClip` = the clip currently being dragged; its own edges
+     are ignored to prevent self-snap.
+  */
+  const MAGNETIC_SNAP_PX = 6;
+  function applyMagneticSnap(t, excludeClip) {
+    // Convert pixel tolerance to seconds at current zoom.
+    const tol = MAGNETIC_SNAP_PX / (TL.pxPerSec || 1);
+    // Frame snap first (integer pixel-grid).
+    if (STATE.snapFrame) t = snapTimeToFrame(t);
+    let bestTarget = null, bestDist = tol;
+    // Collect all snap targets in scene time.
+    const targets = [];
+    if (STATE.snapPlayhead) targets.push(STATE.time);
+    if (STATE.snapClipEdges) {
+      // Layer boundaries + event clip edges from every layer.
+      layers.forEach((l) => {
+        if (!l.clips) return;
+        targets.push(l.start, l.start + l.duration);
+        l.clips.forEach((c) => {
+          if (c === excludeClip) return;
+          targets.push(l.start + c.start, l.start + c.start + c.duration);
+        });
+      });
+      // Audio clip edges too — they're on the timeline as well.
+      audioClips.forEach((c) => {
+        if (c === excludeClip) return;
+        targets.push(c.start, c.start + c.duration);
+      });
+      // Duration bounds
+      targets.push(0, STATE.duration);
+    }
+    for (const target of targets) {
+      const d = Math.abs(t - target);
+      if (d < bestDist) { bestDist = d; bestTarget = target; }
+    }
+    // v18.8 visual feedback: brief snap flash on the playhead when a
+    // magnetic snap actually fired.  Only shown when the snap target
+    // is the playhead itself (most common case + most useful signal).
+    if (bestTarget !== null && el.tlPlayhead && STATE.snapPlayhead
+        && Math.abs(bestTarget - STATE.time) < 0.001) {
+      el.tlPlayhead.classList.add("snap-hit");
+      clearTimeout(el.tlPlayhead._snapClear);
+      el.tlPlayhead._snapClear = setTimeout(() => {
+        el.tlPlayhead.classList.remove("snap-hit");
+      }, 120);
+    }
+    return bestTarget !== null ? bestTarget : t;
   }
 
   /* ============================================================ EFFECTS
@@ -5940,6 +6067,52 @@
       el.snapFrameBtn.classList.toggle("is-on", STATE.snapFrame);
       toast(STATE.snapFrame ? "Frame snap: ON (Shift-drag to bypass)" : "Frame snap: OFF");
     });
+    // v18.8: playhead snap + clip-edge snap toggles.
+    if (el.snapPlayheadBtn) el.snapPlayheadBtn.addEventListener("click", () => {
+      STATE.snapPlayhead = !STATE.snapPlayhead;
+      el.snapPlayheadBtn.classList.toggle("is-on", STATE.snapPlayhead);
+      toast(STATE.snapPlayhead ? "Snap to playhead: ON" : "Snap to playhead: OFF");
+    });
+    if (el.snapClipsBtn) el.snapClipsBtn.addEventListener("click", () => {
+      STATE.snapClipEdges = !STATE.snapClipEdges;
+      el.snapClipsBtn.classList.toggle("is-on", STATE.snapClipEdges);
+      toast(STATE.snapClipEdges ? "Snap to clip edges: ON" : "Snap to clip edges: OFF");
+    });
+    // v18.8: Fit-all + zoom-to-selection buttons.
+    if (el.zoomFitAllBtn) el.zoomFitAllBtn.addEventListener("click", () => zoomFitAll());
+    if (el.zoomToSelBtn) el.zoomToSelBtn.addEventListener("click", () => {
+      const ec = selectedEventClip
+        ? { start: selectedEventClip.layer.start + selectedEventClip.ec.start, dur: selectedEventClip.ec.duration }
+        : selectedAudioClip ? { start: selectedAudioClip.start, dur: selectedAudioClip.duration }
+        : null;
+      if (ec) zoomToRange(ec.start, ec.start + ec.dur);
+      else toast("Select a clip to zoom to");
+    });
+    // v18.8: cursor-anchored mouse-wheel zoom on the timeline body.
+    if (el.tlBody) el.tlBody.addEventListener("wheel", (e) => {
+      // Only zoom when the user holds Ctrl/Cmd or uses horizontal wheel.
+      // Otherwise let the browser scroll normally.
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      const rect = el.tlBody.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      // Time under the cursor before zoom change.
+      const timeAtCursor = mouseX / (TL.pxPerSec || 1);
+      // Adjust zoom.  Wheel delta positive = zoom out.
+      const factor = e.deltaY > 0 ? 0.9 : 1.1;
+      const newZoom = Math.max(0.25, Math.min(16, (STATE.tlZoom || 1) * factor));
+      STATE.tlZoom = newZoom;
+      if (el.tlZoom) el.tlZoom.value = newZoom;
+      renderTimeline();
+      // After renderTimeline, TL.pxPerSec is updated.  Adjust scrollLeft
+      // so the same time stays under the cursor.
+      requestAnimationFrame(() => {
+        const scroller = el.tlBody;
+        if (!scroller) return;
+        const newPxAtCursor = timeAtCursor * TL.pxPerSec;
+        scroller.scrollLeft = newPxAtCursor - mouseX;
+      });
+    }, { passive: false });
     if (el.markerBtn) el.markerBtn.addEventListener("click", () => {
       const t = STATE.time;
       const exists = markers.find((m) => m.type === "manual" && Math.abs(m.time - t) < 0.05);
@@ -5968,23 +6141,60 @@
         });
         toast(on ? "Focus mode — press H to show timeline" : "Timeline shown");
       }
-      // ---- Frame-stepping keyboard navigation ----
-      // Arrow Left / Right = 1 frame.  Shift adds ×10.  Home/End jump.
+      // ---- v18.8 Contextual frame-stepping keyboard navigation ----
+      // Rules:
+      //  - No clip selected       → Left/Right = playhead ± 1 frame; Shift = 10.
+      //  - Event/audio clip selected → Left/Right = MOVE clip ± 1 frame; Shift = 10.
+      //  - Alt held on either     → TRIM clip end ± 1 frame (Shift = 10).
       // Guarded by `!typing` (above) so form fields keep normal behavior.
       const fps = STATE.fps || 30;
-      const step = e.shiftKey ? (10 / fps) : (1 / fps);
-      if (e.key === "ArrowLeft") {
+      const bigStep = e.shiftKey ? 10 : 1;
+      const secStep = bigStep / fps;
+      const clipCtx = selectedEventClip || (selectedAudioClip ? { ec: selectedAudioClip, isAudio: true } : null);
+
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
         e.preventDefault();
-        if (typeof seekTo === "function") seekTo(STATE.time - step);
-      } else if (e.key === "ArrowRight") {
-        e.preventDefault();
-        if (typeof seekTo === "function") seekTo(STATE.time + step);
+        const dir = e.key === "ArrowLeft" ? -1 : 1;
+        if (clipCtx) {
+          // Nudge or trim the selected clip.
+          const ec = selectedEventClip ? selectedEventClip.ec : selectedAudioClip;
+          const layer = selectedEventClip ? selectedEventClip.layer : null;
+          const layerDur = layer ? layer.duration : STATE.duration;
+          if (e.altKey) {
+            // Trim end (right edge): grow/shrink by ±step.
+            const newDur = clamp(ec.duration + dir * secStep, MIN_CLIP_DUR,
+              Math.max(MIN_CLIP_DUR, layerDur - ec.start));
+            ec.duration = Math.round(newDur * fps) / fps;
+          } else {
+            // Move clip.
+            const maxStart = Math.max(0, layerDur - ec.duration);
+            const newStart = clamp(ec.start + dir * secStep, 0, maxStart);
+            ec.start = Math.round(newStart * fps) / fps;
+          }
+          renderTimeline(); renderClipInspector(); paintIfPaused();
+        } else {
+          // No clip selected → playhead nudge.
+          if (typeof seekTo === "function") seekTo(STATE.time + dir * secStep);
+        }
       } else if (e.key === "Home") {
         e.preventDefault();
         if (typeof seekTo === "function") seekTo(0);
       } else if (e.key === "End") {
         e.preventDefault();
         if (typeof seekTo === "function") seekTo(STATE.duration);
+      } else if ((e.key === "f" || e.key === "F") && !e.metaKey && !e.ctrlKey) {
+        // v18.8: F = fit selected clip; Shift+F = fit all.
+        e.preventDefault();
+        if (e.shiftKey) {
+          zoomFitAll();
+        } else if (clipCtx) {
+          const ec = selectedEventClip ? selectedEventClip.ec : selectedAudioClip;
+          const layer = selectedEventClip ? selectedEventClip.layer : null;
+          const absStart = layer ? layer.start + ec.start : ec.start;
+          zoomToRange(absStart, absStart + ec.duration);
+        } else {
+          zoomFitAll();
+        }
       }
     });
 
@@ -6063,6 +6273,96 @@
       }
     });
     bindClipSlider("cv", (v) => { if (selectedAudioClip) selectedAudioClip.volume = v / 100; });
+
+    // v18.8 timeline precision — commit handlers for the new fields:
+    //   num-cs-f  (Start in frames)
+    //   num-ce    (End in seconds)
+    //   num-ce-f  (End in frames)
+    //   num-cd-f  (Duration in frames)
+    // All three values (Start / End / Duration) are interdependent.
+    // Rules:
+    //   - Editing Start moves the clip (keeping Duration).
+    //   - Editing End changes Duration (keeping Start).
+    //   - Editing Duration changes End (keeping Start).
+    // Frame inputs convert via current fps, then use the same logic.
+    function commitClipTime(kind, secValue) {
+      const fps = STATE.fps || 30;
+      if (secValue == null || isNaN(secValue)) return;
+      if (selectedEventClip) {
+        const L = selectedEventClip.layer, ec = selectedEventClip.ec;
+        if (kind === "start") {
+          // secValue is ABSOLUTE scene time (matches display).  Convert to
+          // layer-local and clamp so clip fits.
+          const local = clamp(secValue - L.start, 0, Math.max(0, L.duration - ec.duration));
+          ec.start = STATE.snapFrame ? Math.round(local * fps) / fps : local;
+        } else if (kind === "end") {
+          const endLocal = clamp(secValue - L.start, ec.start + MIN_CLIP_DUR, L.duration);
+          const snappedEnd = STATE.snapFrame ? Math.round(endLocal * fps) / fps : endLocal;
+          ec.duration = Math.max(MIN_CLIP_DUR, snappedEnd - ec.start);
+        } else if (kind === "duration") {
+          const dur = clamp(secValue, MIN_CLIP_DUR, Math.max(MIN_CLIP_DUR, L.duration - ec.start));
+          ec.duration = STATE.snapFrame ? Math.round(dur * fps) / fps : dur;
+        }
+      } else if (selectedAudioClip) {
+        const ac = selectedAudioClip;
+        if (kind === "start") {
+          ac.start = clamp(secValue, 0, Math.max(0, STATE.duration - ac.duration));
+          if (STATE.snapFrame) ac.start = Math.round(ac.start * fps) / fps;
+        } else if (kind === "end") {
+          const end = clamp(secValue, ac.start + MIN_CLIP_DUR, STATE.duration);
+          const snappedEnd = STATE.snapFrame ? Math.round(end * fps) / fps : end;
+          ac.duration = Math.max(MIN_CLIP_DUR, snappedEnd - ac.start);
+        } else if (kind === "duration") {
+          ac.duration = clamp(secValue, MIN_CLIP_DUR, Math.max(MIN_CLIP_DUR, STATE.duration - ac.start));
+          if (STATE.snapFrame) ac.duration = Math.round(ac.duration * fps) / fps;
+        }
+      }
+      renderTimeline(); renderClipInspector(); renderEventButtons(); paintIfPaused();
+    }
+    // Wire seconds End input
+    const bindTimeField = (id, kind, isFrame) => {
+      const n = document.getElementById(id);
+      if (!n) return;
+      const handler = () => {
+        const raw = +n.value;
+        if (isNaN(raw)) return;
+        const fps = STATE.fps || 30;
+        commitClipTime(kind, isFrame ? (raw / fps) : raw);
+      };
+      n.addEventListener("input", handler);
+      n.addEventListener("blur", handler);
+      n.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); handler(); n.blur(); } });
+    };
+    bindTimeField("num-ce",   "end",       false);
+    bindTimeField("num-ce-f", "end",       true);
+    bindTimeField("num-cs-f", "start",     true);
+    bindTimeField("num-cd-f", "duration",  true);
+
+    // v18.8 timecode-goto: jump playhead by typing a value.
+    //   "1.5"  → 1.5 seconds
+    //   "45f"  → frame 45 (converted via current fps)
+    //   "45"   → 45 seconds (unless it ends with f)
+    if (el.tcGoto) {
+      const goto = () => {
+        const raw = (el.tcGoto.value || "").trim().toLowerCase();
+        if (!raw) return;
+        const fps = STATE.fps || 30;
+        let target = null;
+        if (raw.endsWith("f")) {
+          const frame = parseInt(raw.slice(0, -1), 10);
+          if (!isNaN(frame)) target = frame / fps;
+        } else {
+          const num = parseFloat(raw);
+          if (!isNaN(num)) target = num;
+        }
+        if (target != null && typeof seekTo === "function") {
+          seekTo(clamp(target, 0, STATE.duration));
+          el.tcGoto.value = "";
+        }
+      };
+      el.tcGoto.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); goto(); } });
+      el.tcGoto.addEventListener("blur", goto);
+    }
     if (el.clipMute) el.clipMute.addEventListener("click", () => {
       if (!selectedAudioClip) return;
       selectedAudioClip.muted = !selectedAudioClip.muted;
