@@ -2120,37 +2120,44 @@
     });
   }
 
-  /* v19.3 Click behaviour for an Event Clip button:
-     Every click ADDS a NEW instance of that effect clip to the
-     selected layer.  This is the natural fit for the unified clip
-     system — users want multiple Pulse Glow / RGB Offset / Blur
-     moments at different points on the timeline, each with its own
-     timing and parameters.
+  /* v19.6 Click behaviour for an Event Clip button:
+     Every click ADDS a NEW instance of that effect clip to EVERY
+     selected layer.  Multi-apply is the natural completion of the
+     multi-selection workflow — users select 5 layers, click Pulse
+     Glow once, and all 5 get an independent instance.
 
-     Rationale for changing this:
-       - The previous behavior (click again to toggle enable) hid an
-         important interaction inside the button and prevented multi-
-         instance workflows entirely.
-       - Enable/disable of individual clips already lives in a better
-         place: click the clip on the timeline, then toggle in the
-         inspector or press Delete.
-       - Count badge on the button (×N) makes multi-instance state
-         visible so users don't accidentally create dozens of clips.
+     Rationale:
+       - The previous single-layer behavior (each click adds a clip
+         to the primary layer only) required repetitive per-layer
+         work when applying the same effect to multiple items.
+       - Each target layer gets its OWN independent clip — same
+         defaults, same placement, independent params afterwards.
+       - When exactly one layer is selected, behaves identically to
+         before.  Multi-apply only activates when >1 layers selected.
 
      Never blindly creates duplicates if no layer is selected. */
   function toggleEventClipOnLayer(fxKey, label) {
-    if (!selectedLayer) { toast("Select a layer first"); return; }
-    const c = createEventClip(fxKey, selectedLayer);
-    if (!c) return;
-    // Auto-select the new clip so the inspector immediately shows its
-    // parameters and the user can nudge / edit right away.
+    if (!selectedLayers.length) { toast("Select a layer first"); return; }
+    const targets = selectedLayers.slice();
+    const created = [];
+    targets.forEach((L) => {
+      const c = createEventClip(fxKey, L);
+      if (c) created.push({ layer: L, clip: c });
+    });
+    if (!created.length) return;
+    // Auto-select the last new clip (matches previous single-layer UX).
+    const last = created[created.length - 1];
     if (typeof selectEventClip === "function") {
-      selectEventClip(selectedLayer, c);
+      selectEventClip(last.layer, last.clip);
     }
-    // Count how many now exist — a toast helps confirm the add.
-    const total = selectedLayer.clips.filter((k) => k.fxKey === fxKey).length;
-    if (total > 1) toast(`${label} — instance ${total}`);
-    else toast(`${label} added`);
+    if (targets.length > 1) {
+      toast(`${label} added to ${targets.length} layers`);
+    } else {
+      // Single-layer: report instance number for that layer.
+      const total = last.layer.clips.filter((k) => k.fxKey === fxKey).length;
+      if (total > 1) toast(`${label} — instance ${total}`);
+      else toast(`${label} added`);
+    }
     renderTimeline(); renderEventButtons(); renderClipInspector(); paintIfPaused();
   }
   function initialWPct(layer) {
@@ -7702,10 +7709,144 @@
       }
       return null;
     }
+    /* v19.6 BOX SELECTION.
+       When the user mousedowns on the artboard OUTSIDE any layer,
+       start a marquee.  Drag = extend rectangle; mouseup = select all
+       layers whose bounding boxes intersect it.
+       Shift held during marquee = ADD to existing selection.
+       No shift = REPLACE selection.
+
+       Interaction outline:
+         - mousedown on empty artboard → start marquee
+         - mousedown on a layer → existing layer-drag path (below)
+         - mousedown on canvas while text/shape tool active → tool
+           handlers take precedence (they preventDefault first).
+    */
+    let boxSel = null;   // { x0, y0, x1, y1, previewEl, additive }
+    function isToolActive() {
+      return STATE.tool && STATE.tool !== "select";
+    }
+    function startBoxSelect(e) {
+      const rect = el.artboard.getBoundingClientRect();
+      const stageRect = el.stage.getBoundingClientRect();
+      const previewEl = document.createElement("div");
+      previewEl.className = "marquee-select";
+      el.stage.appendChild(previewEl);
+      boxSel = {
+        // Store in artboard-space coords (px, unscaled).
+        startX: (e.clientX - rect.left) / STATE.zoom,
+        startY: (e.clientY - rect.top) / STATE.zoom,
+        curX: 0, curY: 0,
+        // For positioning the preview inside .stage:
+        startClient: { x: e.clientX, y: e.clientY },
+        stageOff: { left: stageRect.left, top: stageRect.top,
+                    scrollLeft: el.stage.scrollLeft, scrollTop: el.stage.scrollTop },
+        previewEl,
+        additive: e.shiftKey || e.metaKey || e.ctrlKey,
+      };
+      boxSel.curX = boxSel.startX;
+      boxSel.curY = boxSel.startY;
+      // Initial marquee at 0×0
+      previewEl.style.left = (e.clientX - stageRect.left + el.stage.scrollLeft) + "px";
+      previewEl.style.top  = (e.clientY - stageRect.top  + el.stage.scrollTop) + "px";
+      previewEl.style.width = "0px"; previewEl.style.height = "0px";
+    }
+    function onBoxSelectMove(e) {
+      if (!boxSel) return;
+      const dxPage = e.clientX - boxSel.startClient.x;
+      const dyPage = e.clientY - boxSel.startClient.y;
+      // Normalize so left/top always the smaller
+      const left = dxPage < 0 ? boxSel.startClient.x + dxPage : boxSel.startClient.x;
+      const top  = dyPage < 0 ? boxSel.startClient.y + dyPage : boxSel.startClient.y;
+      boxSel.previewEl.style.left = (left - boxSel.stageOff.left + boxSel.stageOff.scrollLeft) + "px";
+      boxSel.previewEl.style.top  = (top  - boxSel.stageOff.top  + boxSel.stageOff.scrollTop) + "px";
+      boxSel.previewEl.style.width  = Math.abs(dxPage) + "px";
+      boxSel.previewEl.style.height = Math.abs(dyPage) + "px";
+      // Update artboard-space extent
+      boxSel.curX = boxSel.startX + dxPage / STATE.zoom;
+      boxSel.curY = boxSel.startY + dyPage / STATE.zoom;
+    }
+    function endBoxSelect() {
+      if (!boxSel) return;
+      const box = boxSel;
+      boxSel = null;
+      if (box.previewEl) box.previewEl.remove();
+      // Compute selection box in artboard-space
+      const x1 = Math.min(box.startX, box.curX);
+      const x2 = Math.max(box.startX, box.curX);
+      const y1 = Math.min(box.startY, box.curY);
+      const y2 = Math.max(box.startY, box.curY);
+      // Skip near-zero marquees (accidental clicks with tiny wobble).
+      if ((x2 - x1) < 4 && (y2 - y1) < 4) return;
+      // Find all layer bounding boxes that INTERSECT the marquee.
+      // Uses axis-aligned test on the layer's untransformed box; for
+      // rotated layers we test against the AABB of the rotated corners.
+      const A = STATE.format;
+      const hit = [];
+      layers.forEach((L) => {
+        if (!L.visible || L.locked) return;
+        const T = L.transform;
+        const wPx = (T.wPct / 100) * A.w, hPx = (T.hPct / 100) * A.h;
+        const cxPx = A.w / 2 + (T.cx / 100) * A.w;
+        const cyPx = A.h / 2 + (T.cy / 100) * A.h;
+        let bx1, by1, bx2, by2;
+        if (T.rot) {
+          // Rotated: compute AABB from rotated corners
+          const a = T.rot * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
+          const hw = wPx / 2, hh = hPx / 2;
+          const corners = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]].map(([px, py]) => ({
+            x: cxPx + px * ca - py * sa,
+            y: cyPx + px * sa + py * ca,
+          }));
+          const xs = corners.map((c) => c.x), ys = corners.map((c) => c.y);
+          bx1 = Math.min.apply(null, xs); by1 = Math.min.apply(null, ys);
+          bx2 = Math.max.apply(null, xs); by2 = Math.max.apply(null, ys);
+        } else {
+          bx1 = cxPx - wPx / 2; by1 = cyPx - hPx / 2;
+          bx2 = cxPx + wPx / 2; by2 = cyPx + hPx / 2;
+        }
+        // AABB intersection
+        if (bx2 >= x1 && bx1 <= x2 && by2 >= y1 && by1 <= y2) hit.push(L);
+      });
+      if (!hit.length) {
+        if (!box.additive) {
+          // Clicking empty canvas clears selection.
+          selectLayer(null);
+        }
+        return;
+      }
+      if (box.additive) {
+        // Add each hit to existing selection (skip duplicates)
+        hit.forEach((L) => {
+          if (!selectedLayers.includes(L)) selectLayer(L, { append: true });
+        });
+      } else {
+        // Replace selection with all hits.
+        selectedLayer = hit[hit.length - 1];
+        selectedLayers = hit.slice();
+        renderLayers(); renderInspector(); renderTimeline(); updateSelectionBox();
+        if (el.readoutSel) {
+          el.readoutSel.textContent = hit.length === 1 ? hit[0].name : `${hit.length} layers selected`;
+        }
+      }
+    }
+    document.addEventListener("mousemove", onBoxSelectMove);
+    document.addEventListener("mouseup",   endBoxSelect);
+
     el.artboard.addEventListener("mousedown", (e) => {
       // Ignore clicks on selection-box handles / other UI overlays
       if (e.target.closest(".sel-handle")) return;
-      const L = pickLayerAtEvent(e); if (!L) return;
+      // Yield to active tool modes (text / shape).  Those handlers
+      // register on el.stage and preventDefault, so we detect them by
+      // checking STATE.tool.
+      if (isToolActive()) return;
+      const L = pickLayerAtEvent(e);
+      if (!L) {
+        // v19.6: empty-canvas mousedown starts a marquee.
+        e.preventDefault();
+        startBoxSelect(e);
+        return;
+      }
       // v19.4/v19.5: Shift/Cmd-click on the canvas toggles additive selection.
       // If the picked layer is NOT already in the selection, single-select it.
       // If it IS in the selection AND no modifier, keep the existing multi-
