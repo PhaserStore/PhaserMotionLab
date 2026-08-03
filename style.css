@@ -616,6 +616,15 @@ body.focus-mode .selection-box { display: none !important; }
   border-radius: 2px;
   z-index: 300;
 }
+/* v19.6: box-selection marquee — dashed rectangle rendered in stage
+   space while the user drags on the empty canvas. */
+.marquee-select {
+  position: absolute;
+  pointer-events: none;
+  border: 1px dashed var(--accent);
+  background: rgba(122, 92, 255, 0.10);
+  z-index: 250;
+}
 
 /* v19.0 Inline text edit overlay — appears over a text layer during
    double-click editing.  Positioned in JS to match the SVG text bounds. */
