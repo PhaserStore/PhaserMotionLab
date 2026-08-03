@@ -187,6 +187,14 @@
     { key: "targetPing",      label: "Target Ping",      defDur: 0.60, group: "overlay" },
     { key: "waveformBurst",   label: "Waveform Burst",   defDur: 0.35, group: "overlay" },
     { key: "scanlineSurge",   label: "Scanline Surge",   defDur: 0.60, group: "overlay" },
+    // --- VECTOR events (v19.8) — animate SVG stroke / fill properties.
+    //     Work uniformly on native SHAPE layers and imported SVG.
+    //     Text layers deliberately excluded (glyph outlines are complex).
+    //     Extensible: new axes (dash-offset, stroke-color, etc.) plug
+    //     into the same shapeStyle delta channel with no pipeline
+    //     changes — see applyShapeStyleDelta. ---
+    { key: "strokeWidthPulse", label: "Stroke Width Pulse", defDur: 0.60, group: "vector" },
+    { key: "fillColorFlash",   label: "Fill Color Flash",   defDur: 0.40, group: "vector" },
     // --- SIGNAL / GLITCH events ---
     { key: "terminalBlink",   label: "Terminal Blink",   defDur: 0.35, group: "signal" },
     { key: "signalDrop",      label: "Signal Drop",      defDur: 0.18, group: "signal" },
@@ -209,7 +217,10 @@
     { id: "core",      label: "Core" },
     { id: "motion",    label: "Motion" },
     { id: "signal",    label: "Signal / Glitch" },
-    { id: "overlay", label: "Overlay / HUD" },
+    { id: "overlay",   label: "Overlay / HUD" },
+    // v19.8: vector-animation effects grouped separately so users can
+    // find them when working with shape/SVG layers.
+    { id: "vector",    label: "Vector" },
   ];
 
   // Per-event default parameters. Kept minimal: intensity is the universal
@@ -260,6 +271,14 @@
       case "pixelSweep":    return { ...base, intensity: 100,
         direction: "right", sampleWidth: 2, trailLength: 40,
         sampleMode: "center", preserveAlpha: true };
+      // v19.8 vector-animation effects.
+      //  - strokeWidthPulse: intensity controls how much the stroke
+      //    swells at peak (multiplier applied to the shape's base
+      //    stroke width).  No color param.
+      //  - fillColorFlash: color is user-editable per clip; the
+      //    inspector renders a color-picker row (see renderClipInspector).
+      case "strokeWidthPulse": return { ...base, intensity: 60 };
+      case "fillColorFlash":   return { ...base, intensity: 70, color: "#FF3366" };
       default: return { ...base };
     }
   }
@@ -1149,6 +1168,10 @@
     const svgNS = "http://www.w3.org/2000/svg";
     // Empty existing content
     while (layer.node.firstChild) layer.node.removeChild(layer.node.firstChild);
+    // v19.7: invalidate cached stroke references (in case a future
+    // text-based path effect ever gets attached; harmless otherwise).
+    layer._strokes = null;
+    layer._dashApplied = false;
     layer.node.setAttribute("xmlns", svgNS);
     layer.node.setAttribute("viewBox", `0 0 ${W} ${H}`);
     layer.node.setAttribute("width", "100%");
@@ -1419,6 +1442,18 @@
     const pad = strokePad + 2;
     const vbW = W + pad * 2, vbH = H + pad * 2;
     while (layer.node.firstChild) layer.node.removeChild(layer.node.firstChild);
+    // v19.7: clear cached path-stroke references — the primitive is
+    // about to be replaced, so any Line Draw / Trim Paths / Path
+    // Energize effect currently applied would otherwise hold a
+    // dangling reference to a detached DOM node.  The cache rebuilds
+    // lazily on next pathStrokes() call.
+    layer._strokes = null;
+    layer._dashApplied = false;
+    // v19.8: same invalidation for the shape-style delta baseline
+    // cache.  The baseline was measured from the old primitive; the
+    // new one may have different stroke/fill defaults.
+    layer._primitives = null;
+    layer._shapeStyleApplied = false;
     layer.node.setAttribute("xmlns", svgNS);
     layer.node.setAttribute("viewBox", `${-pad} ${-pad} ${vbW} ${vbH}`);
     layer.node.setAttribute("width", "100%");
@@ -2575,6 +2610,30 @@
             }, step));
           });
         }
+        // v19.8: color picker for clips whose params include a `color`
+        // field (currently: Fill Color Flash; future vector effects
+        // that flash / animate stroke color will plug in the same way).
+        // Live-updates as the user drags the color, and paints while
+        // paused so the flash is visible without playing.
+        if (p.color !== undefined) {
+          const row = document.createElement("div"); row.className = "prop-row";
+          row.innerHTML = `<span class="prop-label">Color</span>`;
+          const cell = document.createElement("div"); cell.className = "color-cell";
+          const input = document.createElement("input");
+          input.type = "color"; input.className = "color-input"; input.value = p.color;
+          const hex = document.createElement("span");
+          hex.className = "color-hex"; hex.textContent = (p.color || "").toUpperCase();
+          const write = () => {
+            p.color = input.value;
+            hex.textContent = input.value.toUpperCase();
+            renderTimeline(); renderEventButtons(); paintIfPaused();
+          };
+          input.addEventListener("input", write);
+          input.addEventListener("change", write);
+          cell.appendChild(input); cell.appendChild(hex);
+          row.appendChild(cell);
+          paramsHost.appendChild(row);
+        }
         // Vector Beam growth easing seg (hard/ease) — separate from
         // direction because it uses different labels/values.
         if (selectedEventClip.ec.fxKey === "vectorBeam") {
@@ -3262,6 +3321,44 @@
         glow: intensity * (0.5 + flashP * 0.5) * 14,
       };
     },
+
+    // v19.8 VECTOR EFFECTS — return a shapeStyle delta object that
+    // composeLayer accumulates and applyShapeStyleDelta writes to the
+    // primitive.  Works uniformly on native SHAPE layers and imported
+    // SVG (any element supporting SVG stroke/fill).
+
+    // Stroke Width Pulse: the stroke thickness swells during the clip.
+    //  - Envelope: rise → peak → fall (triangular by default), so the
+    //    animation reads clearly on lines and outlined shapes.
+    //  - Multiplier applied to whatever the shape's base stroke width
+    //    is — a 4px line at intensity=60 pulses to 4 + 4×0.6×envelope.
+    //  - Reads (params?.intensity ?? 60) / 100.  No color.
+    strokeWidthPulse(p, sig, params) {
+      const k = ((params?.intensity ?? 60) / 100);
+      // Triangular envelope: 0 at p=0/1, 1 at p=0.5.  Adds a beat-audio
+      // boost so audio-driven scenes get an extra kick at peaks.
+      const env = 1 - Math.abs(p - 0.5) * 2;
+      const audioBoost = (sig && sig.peak) ? sig.peak * 0.4 : 0;
+      const mul = 1 + (env * k * 4) + audioBoost * k;   // up to ~5× at max
+      return { shapeStyle: { strokeWidthMul: mul } };
+    },
+
+    // Fill Color Flash: the shape's fill briefly changes to `params.color`
+    // during the clip.  The alpha of the override ramps up to peak then
+    // back down, so the flash is momentary rather than a hard swap.
+    //  - Color param is user-editable per clip (renderClipInspector
+    //    picks up p.color and shows a color picker).
+    //  - opacity delta uses fillOpacity so it composites naturally with
+    //    the layer's own opacity.
+    fillColorFlash(p, sig, params) {
+      const k = ((params?.intensity ?? 70) / 100);
+      const env = 1 - Math.abs(p - 0.5) * 2;   // triangular
+      const color = params && params.color ? params.color : "#FF3366";
+      // fillOpacity ramps 0 → k → 0 across the clip.  When k=0.7 at
+      // peak, the flash is ~70% coverage — visible but not fully
+      // opaque, so the underlying artwork is still readable.
+      return { shapeStyle: { fillColor: color, fillOpacity: env * k } };
+    },
   };
 
   // For each event key, which live layer field it modifies (used to
@@ -3664,6 +3761,22 @@
     let hud = false, hudFlicker = 1, flash = null, flashA = 0, scanBoost = 0, breakup = 0;
     let pathDraw = null, pathTrim = null;
     let radarBar = null, scanMask = null, freeze = false;
+    /* v19.8 shapeStyle delta channel.  Any event effect can contribute
+       stroke/fill animations by returning `{ shapeStyle: { ... } }`.
+       Merge semantics per axis:
+         - strokeWidthDelta:  additive (Σ contributions)
+         - strokeWidthMul:    multiplicative (Π contributions)
+         - strokeColor:       latest wins (last active clip's color)
+         - fillColor:         latest wins
+         - strokeOpacity:     latest wins (0..1 override)
+         - fillOpacity:       latest wins (0..1 override; used as alpha
+                              for color-flash overlays, so multiplicative
+                              would mask the flash — a single override
+                              is the right semantic here)
+       Kept null until at least one clip contributes, so `else if
+       (_shapeStyleApplied) clearShapeStyleDelta(...)` fires when the
+       last active clip ends and we can restore the base primitive. */
+    let shapeStyleDelta = null;
     const allowT = layer.allowTransform;
 
     // v18.7: layer.fx sustained-toggle system removed.  Every effect
@@ -3694,6 +3807,19 @@
         if (d.radarBar !== undefined) radarBar = d.radarBar;
         if (d.scanMask !== undefined) scanMask = d.scanMask;
         if (d.freeze) freeze = true;
+        // v19.8: shapeStyle delta accumulation.  Effects contribute a
+        // partial delta object; we compose them per-axis so multiple
+        // clips can animate the same shape simultaneously.
+        if (d.shapeStyle) {
+          if (!shapeStyleDelta) shapeStyleDelta = {};
+          const ds = d.shapeStyle;
+          if (ds.strokeWidthDelta !== undefined) shapeStyleDelta.strokeWidthDelta = (shapeStyleDelta.strokeWidthDelta || 0) + ds.strokeWidthDelta;
+          if (ds.strokeWidthMul   !== undefined) shapeStyleDelta.strokeWidthMul   = (shapeStyleDelta.strokeWidthMul   || 1) * ds.strokeWidthMul;
+          if (ds.strokeColor      !== undefined) shapeStyleDelta.strokeColor      = ds.strokeColor;
+          if (ds.fillColor        !== undefined) shapeStyleDelta.fillColor        = ds.fillColor;
+          if (ds.strokeOpacity    !== undefined) shapeStyleDelta.strokeOpacity    = ds.strokeOpacity;
+          if (ds.fillOpacity      !== undefined) shapeStyleDelta.fillOpacity      = ds.fillOpacity;
+        }
         // Event clips MAY move / scale / rotate the layer briefly even
         // when allowTransform is off (they're designed as short micro-
         // motions).
@@ -3722,9 +3848,23 @@
     }
     blur += (STATE.blur / 100) * 2;
 
-    // SVG stroke-dash animation for Line Draw / Trim Paths / Path Energize
-    if (layer.kind === "SVG" && (pathDraw !== null || pathTrim !== null)) applyPathDash(layer, pathDraw, pathTrim);
-    else if (layer.kind === "SVG" && layer._dashApplied) clearPathDash(layer);
+    // v19.7: Path-based effects (Line Draw, Trim Paths, Path Energize)
+    // now run on native SHAPE layers (rect/circle/ellipse/line/polygon)
+    // as well as imported SVG.  The stroke-discovery selector already
+    // includes all primitives; only the layer-kind gate needed
+    // widening.  TEXT layers are excluded — <text> doesn't support
+    // getTotalLength() and stroke-dash on text glyphs doesn't produce
+    // the "hand-drawn" reveal effect users expect.
+    const pathAnimatable = layer.kind === "SVG" || layer.kind === "SHAPE";
+    if (pathAnimatable && (pathDraw !== null || pathTrim !== null)) applyPathDash(layer, pathDraw, pathTrim);
+    else if (pathAnimatable && layer._dashApplied) clearPathDash(layer);
+    // v19.8 shapeStyle delta application.  Same layer-kind gate as
+    // path-dash — SHAPE + SVG participate, TEXT does not.  Effects like
+    // Stroke Width Pulse and Fill Color Flash reach the primitives via
+    // applyShapeStyleDelta; clearShapeStyleDelta restores baseline when
+    // no clip is currently contributing.
+    if (pathAnimatable && shapeStyleDelta) applyShapeStyleDelta(layer, shapeStyleDelta);
+    else if (pathAnimatable && layer._shapeStyleApplied) clearShapeStyleDelta(layer);
 
     // Scan mask (event-only): reveal from left as p goes 0->1
     if (scanMask !== null) { layer.wrap.style.clipPath = `inset(0 ${((1 - scanMask) * 100).toFixed(1)}% 0 0)`; layer._clipApplied = true; }
@@ -3825,7 +3965,12 @@
     layer.wrap.style.clipPath = ""; layer._clipApplied = false;
     // reset any sublayer transforms so grouped/exposed SVGs sit still
     if (layer.subLayers) layer.subLayers.forEach((n) => { n.style.transform = ""; n.style.opacity = ""; });
-    if (layer.kind === "SVG" && layer._dashApplied) clearPathDash(layer);
+    // v19.8: clear any active vector-animation deltas so the shape
+    // returns to its baseline appearance when no clip is contributing.
+    // Extended to SHAPE (was SVG-only in v19.7).
+    const _va = layer.kind === "SVG" || layer.kind === "SHAPE";
+    if (_va && layer._dashApplied) clearPathDash(layer);
+    if (_va && layer._shapeStyleApplied) clearShapeStyleDelta(layer);
   }
 
   // Render one static frame (no animation) — every visible layer at rest,
@@ -3910,6 +4055,81 @@
     layer._dashApplied = true;
   }
   function clearPathDash(layer) { if (layer._strokes) layer._strokes.forEach(({ n }) => { n.style.strokeDasharray = ""; n.style.strokeDashoffset = ""; }); layer._dashApplied = false; }
+
+  /* ---------------- v19.8 UNIFIED shapeStyle DELTA CHANNEL ----------------
+     Applies stroke / fill animation deltas to every drawable primitive
+     inside a SHAPE or imported-SVG layer.  Uniform pipeline: an effect
+     returns `{ shapeStyle: { ... } }`, composeLayer merges deltas
+     across active clips (see the accumulator above), and this applier
+     writes effective values via inline `style` (which has higher
+     specificity than SVG attributes, so it composites on top of the
+     layer's static appearance).
+
+     Extension model: adding new axes (dashOffset, dashArray, strokeColor
+     animation) is a one-line addition to composeLayer's accumulator
+     plus one branch in the applier below.  Zero changes needed to
+     effect handlers, buildShapeLayerSVG, or export pipeline.
+
+     Baseline snapshot:  the FIRST call to shapePrimitives() reads the
+     primitive's currently-computed stroke width / stroke color / fill
+     color and stores them, so subsequent restores return to the exact
+     visual state before any effect fired.  Cache invalidates when the
+     shape SVG is rebuilt (buildShapeLayerSVG clears `_primitives`). */
+  function shapePrimitives(layer) {
+    if (!layer._primitives) {
+      layer._primitives = Array.from(layer.node.querySelectorAll("path, line, polyline, polygon, circle, ellipse, rect")).map((n) => {
+        // Snapshot the baseline.  Prefer computed style so CSS-rules
+        // (external stylesheets in imported SVGs) are captured.
+        const cs = window.getComputedStyle(n);
+        const attrSW = parseFloat(n.getAttribute("stroke-width"));
+        const baseStrokeW = !isNaN(attrSW) ? attrSW : (parseFloat(cs.strokeWidth) || 0);
+        const attrStroke = n.getAttribute("stroke");
+        const attrFill   = n.getAttribute("fill");
+        return {
+          n,
+          baseStrokeW,
+          baseStroke:  attrStroke != null ? attrStroke : (cs.stroke || ""),
+          baseFill:    attrFill   != null ? attrFill   : (cs.fill   || ""),
+          hasStroke:   (attrStroke != null ? attrStroke : cs.stroke) !== "none",
+          hasFill:     (attrFill   != null ? attrFill   : cs.fill)   !== "none",
+        };
+      });
+    }
+    return layer._primitives;
+  }
+  function applyShapeStyleDelta(layer, delta) {
+    shapePrimitives(layer).forEach((prim) => {
+      const { n, baseStrokeW, hasStroke, hasFill } = prim;
+      // Stroke width: (base + delta) × mul, clamped to >= 0.
+      if (delta.strokeWidthDelta !== undefined || delta.strokeWidthMul !== undefined) {
+        let sw = baseStrokeW;
+        if (delta.strokeWidthDelta !== undefined) sw += delta.strokeWidthDelta;
+        if (delta.strokeWidthMul   !== undefined) sw *= delta.strokeWidthMul;
+        n.style.strokeWidth = Math.max(0, sw) + "px";
+      }
+      // Stroke color override — only when the primitive HAD a visible
+      // stroke.  Applying to a stroke:none primitive would silently
+      // create a stroke the user didn't have.
+      if (delta.strokeColor !== undefined && hasStroke) n.style.stroke = delta.strokeColor;
+      // Fill color override — same rule: only for primitives with a
+      // visible fill baseline.
+      if (delta.fillColor !== undefined && hasFill) n.style.fill = delta.fillColor;
+      if (delta.strokeOpacity !== undefined) n.style.strokeOpacity = delta.strokeOpacity;
+      if (delta.fillOpacity   !== undefined) n.style.fillOpacity   = delta.fillOpacity;
+    });
+    layer._shapeStyleApplied = true;
+  }
+  function clearShapeStyleDelta(layer) {
+    if (!layer._primitives) { layer._shapeStyleApplied = false; return; }
+    layer._primitives.forEach(({ n }) => {
+      n.style.strokeWidth = "";
+      n.style.stroke = "";
+      n.style.fill = "";
+      n.style.strokeOpacity = "";
+      n.style.fillOpacity = "";
+    });
+    layer._shapeStyleApplied = false;
+  }
 
   function animateSubLayers(layer, t, sig, allowT) {
     const fl = STATE.flicker / 100;
@@ -7975,7 +8195,7 @@
     requestAnimationFrame(() => fitZoom());
     setTimeout(() => { fitZoom(); renderTimeline(); }, 120);
     // Test hook: expose internals for automated verification (harmless in production).
-    window.__phaserDebug = { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, duplicateLayer, createTextLayerAt, createShapeLayerAt };
+    window.__phaserDebug = { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused };
   }
   document.addEventListener("DOMContentLoaded", init);
 })();
