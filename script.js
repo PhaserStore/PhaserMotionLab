@@ -41,6 +41,9 @@
     audioReactive: true, snapBeat: false, autoKeyframes: false, snapFrame: true,
     // v18.8 timeline precision — magnetic snapping for clip edges
     snapPlayhead: true, snapClipEdges: true,
+    // v19.0 tool mode — "select" is the default; other tools ("text", future
+    // "rect"/"ellipse"/"line") temporarily change canvas click behavior.
+    tool: "select",
     // output
     bgMode: "custom", bgColor: "#0B0B0F", bgColor2: "#1A1030",
     format: { w: 1080, h: 1080, label: "Post 1:1" },
@@ -374,6 +377,17 @@
     snapPlayheadBtn: $("#snapPlayheadBtn"), snapClipsBtn: $("#snapClipsBtn"),
     zoomFitAllBtn: $("#zoomFitAllBtn"), zoomToSelBtn: $("#zoomToSelBtn"),
     tcGoto: $("#tcGoto"),
+    // v19.0 Text Tool + text inspector + playhead frame + status bar
+    toolText: $("#toolText"),
+    textGroup: $("#textGroup"),
+    textContent: $("#textContent"), textFontFamily: $("#textFontFamily"),
+    textSize: $("#textSize"), textSizeRange: $("#textSizeRange"),
+    textWeight: $("#textWeight"),
+    textColor: $("#textColor"), textColorHex: $("#textColorHex"),
+    textAlignSeg: $("#textAlignSeg"),
+    textLetterSpacing: $("#textLetterSpacing"), textLineHeight: $("#textLineHeight"),
+    timecodeFrame: $("#timecodeFrame"),
+    readoutFilename: $("#readoutFilename"),
     // export
     exportBtn: $("#exportBtn"), exportSheet: $("#exportSheet"), exportClose: $("#exportClose"),
     exportPng: $("#exportPng"), exportPngT: $("#exportPngT"), exportSeq: $("#exportSeq"), exportSeqT: $("#exportSeqT"),
@@ -1055,6 +1069,244 @@
   function svgThumb(node) { const c = node.cloneNode(true); c.setAttribute("width", "100%"); c.setAttribute("height", "100%"); return c.outerHTML; }
   function removeAsset(a) { const i = assets.indexOf(a); if (i >= 0) assets.splice(i, 1); renderAssetList(); }
 
+  /* ================ v19.0 TEXT TOOL ================
+     Native text layer support.  Text layers are stored as
+     `layer.kind === "TEXT"` with `layer.textStyle` holding the params.
+     The layer's DOM node is an SVG containing a <text> element, so all
+     existing text-based effects (Text Replace, Text Flicker, Symbol
+     Transition) work automatically via the same splitTextNodes path.
+
+     Workflow:
+       1. Click the "T" tool button → STATE.tool = "text", cursor changes.
+       2. Click on the artboard → createTextLayerAt(pageX, pageY) creates
+          a text layer at that position with default style.
+       3. Tool auto-reverts to "select" after creation.
+       4. Double-click a text layer → inline text edit overlay opens.
+       5. Text style controls in the inspector edit the layer's textStyle
+          and rebuild the SVG live.
+  */
+  const TEXT_FONT_STACK = "sans-serif";   // fallback if a Google font hasn't loaded yet
+  function defaultTextStyle() {
+    return {
+      text: "Text",
+      fontFamily: "Inter",
+      fontSize: 96,
+      fontWeight: 500,
+      color: "#FFFFFF",
+      align: "middle",         // start | middle | end (SVG text-anchor values)
+      letterSpacing: 0,        // em units (1 em = fontSize px approx)
+      lineHeight: 1.2,         // multiplier
+    };
+  }
+
+  // Measure a single line of text using canvas 2d measureText, which is
+  // the most reliable way to get text metrics without laying out DOM.
+  const _textMeasureCanvas = document.createElement("canvas");
+  const _textMeasureCtx = _textMeasureCanvas.getContext("2d");
+  function measureTextLines(lines, style) {
+    _textMeasureCtx.font = `${style.fontWeight} ${style.fontSize}px "${style.fontFamily}", ${TEXT_FONT_STACK}`;
+    // canvas measureText doesn't natively support letter-spacing; approximate
+    // by adding (letterSpacing * fontSize) to each line's width per character.
+    const spacingPx = (style.letterSpacing || 0) * style.fontSize;
+    let maxW = 0;
+    lines.forEach((ln) => {
+      const m = _textMeasureCtx.measureText(ln || " ");
+      const w = m.width + Math.max(0, ln.length - 1) * spacingPx;
+      if (w > maxW) maxW = w;
+    });
+    const lineH = style.fontSize * (style.lineHeight || 1.2);
+    return { w: Math.ceil(maxW), h: Math.ceil(lineH * lines.length) };
+  }
+
+  // Rebuild the SVG contents for a text layer from its current textStyle.
+  // Called when style changes, text content changes, or on creation.
+  function buildTextLayerSVG(layer) {
+    const s = layer.textStyle;
+    const lines = String(s.text || "").split("\n");
+    const meas = measureTextLines(lines, s);
+    // Padding around measured text so descenders + letter-spacing don't clip.
+    const padX = Math.max(8, s.fontSize * 0.25);
+    const padY = Math.max(8, s.fontSize * 0.25);
+    const W = meas.w + padX * 2;
+    const H = meas.h + padY * 2;
+    const svgNS = "http://www.w3.org/2000/svg";
+    // Empty existing content
+    while (layer.node.firstChild) layer.node.removeChild(layer.node.firstChild);
+    layer.node.setAttribute("xmlns", svgNS);
+    layer.node.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    layer.node.setAttribute("width", "100%");
+    layer.node.setAttribute("height", "100%");
+    layer.node.setAttribute("preserveAspectRatio", "xMidYMid meet");
+    // Anchor X position within the viewBox
+    const anchorX = s.align === "start" ? padX : s.align === "end" ? (W - padX) : W / 2;
+    const lineH = s.fontSize * (s.lineHeight || 1.2);
+    const firstBaselineY = padY + s.fontSize * 0.82;  // ~ascender height
+    const textEl = document.createElementNS(svgNS, "text");
+    textEl.setAttribute("x", String(anchorX));
+    textEl.setAttribute("y", String(firstBaselineY));
+    textEl.setAttribute("text-anchor", s.align);
+    textEl.setAttribute("font-family", `"${s.fontFamily}", ${TEXT_FONT_STACK}`);
+    textEl.setAttribute("font-size", String(s.fontSize));
+    textEl.setAttribute("font-weight", String(s.fontWeight));
+    textEl.setAttribute("fill", s.color);
+    if (s.letterSpacing) textEl.setAttribute("letter-spacing", (s.letterSpacing * s.fontSize).toFixed(2));
+    lines.forEach((line, i) => {
+      const tspan = document.createElementNS(svgNS, "tspan");
+      tspan.setAttribute("x", String(anchorX));
+      if (i > 0) tspan.setAttribute("dy", String(lineH));
+      tspan.textContent = line || " ";  // preserve blank lines
+      textEl.appendChild(tspan);
+    });
+    layer.node.appendChild(textEl);
+    // Split characters into tspans for text-based effects (Text Flicker etc.)
+    // Note: we only split single-line text; multi-line already has one tspan per line.
+    if (lines.length === 1) {
+      textEl.textContent = "";
+      [...lines[0]].forEach((ch) => {
+        const g = document.createElementNS(svgNS, "tspan");
+        g.setAttribute("data-glyph", "1");
+        g.textContent = ch;
+        textEl.appendChild(g);
+      });
+      textEl.dataset.split = "1";
+    }
+    layer.natW = W;
+    layer.natH = H;
+    // Update layer's DOM size percentage to match the new intrinsic size,
+    // preserving the previous visual size.  We keep transform.wPct/hPct.
+    // The <svg> auto-scales via viewBox to the outer size set by the CSS.
+    return { W, H };
+  }
+
+  /* Create a new text layer at the given ARTBOARD pixel position (not
+     stage coords).  If x/y omitted, places at artboard center. */
+  function createTextLayerAt(artX, artY) {
+    const A = STATE.format;
+    const id = ++idSeq;
+    const svgNS = "http://www.w3.org/2000/svg";
+    const node = document.createElementNS(svgNS, "svg");
+    const wrap = document.createElement("div");
+    wrap.className = "layer-el"; wrap.appendChild(node);
+    el.layerHost.appendChild(wrap);
+    const style = defaultTextStyle();
+    // Build a stub layer object; buildTextLayerSVG fills node contents + natW/H
+    const layer = {
+      id, name: "Text", kind: "TEXT", assetId: null, complex: false,
+      node, wrap, subLayers: [], natW: 100, natH: 40,
+      visible: true, locked: false,
+      transform: { cx: 0, cy: 0, wPct: 0, hPct: 0, rot: 0, opacity: 100 },
+      start: 0, duration: STATE.duration,
+      allowTransform: false,
+      clips: [],
+      recipe: makeRecipe(id * 131),
+      originalColors: null,
+      textStyle: style,
+    };
+    // Fill in geometry + SVG
+    buildTextLayerSVG(layer);
+    // Convert center point (artX, artY) into cx/cy (% offset from center)
+    // and compute a wPct/hPct that produces the intrinsic size at 1:1.
+    const cx = artX == null ? 0 : ((artX - A.w / 2) / A.w) * 100;
+    const cy = artY == null ? 0 : ((artY - A.h / 2) / A.h) * 100;
+    layer.transform.cx = clamp(cx, -50, 50);
+    layer.transform.cy = clamp(cy, -50, 50);
+    layer.transform.wPct = (layer.natW / A.w) * 100;
+    layer.transform.hPct = (layer.natH / A.h) * 100;
+    layers.push(layer);
+    renderLayers(); renderTimeline(); selectLayer(layer); updateHintVisibility();
+    renderStaticFrame();
+    return layer;
+  }
+
+  /* Set the active tool.  "text" activates modal text-creation mode:
+     next click on the artboard creates a text layer at that position.
+     Auto-reverts to "select" after one placement. */
+  function setTool(name) {
+    STATE.tool = name || "select";
+    // Update tool button visuals
+    if (el.toolText) el.toolText.classList.toggle("is-active", STATE.tool === "text");
+    // Update stage cursor
+    if (el.stage) el.stage.classList.toggle("tool-text-active", STATE.tool === "text");
+  }
+
+  /* Convert a page-space (clientX/clientY) point into artboard-space
+     pixel coordinates.  Reverse of what applyZoom does to position
+     the artboard.  Returns null if the point isn't over the artboard. */
+  function stagePointToArtboard(clientX, clientY) {
+    if (!el.artboard) return null;
+    const rect = el.artboard.getBoundingClientRect();
+    if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) return null;
+    const z = STATE.zoom || 1;
+    return { x: (clientX - rect.left) / z, y: (clientY - rect.top) / z };
+  }
+
+  /* Update layer.textStyle with `patch` and rebuild the SVG + transform. */
+  function updateTextLayer(layer, patch) {
+    if (!layer || layer.kind !== "TEXT") return;
+    Object.assign(layer.textStyle, patch);
+    const A = STATE.format;
+    // Preserve the visual size the user has set: capture current onscreen
+    // width in artboard pixels, rebuild SVG to new intrinsic size, then
+    // keep the wPct/hPct that produce the same visual bounds.
+    const prevVisualW = (layer.transform.wPct / 100) * A.w;
+    const prevVisualH = (layer.transform.hPct / 100) * A.h;
+    // Was the text auto-sized (matching natW/H exactly)?  If so, resize
+    // to the new natural dimensions so text stays crisp.  Otherwise
+    // keep the user's manual size.
+    const wasAutoSized =
+      Math.abs(prevVisualW - (layer.natW / A.w) * A.w) < 1 &&
+      Math.abs(prevVisualH - (layer.natH / A.h) * A.h) < 1;
+    buildTextLayerSVG(layer);
+    if (wasAutoSized) {
+      layer.transform.wPct = (layer.natW / A.w) * 100;
+      layer.transform.hPct = (layer.natH / A.h) * 100;
+    }
+    renderStaticFrame();
+    renderTimeline();
+  }
+
+  /* Inline text editing overlay.  Positioned in stage space (not
+     artboard space) so it doesn't get transformed by the scaler. */
+  let _activeTextEditor = null;
+  function startTextEdit(layer) {
+    if (!layer || layer.kind !== "TEXT" || _activeTextEditor) return;
+    // Compute the layer wrap's on-screen rect, use that to position textarea.
+    const wrapRect = layer.wrap.getBoundingClientRect();
+    const stageRect = el.stage.getBoundingClientRect();
+    const ta = document.createElement("textarea");
+    ta.className = "text-edit-overlay";
+    ta.value = layer.textStyle.text;
+    // Position relative to viewport, then offset for stage scroll
+    ta.style.left = (wrapRect.left - stageRect.left + el.stage.scrollLeft) + "px";
+    ta.style.top  = (wrapRect.top  - stageRect.top  + el.stage.scrollTop) + "px";
+    ta.style.minWidth = Math.max(80, wrapRect.width) + "px";
+    ta.style.minHeight = Math.max(28, wrapRect.height) + "px";
+    // Apply font style to the editor so what-you-type looks like the result
+    ta.style.fontFamily = `"${layer.textStyle.fontFamily}", ${TEXT_FONT_STACK}`;
+    ta.style.fontSize   = Math.min(48, layer.textStyle.fontSize * STATE.zoom) + "px";
+    ta.style.fontWeight = layer.textStyle.fontWeight;
+    ta.style.color      = layer.textStyle.color;
+    ta.style.textAlign  = layer.textStyle.align === "start" ? "left" : layer.textStyle.align === "end" ? "right" : "center";
+    el.stage.appendChild(ta);
+    _activeTextEditor = { textarea: ta, layer };
+    ta.focus();
+    ta.select();
+    const finalize = () => {
+      if (!_activeTextEditor) return;
+      const newText = ta.value;
+      _activeTextEditor = null;
+      ta.remove();
+      updateTextLayer(layer, { text: newText || " " });
+      renderInspector();
+    };
+    ta.addEventListener("blur", finalize, { once: true });
+    ta.addEventListener("keydown", (ev) => {
+      // Enter commits (Shift+Enter inserts newline).  Escape reverts.
+      if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); ta.blur(); }
+      else if (ev.key === "Escape") { ev.preventDefault(); ta.value = layer.textStyle.text; ta.blur(); }
+    });
+  }
+
   function splitTextNodes(root) {
     root.querySelectorAll("text").forEach((t) => {
       const raw = t.textContent;
@@ -1365,7 +1617,31 @@
     el.fxEmpty.hidden = has; el.fxBody.hidden = !has;
     const isSvg = has && selectedLayer.kind === "SVG";
     const isVideo = has && selectedLayer.kind === "VIDEO";
+    const isText = has && selectedLayer.kind === "TEXT";
     el.colorEmpty.hidden = isSvg; el.colorBody.hidden = !isSvg;
+    // v19.0: Text panel — visible only for TEXT layers.
+    if (el.textGroup) {
+      el.textGroup.hidden = !isText;
+      if (isText) {
+        const s = selectedLayer.textStyle;
+        // populate — guard against clobbering focused input
+        const setIf = (elm, val) => { if (elm && document.activeElement !== elm) elm.value = val; };
+        setIf(el.textContent, s.text || "");
+        setIf(el.textFontFamily, s.fontFamily);
+        setIf(el.textSize, s.fontSize);
+        setIf(el.textSizeRange, Math.min(400, s.fontSize));
+        setIf(el.textWeight, String(s.fontWeight));
+        setIf(el.textColor, s.color);
+        if (el.textColorHex) el.textColorHex.textContent = (s.color || "").toUpperCase();
+        setIf(el.textLetterSpacing, s.letterSpacing || 0);
+        setIf(el.textLineHeight, s.lineHeight || 1.2);
+        if (el.textAlignSeg) {
+          el.textAlignSeg.querySelectorAll("[data-align]").forEach((b) => {
+            b.classList.toggle("active", b.dataset.align === s.align);
+          });
+        }
+      }
+    }
     // Video panel: only visible for VIDEO layers.
     if (el.videoGroup) {
       el.videoGroup.hidden = !isVideo;
@@ -3295,7 +3571,16 @@
       const px = Math.round(pct * (el.tlTracks.clientWidth || 0));
       el.tlPlayhead.style.left = px + "px";
     }
-    if (el.timecode) el.timecode.textContent = t.toFixed(3) + "s";
+    if (el.timecode && document.activeElement !== el.timecode) {
+      // v19.0: timecode is now an editable input.  Only overwrite when
+      // it isn't being typed into, so live-updates during playback
+      // don't clobber the user's edit.
+      el.timecode.value = t.toFixed(3);
+    }
+    if (el.timecodeFrame) {
+      const fps = STATE.fps || 30;
+      el.timecodeFrame.textContent = Math.round(t * fps) + "f";
+    }
   }
   function togglePlay() {
     STATE.playing = !STATE.playing;
@@ -5889,6 +6174,99 @@
     ["dragenter", "dragover"].forEach((ev) => el.dropzone.addEventListener(ev, (e) => { e.preventDefault(); el.dropzone.classList.add("drag"); }));
     ["dragleave", "drop"].forEach((ev) => el.dropzone.addEventListener(ev, (e) => { e.preventDefault(); el.dropzone.classList.remove("drag"); }));
     el.dropzone.addEventListener("drop", (e) => handleFiles(e.dataTransfer.files));
+
+    /* v19.0 Text Tool wiring.  Click T to activate; next click on
+       artboard creates text; Escape cancels. */
+    if (el.toolText) {
+      el.toolText.addEventListener("click", () => {
+        setTool(STATE.tool === "text" ? "select" : "text");
+      });
+    }
+    document.addEventListener("keydown", (e) => {
+      // Global "T" shortcut to toggle text tool (only when not typing)
+      const typing = e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable);
+      if (typing) return;
+      if (e.key === "Escape" && STATE.tool !== "select") { setTool("select"); e.preventDefault(); return; }
+      if ((e.key === "t" || e.key === "T") && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        setTool(STATE.tool === "text" ? "select" : "text");
+      }
+    });
+    // Click on stage while text tool is active — create a text layer.
+    // We listen on the stage (not the artboard) so clicks in padding
+    // still work; stagePointToArtboard filters to the actual artboard.
+    if (el.stage) {
+      el.stage.addEventListener("click", (e) => {
+        if (STATE.tool !== "text") return;
+        // Don't fire on middle mouse or on ancillary UI elements
+        if (e.button !== 0) return;
+        const pt = stagePointToArtboard(e.clientX, e.clientY);
+        if (!pt) {
+          // Click was outside the artboard — click on center as fallback? No,
+          // just cancel tool.  Standard Photoshop behavior.
+          setTool("select");
+          return;
+        }
+        const layer = createTextLayerAt(pt.x, pt.y);
+        setTool("select");
+        // Immediately open the editor so user can start typing.
+        // Give the DOM a moment to lay out before positioning the overlay.
+        setTimeout(() => startTextEdit(layer), 60);
+      });
+    }
+
+    /* Text inspector bindings — write back to the selected text layer. */
+    function wireTextInput(elmt, patchFn) {
+      if (!elmt) return;
+      const handler = () => {
+        if (!selectedLayer || selectedLayer.kind !== "TEXT") return;
+        const patch = patchFn(elmt);
+        if (patch) updateTextLayer(selectedLayer, patch);
+      };
+      elmt.addEventListener("input", handler);
+      elmt.addEventListener("change", handler);
+    }
+    wireTextInput(el.textContent, (n) => ({ text: n.value || " " }));
+    wireTextInput(el.textFontFamily, (n) => ({ fontFamily: n.value }));
+    wireTextInput(el.textSize, (n) => {
+      const v = clamp(+n.value || 64, 8, 800);
+      if (el.textSizeRange) el.textSizeRange.value = Math.min(400, v);
+      return { fontSize: v };
+    });
+    wireTextInput(el.textSizeRange, (n) => {
+      const v = +n.value;
+      if (el.textSize) el.textSize.value = v;
+      return { fontSize: v };
+    });
+    wireTextInput(el.textWeight, (n) => ({ fontWeight: +n.value }));
+    wireTextInput(el.textColor, (n) => {
+      if (el.textColorHex) el.textColorHex.textContent = n.value.toUpperCase();
+      return { color: n.value };
+    });
+    wireTextInput(el.textLetterSpacing, (n) => ({ letterSpacing: +n.value || 0 }));
+    wireTextInput(el.textLineHeight, (n) => ({ lineHeight: Math.max(0.5, +n.value || 1.2) }));
+    if (el.textAlignSeg) {
+      el.textAlignSeg.querySelectorAll("[data-align]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          el.textAlignSeg.querySelectorAll("[data-align]").forEach((b) => b.classList.remove("active"));
+          btn.classList.add("active");
+          if (selectedLayer && selectedLayer.kind === "TEXT") {
+            updateTextLayer(selectedLayer, { align: btn.dataset.align });
+          }
+        });
+      });
+    }
+
+    /* Double-click a text layer to enter inline edit mode. */
+    if (el.layerHost) {
+      el.layerHost.addEventListener("dblclick", (e) => {
+        // Find the enclosing .layer-el then match to a layer
+        const wrap = e.target.closest && e.target.closest(".layer-el");
+        if (!wrap) return;
+        const layer = layers.find((L) => L.wrap === wrap);
+        if (layer && layer.kind === "TEXT") { e.preventDefault(); e.stopPropagation(); startTextEdit(layer); }
+      });
+    }
     el.stage.addEventListener("dragover", (e) => e.preventDefault());
     el.stage.addEventListener("drop", (e) => { e.preventDefault(); handleFiles(e.dataTransfer.files); });
     el.exposeSubToggle.addEventListener("change", (e) => { STATE.exposeSub = e.target.checked; toast(STATE.exposeSub ? "New SVGs will expose sublayers" : "New SVGs grouped as one layer"); });
@@ -6455,30 +6833,53 @@
     bindTimeField("num-cs-f", "start",     true);
     bindTimeField("num-cd-f", "duration",  true);
 
-    // v18.8 timecode-goto: jump playhead by typing a value.
-    //   "1.5"  → 1.5 seconds
-    //   "45f"  → frame 45 (converted via current fps)
-    //   "45"   → 45 seconds (unless it ends with f)
-    if (el.tcGoto) {
-      const goto = () => {
-        const raw = (el.tcGoto.value || "").trim().toLowerCase();
-        if (!raw) return;
-        const fps = STATE.fps || 30;
-        let target = null;
-        if (raw.endsWith("f")) {
-          const frame = parseInt(raw.slice(0, -1), 10);
-          if (!isNaN(frame)) target = frame / fps;
-        } else {
-          const num = parseFloat(raw);
-          if (!isNaN(num)) target = num;
-        }
+    /* v19.0 Playhead position input — always visible, editable.
+       Accepts:
+         "1.5"           → 1.5 seconds
+         "45f"           → frame 45 at current fps
+         "00:00:01:15"   → timecode HH:MM:SS:FF
+         "00:01:15"      → MM:SS:FF (2-part timecode)
+       Enter commits, Escape reverts to current time, blur commits. */
+    function parsePlayheadInput(raw) {
+      const s = String(raw || "").trim().toLowerCase();
+      if (!s) return null;
+      const fps = STATE.fps || 30;
+      // Timecode HH:MM:SS:FF or MM:SS:FF
+      if (s.includes(":")) {
+        const parts = s.split(":").map((p) => parseInt(p, 10));
+        if (parts.some(isNaN)) return null;
+        let hh = 0, mm = 0, ss = 0, ff = 0;
+        if (parts.length === 4) [hh, mm, ss, ff] = parts;
+        else if (parts.length === 3) [mm, ss, ff] = parts;
+        else if (parts.length === 2) [ss, ff] = parts;
+        else return null;
+        return hh * 3600 + mm * 60 + ss + ff / fps;
+      }
+      // Frames: "45f"
+      if (s.endsWith("f")) {
+        const frame = parseFloat(s.slice(0, -1));
+        return isNaN(frame) ? null : frame / fps;
+      }
+      // Bare number = seconds
+      const num = parseFloat(s);
+      return isNaN(num) ? null : num;
+    }
+    if (el.timecode) {
+      const commit = () => {
+        const target = parsePlayheadInput(el.timecode.value);
         if (target != null && typeof seekTo === "function") {
           seekTo(clamp(target, 0, STATE.duration));
-          el.tcGoto.value = "";
+        } else {
+          // Invalid → restore current position
+          el.timecode.value = (STATE.time || 0).toFixed(3);
         }
       };
-      el.tcGoto.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); goto(); } });
-      el.tcGoto.addEventListener("blur", goto);
+      el.timecode.addEventListener("focus", () => el.timecode.select());
+      el.timecode.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); commit(); el.timecode.blur(); }
+        else if (e.key === "Escape") { e.preventDefault(); el.timecode.value = (STATE.time || 0).toFixed(3); el.timecode.blur(); }
+      });
+      el.timecode.addEventListener("blur", commit);
     }
     if (el.clipMute) el.clipMute.addEventListener("click", () => {
       if (!selectedAudioClip) return;
