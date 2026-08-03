@@ -6865,10 +6865,27 @@
       const typing = e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT";
       if (e.code === "Space" && !typing) { e.preventDefault(); togglePlay(); }
       if (e.key === "Escape") closeSheet();
-      // v19.4: Delete / Backspace removes ALL selected layers in one action.
-      if ((e.key === "Delete" || e.key === "Backspace") && selectedLayers.length && !typing) {
-        e.preventDefault();
-        deleteSelectedLayers();
+      // v19.5: Delete / Backspace routing.  Priority order:
+      //   1. If a timeline clip is selected → delete that clip (not the layer).
+      //   2. Otherwise, if layer(s) are selected → delete them.
+      //  This mirrors how every professional editor separates clip
+      //  and layer deletion.  The user should never accidentally lose
+      //  a layer while trying to remove a single effect instance.
+      if ((e.key === "Delete" || e.key === "Backspace") && !typing) {
+        if (selectedEventClip) {
+          e.preventDefault();
+          deleteSelectedClip();
+          return;
+        }
+        if (selectedAudioClip) {
+          e.preventDefault();
+          deleteSelectedAudioClip();
+          return;
+        }
+        if (selectedLayers.length) {
+          e.preventDefault();
+          deleteSelectedLayers();
+        }
       }
       // v19.4: Cmd/Ctrl+D duplicates all selected layers at exact positions.
       if ((e.key === "d" || e.key === "D") && (e.metaKey || e.ctrlKey) && selectedLayers.length && !typing) {
@@ -6903,6 +6920,27 @@
       selectedLayer = dups[dups.length - 1] || null;
       renderLayers(); renderInspector(); renderTimeline(); updateSelectionBox();
       if (originals.length > 1) toast(`Duplicated ${originals.length} layers`);
+    }
+    /* v19.5 clip-delete helpers.  Called by the Delete key routing
+       when a clip is the currently-selected element.  Removing a
+       clip must NOT touch layer selection or the layer stack. */
+    function deleteSelectedClip() {
+      if (!selectedEventClip) return;
+      const { layer, ec } = selectedEventClip;
+      const idx = layer.clips.indexOf(ec);
+      if (idx >= 0) layer.clips.splice(idx, 1);
+      selectedEventClip = null;
+      renderTimeline(); renderClipInspector(); renderEventButtons(); paintIfPaused();
+      toast("Clip deleted");
+    }
+    function deleteSelectedAudioClip() {
+      if (!selectedAudioClip) return;
+      const ac = selectedAudioClip;
+      const idx = audioClips.indexOf(ac);
+      if (idx >= 0) audioClips.splice(idx, 1);
+      selectedAudioClip = null;
+      renderTimeline(); renderClipInspector(); paintIfPaused();
+      toast("Audio clip deleted");
     }
 
     // AI
@@ -7668,43 +7706,78 @@
       // Ignore clicks on selection-box handles / other UI overlays
       if (e.target.closest(".sel-handle")) return;
       const L = pickLayerAtEvent(e); if (!L) return;
-      // v19.4: Shift/Cmd-click on the canvas toggles additive selection.
+      // v19.4/v19.5: Shift/Cmd-click on the canvas toggles additive selection.
+      // If the picked layer is NOT already in the selection, single-select it.
+      // If it IS in the selection AND no modifier, keep the existing multi-
+      // selection so the user can drag the whole group.
       const additive = e.shiftKey || e.metaKey || e.ctrlKey;
-      selectLayer(L, { additive });
-      dragL = { layer: L, x0: e.clientX, y0: e.clientY, cx0: L.transform.cx, cy0: L.transform.cy };
+      const inSelection = selectedLayers.includes(L);
+      if (additive) {
+        selectLayer(L, { additive: true });
+      } else if (!inSelection) {
+        selectLayer(L);
+      }
+      // v19.5: multi-move.  When multiple layers are selected, dragging any
+      // one of them translates ALL of them by the same delta.  Snapshot
+      // each layer's starting cx/cy so we can reset if the drag misses.
+      const targets = (selectedLayers.length > 1 && selectedLayers.includes(L))
+        ? selectedLayers.slice()
+        : [L];
+      dragL = {
+        layers: targets,
+        x0: e.clientX, y0: e.clientY,
+        starts: targets.map((tl) => ({ cx: tl.transform.cx, cy: tl.transform.cy })),
+      };
       el.artboard.style.cursor = "grabbing";
       e.preventDefault();
     });
     document.addEventListener("mousemove", (e) => {
       if (!dragL) return;
       const A = STATE.format;
-      const dxPx = (e.clientX - dragL.x0) / STATE.zoom;
-      const dyPx = (e.clientY - dragL.y0) / STATE.zoom;
-      dragL.layer.transform.cx = clamp(dragL.cx0 + (dxPx / A.w) * 100, -200, 200);
-      dragL.layer.transform.cy = clamp(dragL.cy0 + (dyPx / A.h) * 100, -200, 200);
-      setSlider("x", Math.round(dragL.layer.transform.cx));
-      setSlider("y", Math.round(dragL.layer.transform.cy));
+      const dxPct = ((e.clientX - dragL.x0) / STATE.zoom / A.w) * 100;
+      const dyPct = ((e.clientY - dragL.y0) / STATE.zoom / A.h) * 100;
+      dragL.layers.forEach((L, i) => {
+        L.transform.cx = clamp(dragL.starts[i].cx + dxPct, -200, 200);
+        L.transform.cy = clamp(dragL.starts[i].cy + dyPct, -200, 200);
+      });
+      // Reflect primary layer's coords in the transform sliders.
+      const primary = selectedLayer || dragL.layers[0];
+      if (primary) {
+        setSlider("x", Math.round(primary.transform.cx));
+        setSlider("y", Math.round(primary.transform.cy));
+      }
       updateSelectionBox(); paintIfPaused();
     });
     document.addEventListener("mouseup", () => { if (dragL) { dragL = null; el.artboard.style.cursor = ""; } });
 
-    // Arrow keys nudge the selected layer (1 px, or 10 px with Shift).
+    // Arrow keys nudge the selected layer(s). 1 px, or 10 px with Shift.
+    // v19.5: nudges every layer in selectedLayers so multi-select
+    // works the same way as canvas drag.
     document.addEventListener("keydown", (e) => {
-      if (!selectedLayer) return;
+      if (!selectedLayers.length) return;
       if (/^(INPUT|TEXTAREA|SELECT)$/i.test(e.target.tagName)) return;
       const A = STATE.format, step = e.shiftKey ? 10 : 1;
-      let handled = true;
-      if (e.key === "ArrowLeft")       selectedLayer.transform.cx -= (step / A.w) * 100;
-      else if (e.key === "ArrowRight") selectedLayer.transform.cx += (step / A.w) * 100;
-      else if (e.key === "ArrowUp")    selectedLayer.transform.cy -= (step / A.h) * 100;
-      else if (e.key === "ArrowDown")  selectedLayer.transform.cy += (step / A.h) * 100;
-      else handled = false;
-      if (handled) {
-        e.preventDefault();
-        setSlider("x", Math.round(selectedLayer.transform.cx));
-        setSlider("y", Math.round(selectedLayer.transform.cy));
-        updateSelectionBox(); paintIfPaused();
+      let dx = 0, dy = 0;
+      if (e.key === "ArrowLeft")       dx = -step;
+      else if (e.key === "ArrowRight") dx = step;
+      else if (e.key === "ArrowUp")    dy = -step;
+      else if (e.key === "ArrowDown")  dy = step;
+      else return;
+      // Only nudge layers when NO clip is selected (arrow keys have
+      // context-dependent meaning: clip-nudge > layer-nudge > playhead-nudge).
+      if (selectedEventClip || selectedAudioClip) return;
+      e.preventDefault();
+      const dxPct = (dx / A.w) * 100, dyPct = (dy / A.h) * 100;
+      selectedLayers.forEach((L) => {
+        L.transform.cx += dxPct;
+        L.transform.cy += dyPct;
+      });
+      const primary = selectedLayer || selectedLayers[0];
+      if (primary) {
+        setSlider("x", Math.round(primary.transform.cx));
+        setSlider("y", Math.round(primary.transform.cy));
       }
+      updateSelectionBox(); paintIfPaused();
     });
 
     // ============ ALIGNMENT WIRING ============
