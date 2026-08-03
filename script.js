@@ -328,7 +328,7 @@
     assetList: $("#assetList"), assetCount: $("#assetCount"),
     presetGrid: $("#presetGrid"), applyAll: $("#applyAll"),
     layerStack: $("#layerStack"), layerCount: $("#layerCount"),
-    stage: $("#stage"), artboardScaler: $("#artboardScaler"), artboard: $("#artboard"), artboardBg: $("#artboardBg"),
+    stage: $("#stage"), stageWorkspace: $("#stageWorkspace"), artboardScaler: $("#artboardScaler"), artboard: $("#artboard"), artboardBg: $("#artboardBg"),
     layerHost: $("#layerHost"), artboardFrame: $("#artboardFrame"), selectionBox: $("#selectionBox"),
     stageHint: $("#stageHint"),
     readoutCanvas: $("#readoutCanvas"), readoutFormat: $("#readoutFormat"), readoutZoom: $("#readoutZoom"), readoutSel: $("#readoutSel"),
@@ -3518,7 +3518,19 @@
   }
   function setZoom(z) { STATE.zoom = clamp(z, 0.05, 4); STATE.zoomMode = "manual"; applyZoom(); }
   function applyZoom() {
-    el.artboardScaler.style.transform = `scale(${STATE.zoom})`;
+    const zoom = STATE.zoom, A = STATE.format;
+    // v18.9 canvas navigation: the scaler must reserve LAYOUT space
+    // equal to the scaled artboard so that .stage scrollbars know
+    // when to appear.  transform-origin is now top-left so visible
+    // bounds match layout bounds.
+    el.artboardScaler.style.transform = `scale(${zoom})`;
+    el.artboardScaler.style.width  = (A.w * zoom) + "px";
+    el.artboardScaler.style.height = (A.h * zoom) + "px";
+    // v18.9: keep artboard-scaler's INNER artboard at its native px
+    // size — the transform on the scaler handles the visual scaling.
+    // (Inner artboard was already sized in px in setFormat / init.)
+    // Fit-mode auto-hides scrollbars.
+    if (el.stage) el.stage.classList.toggle("fit-mode", STATE.zoomMode === "fit");
     const label = STATE.zoomMode === "fit" ? "Fit" : Math.round(STATE.zoom * 100) + "%";
     el.zoomVal.textContent = label; el.readoutZoom.textContent = label;
     $$("#zoomPresets [data-zoom]").forEach((b) => b.classList.toggle("active", STATE.zoomMode === "manual" && Math.abs(STATE.zoom - +b.dataset.zoom) < 0.001));
@@ -5982,10 +5994,117 @@
     wireDurSeg(el.durSegTl);
 
     // zoom
-    el.zoomIn.addEventListener("click", () => setZoom(STATE.zoom * 1.2));
-    el.zoomOut.addEventListener("click", () => setZoom(STATE.zoom / 1.2));
+    el.zoomIn.addEventListener("click", () => zoomAnchored(STATE.zoom * 1.2));
+    el.zoomOut.addEventListener("click", () => zoomAnchored(STATE.zoom / 1.2));
     el.zoomFit.addEventListener("click", fitZoom);
-    $$("#zoomPresets [data-zoom]").forEach((b) => b.addEventListener("click", () => setZoom(+b.dataset.zoom)));
+    $$("#zoomPresets [data-zoom]").forEach((b) => b.addEventListener("click", () => zoomAnchored(+b.dataset.zoom)));
+
+    /* v18.9 CANVAS NAVIGATION — cursor-anchored zoom.
+       When zoom changes, keep the artboard point under the cursor
+       fixed under the cursor.  This matches Figma / Photoshop /
+       Illustrator behavior. */
+    function zoomAnchored(newZoom, opts) {
+      const clamped = clamp(newZoom, 0.05, 8);
+      const stage = el.stage; if (!stage) { setZoom(clamped); return; }
+      // Anchor point: given center (default) or explicit mouse position.
+      const rect = stage.getBoundingClientRect();
+      const anchorX = (opts && opts.clientX != null) ? (opts.clientX - rect.left) : rect.width / 2;
+      const anchorY = (opts && opts.clientY != null) ? (opts.clientY - rect.top)  : rect.height / 2;
+      // Absolute position (in scroll content coords) of the anchor before zoom
+      const contentXBefore = stage.scrollLeft + anchorX;
+      const contentYBefore = stage.scrollTop  + anchorY;
+      // Same anchor position relative to the scaler's top-left
+      const scalerRect = el.artboardScaler.getBoundingClientRect();
+      const scalerLeftInStage = (scalerRect.left - rect.left) + stage.scrollLeft;
+      const scalerTopInStage  = (scalerRect.top  - rect.top)  + stage.scrollTop;
+      // Point on artboard (unscaled) under the anchor
+      const artX = (contentXBefore - scalerLeftInStage) / STATE.zoom;
+      const artY = (contentYBefore - scalerTopInStage)  / STATE.zoom;
+      // Apply new zoom (goes through setZoom / applyZoom, which resizes scaler)
+      STATE.zoom = clamped; STATE.zoomMode = "manual"; applyZoom();
+      // After layout: place the same artboard point back under the anchor.
+      requestAnimationFrame(() => {
+        const rect2 = stage.getBoundingClientRect();
+        const scalerRect2 = el.artboardScaler.getBoundingClientRect();
+        const scalerLeftInStage2 = (scalerRect2.left - rect2.left) + stage.scrollLeft;
+        const scalerTopInStage2  = (scalerRect2.top  - rect2.top)  + stage.scrollTop;
+        const contentXAfter = scalerLeftInStage2 + artX * STATE.zoom;
+        const contentYAfter = scalerTopInStage2  + artY * STATE.zoom;
+        stage.scrollLeft = contentXAfter - anchorX;
+        stage.scrollTop  = contentYAfter - anchorY;
+      });
+    }
+
+    /* Ctrl/Cmd + wheel on the stage: cursor-anchored zoom.  Two-finger
+       pinch on macOS produces wheel events with ctrlKey=true, so this
+       supports pinch-zoom too. */
+    if (el.stage) {
+      el.stage.addEventListener("wheel", (e) => {
+        if (!(e.ctrlKey || e.metaKey)) return;
+        e.preventDefault();
+        const factor = e.deltaY > 0 ? 0.9 : 1.1;
+        zoomAnchored(STATE.zoom * factor, { clientX: e.clientX, clientY: e.clientY });
+      }, { passive: false });
+    }
+
+    /* Space-hold + drag panning (Figma / Photoshop style).
+       Space press (outside of text inputs) enters pan-ready mode:
+       cursor becomes grab.  Mousedown in that state locks pointer
+       events on stage and starts translating stage.scrollLeft/Top
+       inversely with mouse movement.  Release space to exit.
+       Also supports middle-mouse (button 1) for panning without space. */
+    let panState = null;
+    document.addEventListener("keydown", (e) => {
+      if (e.code !== "Space") return;
+      const typing = e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA");
+      if (typing) return;
+      if (!panState || !panState.active) {
+        e.preventDefault();
+        if (el.stage) el.stage.classList.add("pan-ready");
+      }
+    });
+    document.addEventListener("keyup", (e) => {
+      if (e.code !== "Space") return;
+      if (el.stage) el.stage.classList.remove("pan-ready", "pan-active");
+      if (panState && panState.active) endPan();
+    });
+    function startPan(e) {
+      if (!el.stage) return;
+      panState = {
+        active: true,
+        startX: e.clientX, startY: e.clientY,
+        scrollLeft: el.stage.scrollLeft, scrollTop: el.stage.scrollTop,
+      };
+      el.stage.classList.add("pan-active");
+      document.addEventListener("mousemove", onPan);
+      document.addEventListener("mouseup", endPan);
+    }
+    function onPan(e) {
+      if (!panState || !panState.active) return;
+      const dx = e.clientX - panState.startX;
+      const dy = e.clientY - panState.startY;
+      el.stage.scrollLeft = panState.scrollLeft - dx;
+      el.stage.scrollTop  = panState.scrollTop  - dy;
+    }
+    function endPan() {
+      if (panState) panState.active = false;
+      if (el.stage) el.stage.classList.remove("pan-active");
+      document.removeEventListener("mousemove", onPan);
+      document.removeEventListener("mouseup", endPan);
+    }
+    if (el.stage) {
+      el.stage.addEventListener("mousedown", (e) => {
+        // Space held → pan on any button.  Middle mouse (button 1) → pan without space.
+        const spaceHeld = el.stage.classList.contains("pan-ready");
+        const middleBtn = e.button === 1;
+        if (spaceHeld || middleBtn) {
+          e.preventDefault();
+          startPan(e);
+        }
+      });
+      // Prevent browser's default middle-click autoscroll cursor.
+      el.stage.addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDefault(); });
+    }
 
     // export modal
     el.exportBtn.addEventListener("click", openSheet);
@@ -6183,17 +6302,15 @@
         e.preventDefault();
         if (typeof seekTo === "function") seekTo(STATE.duration);
       } else if ((e.key === "f" || e.key === "F") && !e.metaKey && !e.ctrlKey) {
-        // v18.8: F = fit selected clip; Shift+F = fit all.
+        // v18.9: F now fits the CANVAS to viewport (Photoshop/Figma
+        // standard).  Shift+F fits the TIMELINE (previous v18.8
+        // behavior).  This matches user expectation — in every major
+        // editor, F is a canvas-viewport operation.
         e.preventDefault();
         if (e.shiftKey) {
-          zoomFitAll();
-        } else if (clipCtx) {
-          const ec = selectedEventClip ? selectedEventClip.ec : selectedAudioClip;
-          const layer = selectedEventClip ? selectedEventClip.layer : null;
-          const absStart = layer ? layer.start + ec.start : ec.start;
-          zoomToRange(absStart, absStart + ec.duration);
+          zoomFitAll();  // timeline fit
         } else {
-          zoomFitAll();
+          fitZoom();     // canvas fit — sets STATE.zoom = fit, STATE.zoomMode = "fit"
         }
       }
     });
