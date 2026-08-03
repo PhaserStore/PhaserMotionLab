@@ -97,21 +97,23 @@
 
   // Effect modules. transform:true => only active when the layer's
   // allowTransform flag is on (scale/rotate/large translate).
+  //
+  // v18.7: FX_LIBRARY is now a compatibility shim.  Every effect is a
+  // proper timeline clip via FX_EVENTS (see below).  This array
+  // remains only so the existing EFFECTS dictionary and the
+  // FX_TRANSFORM set continue to resolve the transform-gate check.
+  // The right-panel UI no longer renders fx-toggle buttons; every
+  // effect creates a clip on the layer's timeline.
   const FX_LIBRARY = [
     { key: "blurIn",        label: "Blur-in",           transform: false },
-    { key: "hardCut",       label: "Hard Cut",          transform: false },
     { key: "flickerBlocks", label: "Flicker Blocks",    transform: false },
     { key: "rgbOffset",     label: "RGB Offset",        transform: false },
-    { key: "scanReveal",    label: "Scan Reveal",       transform: false },
-    { key: "dataBreakup",   label: "Data Breakup",      transform: false },
     { key: "hudOverlay",    label: "HUD Overlay",       transform: false },
     { key: "pulseGlow",     label: "Pulse Glow",        transform: false },
     { key: "symbolTrans",   label: "Symbol Transition", transform: false },
     { key: "textFlicker",   label: "Text Flicker",      transform: false },
     { key: "lineDraw",      label: "Line Draw",         transform: false },
     { key: "trimPaths",     label: "Trim Paths",        transform: false },
-    { key: "radarSweep",    label: "Radar Sweep",       transform: false },
-    { key: "coordBlink",    label: "Coordinate Blink",  transform: false },
     { key: "dataStream",    label: "Data Stream",       transform: false },
     { key: "oscilloscope",  label: "Oscilloscope",      transform: false },
     { key: "digitalWave",   label: "Digital Wave",      transform: false },
@@ -120,64 +122,88 @@
   ];
   const FX_TRANSFORM = new Set(FX_LIBRARY.filter((f) => f.transform).map((f) => f.key));
 
-  // Event-only effects: short timeline events, not sustained toggles.
-  // Reference-style hits — brief signal interruptions rather than
-  // permanent visual effects.
-  //
-  // Grouped for UI display. Each event has a stable key, human label,
-  // default duration, and a `group` tag ("core" | "signal" | "motion" |
-  // "overlay"). New events (Micro Jitter through Coordinate Shift) are
-  // added to give a richer micrographic vocabulary.
+  // Every effect available to the user is now a timeline clip.  Each
+  // entry provides:
+  //   key       — internal id used for EVENT_EFFECTS / EFFECTS lookup
+  //   label     — user-visible name
+  //   defDur    — default duration in seconds, OR "layer" to fill the
+  //               layer's remaining duration (used for sustained-style
+  //               effects that traditionally applied for the layer's
+  //               whole life).
+  //   placement — "playhead" (default) creates the clip at the
+  //               current playhead; "layerStart" creates it at the
+  //               beginning of the layer (for reveal-style entries).
+  //   group     — UI grouping tag.
+  //   sustained — true = evaluate via EFFECTS[key] with clip-local
+  //               wall-clock time (the migrated FX_LIBRARY effects);
+  //               false/absent = evaluate via EVENT_EFFECTS[key] with
+  //               a progress value p in [0..1] over the clip window.
   const FX_EVENTS = [
-    // --- CORE 12 (kept from v5) ---
+    // --- CORE clip events (existing event-style effects) ---
     { key: "focusSnap",       label: "Focus Snap",       defDur: 0.20, group: "core" },
     { key: "signalInterrupt", label: "Signal Interrupt", defDur: 0.10, group: "core" },
     { key: "frameHold",       label: "Frame Hold",       defDur: 0.16, group: "core" },
     { key: "rgbSpike",        label: "RGB Spike",        defDur: 0.12, group: "core" },
-    { key: "hardCutEvent",    label: "Hard Cut Event",   defDur: 0.08, group: "core" },
+    { key: "hardCutEvent",    label: "Hard Cut",         defDur: 0.08, group: "core" },
     { key: "radarSweep",      label: "Radar Sweep",      defDur: 1.50, group: "core" },
-    { key: "scanRevealEvent", label: "Scan Reveal",      defDur: 0.90, group: "core" },
+    { key: "scanRevealEvent", label: "Scan Reveal",      defDur: 0.90, group: "core", placement: "layerStart" },
     { key: "coordBlinkEvt",   label: "Coordinate Blink", defDur: 0.30, group: "core" },
     { key: "dataBreakEvent",  label: "Data Break",       defDur: 0.18, group: "core" },
     { key: "pathEnergize",    label: "Path Energize",    defDur: 1.20, group: "core" },
     { key: "layerSwap",       label: "Layer Swap",       defDur: 0.10, group: "core" },
     { key: "textReplace",     label: "Text Replace",     defDur: 0.30, group: "core" },
-    // --- 20 NEW micrographic presets ---
+    // --- REVEAL effects (migrated from FX_LIBRARY, default at layer start) ---
+    { key: "blurIn",       label: "Blur In",           defDur: 0.80, group: "reveal",  placement: "layerStart", sustained: true },
+    { key: "lineDraw",     label: "Line Draw",         defDur: 1.20, group: "reveal",  placement: "layerStart", sustained: true },
+    { key: "trimPaths",    label: "Trim Paths",        defDur: 1.00, group: "reveal",  placement: "layerStart", sustained: true },
+    { key: "symbolTrans",  label: "Symbol Transition", defDur: 0.50, group: "reveal",  sustained: true },
+    // --- SUSTAINED effects (migrated from FX_LIBRARY, cover full layer by default) ---
+    { key: "pulseGlow",    label: "Pulse Glow",   defDur: "layer", group: "sustained", placement: "layerStart", sustained: true },
+    { key: "hudOverlay",   label: "HUD Overlay",  defDur: "layer", group: "sustained", placement: "layerStart", sustained: true },
+    { key: "dataStream",   label: "Data Stream",  defDur: "layer", group: "sustained", placement: "layerStart", sustained: true },
+    { key: "oscilloscope", label: "Oscilloscope", defDur: "layer", group: "sustained", placement: "layerStart", sustained: true },
+    { key: "digitalWave",  label: "Digital Wave", defDur: "layer", group: "sustained", placement: "layerStart", sustained: true },
+    { key: "flickerBlocks",label: "Flicker Blocks", defDur: "layer", group: "sustained", placement: "layerStart", sustained: true },
+    { key: "rgbOffset",    label: "RGB Offset",   defDur: "layer", group: "sustained", placement: "layerStart", sustained: true },
+    { key: "textFlicker",  label: "Text Flicker", defDur: "layer", group: "sustained", placement: "layerStart", sustained: true },
+    { key: "signalShake",  label: "Signal Shake", defDur: "layer", group: "sustained", placement: "layerStart", sustained: true },
+    { key: "hologramTilt", label: "Hologram Tilt",defDur: "layer", group: "sustained", placement: "layerStart", sustained: true },
+    // --- MOTION events ---
     { key: "microJitter",     label: "Micro Jitter",     defDur: 0.30, group: "motion" },
+    { key: "magneticSnap",    label: "Magnetic Snap",    defDur: 0.15, group: "motion" },
+    { key: "vectorLock",      label: "Vector Lock",      defDur: 0.25, group: "motion" },
+    { key: "microZoomPop",    label: "Micro Zoom Pop",   defDur: 0.20, group: "motion" },
+    { key: "coordShift",      label: "Coordinate Shift", defDur: 0.30, group: "motion" },
+    { key: "vectorBeam",      label: "Vector Beam",      defDur: 0.35, group: "motion" },
+    // --- OVERLAY events ---
     { key: "hudPulse",        label: "HUD Pulse",        defDur: 0.40, group: "overlay" },
     { key: "gridFlash",       label: "Grid Flash",       defDur: 0.20, group: "overlay" },
+    { key: "lineTrace",       label: "Line Trace",       defDur: 1.20, group: "overlay", placement: "layerStart" },
+    { key: "targetPing",      label: "Target Ping",      defDur: 0.60, group: "overlay" },
+    { key: "waveformBurst",   label: "Waveform Burst",   defDur: 0.35, group: "overlay" },
+    { key: "scanlineSurge",   label: "Scanline Surge",   defDur: 0.60, group: "overlay" },
+    // --- SIGNAL / GLITCH events ---
     { key: "terminalBlink",   label: "Terminal Blink",   defDur: 0.35, group: "signal" },
     { key: "signalDrop",      label: "Signal Drop",      defDur: 0.18, group: "signal" },
-    { key: "magneticSnap",    label: "Magnetic Snap",    defDur: 0.15, group: "motion" },
     { key: "phaseShift",      label: "Phase Shift",      defDur: 0.50, group: "signal" },
     { key: "dataScramble",    label: "Data Scramble",    defDur: 0.30, group: "signal" },
-    { key: "lineTrace",       label: "Line Trace",       defDur: 1.20, group: "overlay" },
-    { key: "vectorLock",      label: "Vector Lock",      defDur: 0.25, group: "motion" },
-    { key: "targetPing",      label: "Target Ping",      defDur: 0.60, group: "overlay" },
     { key: "frequencyJump",   label: "Frequency Jump",   defDur: 0.25, group: "signal" },
-    { key: "waveformBurst",   label: "Waveform Burst",   defDur: 0.35, group: "overlay" },
-    { key: "microZoomPop",    label: "Micro Zoom Pop",   defDur: 0.20, group: "motion" },
     { key: "digitalTear",     label: "Digital Tear",     defDur: 0.18, group: "signal" },
     { key: "syncFlash",       label: "Sync Flash",       defDur: 0.08, group: "signal" },
-    { key: "scanlineSurge",   label: "Scanline Surge",   defDur: 0.60, group: "overlay" },
     { key: "noiseGate",       label: "Noise Gate",       defDur: 0.30, group: "signal" },
     { key: "ghostFrame",      label: "Ghost Frame",      defDur: 0.25, group: "signal" },
-    { key: "coordShift",      label: "Coordinate Shift", defDur: 0.30, group: "motion" },
-    // --- HIGH-END micrographic presets ---
     { key: "lostSignal",      label: "Lost Signal",      defDur: 0.45, group: "signal" },
-    { key: "vectorBeam",      label: "Vector Beam",      defDur: 0.35, group: "motion" },
-    // --- ADVANCED effects (canvas-processed) ---
-    // Pixel Sweep uses the rasterize → process → composite pipeline
-    // rather than the CSS-effect pipeline the other 34 events use.
-    // Works on text / SVG / image / video uniformly because the
-    // rasterizer already handles all four kinds.
     { key: "pixelSweep",      label: "Pixel Sweep",      defDur: 0.60, group: "signal" },
   ];
   const FX_EVENT_KEYS = new Set(FX_EVENTS.map((f) => f.key));
+  // Lookup: key → definition (for placement / defDur / sustained flag)
+  const FX_EVENT_DEF = new Map(FX_EVENTS.map((f) => [f.key, f]));
   const FX_EVENT_GROUPS = [
-    { id: "core",    label: "Core" },
-    { id: "signal",  label: "Signal / Glitch" },
-    { id: "motion",  label: "Motion" },
+    { id: "reveal",    label: "Reveal" },
+    { id: "sustained", label: "Sustained" },
+    { id: "core",      label: "Core" },
+    { id: "motion",    label: "Motion" },
+    { id: "signal",    label: "Signal / Glitch" },
     { id: "overlay", label: "Overlay / HUD" },
   ];
 
@@ -278,18 +304,18 @@
      fx: effect keys. patch: scene params. transform stays off unless the
      preset explicitly needs it (none of the defaults rotate/zoom). */
   const PRESETS = {
-    "Signal System":       { fx: ["scanReveal","rgbOffset","hudOverlay","flickerBlocks","dataBreakup"], patch: { flicker: 38, rgbSplit: 32, scanline: 55, noise: 26 } },
-    "Hardware Motion":     { fx: ["scanReveal","blurIn","hudOverlay","pulseGlow"], patch: { flicker: 26, scanline: 60, glow: 55, blur: 14 } },
-    "Vector Scan":         { fx: ["scanReveal","radarSweep","hudOverlay","lineDraw"], patch: { flicker: 30, scanline: 75, glow: 45, noise: 16 } },
-    "Signal Loss":         { fx: ["hardCut","dataBreakup","rgbOffset","flickerBlocks","scanReveal"], patch: { glitch: 60, flicker: 78, rgbSplit: 55, scanline: 62, noise: 55 } },
-    "Data Pulse":          { fx: ["pulseGlow","rgbOffset","dataStream","hardCut"], patch: { glow: 70, rgbSplit: 40, scanline: 55, flicker: 30 } },
+    "Signal System":       { fx: ["scanRevealEvent","rgbOffset","hudOverlay","flickerBlocks","dataBreakEvent"], patch: { flicker: 38, rgbSplit: 32, scanline: 55, noise: 26 } },
+    "Hardware Motion":     { fx: ["scanRevealEvent","blurIn","hudOverlay","pulseGlow"], patch: { flicker: 26, scanline: 60, glow: 55, blur: 14 } },
+    "Vector Scan":         { fx: ["scanRevealEvent","radarSweep","hudOverlay","lineDraw"], patch: { flicker: 30, scanline: 75, glow: 45, noise: 16 } },
+    "Signal Loss":         { fx: ["hardCutEvent","dataBreakEvent","rgbOffset","flickerBlocks","scanRevealEvent"], patch: { glitch: 60, flicker: 78, rgbSplit: 55, scanline: 62, noise: 55 } },
+    "Data Pulse":          { fx: ["pulseGlow","rgbOffset","dataStream","hardCutEvent"], patch: { glow: 70, rgbSplit: 40, scanline: 55, flicker: 30 } },
     "Clean Motion Poster": { fx: ["blurIn","pulseGlow"], patch: { flicker: 10, blur: 16, scanline: 14, noise: 6, glow: 45 } },
-    "CRT Monitor":         { fx: ["scanReveal","dataBreakup","oscilloscope","pulseGlow"], patch: { flicker: 28, blur: 10, scanline: 95, noise: 34, glow: 40 } },
+    "CRT Monitor":         { fx: ["scanRevealEvent","dataBreakEvent","oscilloscope","pulseGlow"], patch: { flicker: 28, blur: 10, scanline: 95, noise: 34, glow: 40 } },
     "Interface Intro":     { fx: ["blurIn","lineDraw","hudOverlay","rgbOffset"], patch: { flicker: 26, scanline: 50, rgbSplit: 30, glow: 45 }, stagger: true },
-    "Hardware Motion Intro":{ fx: ["blurIn","scanReveal","hudOverlay","coordBlink","trimPaths"], patch: { flicker: 24, scanline: 55, glow: 50, blur: 12 }, stagger: true },
-    "Terrain Scanner":     { fx: ["lineDraw","radarSweep","coordBlink","scanReveal","dataStream","rgbOffset"], patch: { flicker: 22, scanline: 60, rgbSplit: 22, glow: 50, noise: 14 } },
-    "Detroit Techno":      { fx: ["hardCut","rgbOffset","scanReveal","flickerBlocks","pulseGlow"], patch: { flicker: 42, rgbSplit: 46, scanline: 42, glow: 55, bassReaction: 90, motionIntensity: 85 } },
-    "Data Terminal":       { fx: ["textFlicker","hudOverlay","coordBlink","dataStream","oscilloscope","scanReveal"], patch: { flicker: 34, scanline: 60, noise: 20, glow: 40 } },
+    "Hardware Motion Intro":{ fx: ["blurIn","scanRevealEvent","hudOverlay","coordBlinkEvt","trimPaths"], patch: { flicker: 24, scanline: 55, glow: 50, blur: 12 }, stagger: true },
+    "Terrain Scanner":     { fx: ["lineDraw","radarSweep","coordBlinkEvt","scanRevealEvent","dataStream","rgbOffset"], patch: { flicker: 22, scanline: 60, rgbSplit: 22, glow: 50, noise: 14 } },
+    "Detroit Techno":      { fx: ["hardCutEvent","rgbOffset","scanRevealEvent","flickerBlocks","pulseGlow"], patch: { flicker: 42, rgbSplit: 46, scanline: 42, glow: 55, bassReaction: 90, motionIntensity: 85 } },
+    "Data Terminal":       { fx: ["textFlicker","hudOverlay","coordBlinkEvt","dataStream","oscilloscope","scanRevealEvent"], patch: { flicker: 34, scanline: 60, noise: 20, glow: 40 } },
   };
 
   /* ---------------- DOM ---------------- */
@@ -1115,8 +1141,8 @@
       visible: true, locked: false,
       transform: { cx: 0, cy: 0, wPct: (wPx / A.w) * 100, hPct: (hPx / A.h) * 100, rot: 0, opacity: 100 },
       start: 0, duration: STATE.duration,
-      fx: [], allowTransform: false,
-      clips: [],   // timeline event clips: { id, fxKey, start, duration }
+      allowTransform: false,
+      clips: [],   // timeline event clips (unified system): { id, fxKey, start, duration }
       recipe: makeRecipe(id * 131),
       originalColors: null,
     };
@@ -1169,7 +1195,7 @@
     addLayerFromAsset(asset);
     const dup = layers[layers.length - 1];
     dup.transform = { ...layer.transform, cx: layer.transform.cx + 4, cy: layer.transform.cy + 4 };
-    dup.fx = layer.fx.slice(); dup.allowTransform = layer.allowTransform;
+    dup.allowTransform = layer.allowTransform;
     dup.clips = layer.clips.map((c) => ({ ...c, id: ++idSeq }));
     dup.start = layer.start; dup.duration = layer.duration;
     renderLayers(); renderTimeline(); paintIfPaused();
@@ -1373,23 +1399,11 @@
     el.layerLock.textContent = selectedLayer.locked ? "Unlock" : "Lock";
     el.layerLock.classList.toggle("active", selectedLayer.locked);
     el.allowTransform.checked = selectedLayer.allowTransform;
-    // Legacy sustained-fx toggle grid — kept in the DOM for backward
-    // compatibility (AI Director / presets still write to layer.fx), but
-    // hidden from the primary UI. See CSS `.fx-toggle-grid { display:none }`.
-    el.fxToggleGrid.innerHTML = "";
-    FX_LIBRARY.forEach((fx) => {
-      const isT = FX_TRANSFORM.has(fx.key);
-      const b = document.createElement("button");
-      b.className = "fx-toggle" + (selectedLayer.fx.includes(fx.key) ? " on" : "") + (isT ? " fx-transform" : "");
-      b.innerHTML = `<span class="fx-dot"></span>${fx.label}`;
-      b.addEventListener("click", () => {
-        const i = selectedLayer.fx.indexOf(fx.key);
-        if (i >= 0) selectedLayer.fx.splice(i, 1); else selectedLayer.fx.push(fx.key);
-        b.classList.toggle("on"); renderTimeline();
-        if (selectedLayer.fx.length && !STATE.playing) startPlayback(); else if (!selectedLayer.fx.length) paintIfPaused();
-      });
-      el.fxToggleGrid.appendChild(b);
-    });
+    // v18.7: fx-toggle grid removed.  Every effect is now a timeline
+    // clip created via the fx-event grid below.  The DOM node for the
+    // legacy grid stays in the HTML (empty) so the layout doesn't
+    // shift; we just leave its innerHTML blank.
+    if (el.fxToggleGrid) el.fxToggleGrid.innerHTML = "";
     // ---- PRIMARY UI: Event Clip grid, grouped by category ----
     if (el.fxEventGrid) {
       el.fxEventGrid.innerHTML = "";
@@ -1627,7 +1641,7 @@
       // main sustained clip
       const clip = document.createElement("div"); clip.className = "tl-clip" + (layer.kind === "VIDEO" ? " video" : "") + (layer === selectedLayer && !selectedAudioClip ? " selected" : "");
       clip.style.left = (layer.start * TL.pxPerSec) + "px"; clip.style.width = Math.max(14, layer.duration * TL.pxPerSec) + "px";
-      const summary = (layer.fx.length ? layer.fx.length + " fx" : "no fx") + (layer.clips.length ? " · " + layer.clips.length + " ev" : "");
+      const summary = layer.clips.length ? layer.clips.length + " clip" + (layer.clips.length === 1 ? "" : "s") : "no clips";
       clip.innerHTML = `<span class="tl-handle left"></span><span class="tl-clip-label">${layer.name} \u00b7 ${summary}</span><span class="tl-handle right"></span>`;
       clip.addEventListener("mousedown", (e) => startClipDrag(e, layer, clip));
       clip.addEventListener("click", (e) => { e.stopPropagation(); selectLayer(layer); selectAudioClip(null); });
@@ -2211,13 +2225,36 @@
   /* ---- Event clip creation ---- */
   function createEventClip(fxKey, layer, startTime, duration) {
     if (!layer) { toast("Select a layer first"); return null; }
-    const def = FX_EVENTS.find((f) => f.key === fxKey);
-    const dur = duration || (def ? def.defDur : 0.2);
-    let start = startTime != null ? startTime : STATE.time;
-    // clamp to layer window
-    start = clamp(start - layer.start, 0, Math.max(0, layer.duration - dur));
-    start = applySnap(start + layer.start) - layer.start;
-    const clip = { id: ++idSeq, fxKey, start, duration: dur, enabled: true, params: defaultParamsFor(fxKey) };
+    const def = FX_EVENT_DEF.get(fxKey);
+    // v18.7: honor placement + "layer" defDur so migrated sustained
+    // effects fill the layer duration and reveal effects anchor at
+    // layer start rather than playhead.
+    let start;
+    if (startTime != null) {
+      // caller specified — trust them
+      start = startTime;
+    } else if (def && def.placement === "layerStart") {
+      start = layer.start;
+    } else {
+      start = STATE.time;
+    }
+    // Compute duration.  "layer" sentinel = fill from start to end of layer.
+    let dur;
+    if (duration != null) {
+      dur = duration;
+    } else if (def && def.defDur === "layer") {
+      const relStart = start - layer.start;
+      dur = Math.max(0.05, layer.duration - relStart);
+    } else {
+      dur = (def && typeof def.defDur === "number") ? def.defDur : 0.2;
+    }
+    // clamp start within the layer window
+    let localStart = clamp(start - layer.start, 0, Math.max(0, layer.duration - Math.min(dur, 0.05)));
+    // apply timeline snap in absolute coords, then re-localize
+    localStart = applySnap(localStart + layer.start) - layer.start;
+    // clamp duration so the clip fits inside the layer
+    dur = Math.min(dur, Math.max(0.05, layer.duration - localStart));
+    const clip = { id: ++idSeq, fxKey, start: localStart, duration: dur, enabled: true, params: defaultParamsFor(fxKey) };
     layer.clips.push(clip);
     // optional SFX attachment
     if (STATE.attachSfx && STATE.attachSfxId) {
@@ -2813,6 +2850,30 @@
     if (selectedLayer) updateSelectionBox();
   }
 
+  /* v18.7 unified clip effect evaluator.  Dispatches by the effect
+     definition's `sustained` flag:
+       - sustained clips use the legacy EFFECTS[key](sig, clipLocalTime)
+         function (wall-clock-time style that evolves indefinitely).
+       - event clips use EVENT_EFFECTS[key](p, sig, params) with p as
+         normalized progress across the clip window.
+     Returns the delta object `d` or null when the effect is gated off
+     (transform-only effect on a non-allowTransform layer).
+     `sceneTime` is the absolute timeline time; `p` is the normalized
+     progress across this clip's window.
+  */
+  function evaluateClipDelta(clip, layer, sceneTime, p, sig, allowT) {
+    const def = FX_EVENT_DEF.get(clip.fxKey);
+    const isTransformOnly = FX_TRANSFORM.has(clip.fxKey);
+    if (isTransformOnly && !allowT) return null;
+    if (def && def.sustained) {
+      const mod = EFFECTS[clip.fxKey]; if (!mod) return null;
+      const clipLocal = sceneTime - (layer.start + clip.start);
+      return mod(sig, clipLocal) || null;
+    }
+    const mod = EVENT_EFFECTS[clip.fxKey]; if (!mod) return null;
+    return mod(p, sig, clip.params) || null;
+  }
+
   function composeLayer(layer, t, sig, sceneTime) {
     const T = layer.transform;
     // static base transform (position/size/rotation set by user)
@@ -2823,36 +2884,18 @@
     let radarBar = null, scanMask = null, freeze = false;
     const allowT = layer.allowTransform;
 
-    for (const key of layer.fx) {
-      const mod = EFFECTS[key]; if (!mod) continue;
-      const isT = FX_TRANSFORM.has(key);
-      if (isT && !allowT) continue; // gate transform effects
-      const d = mod(sig, t) || {};
-      // appearance
-      if (d.opacity !== undefined) opacity *= d.opacity;
-      if (d.opacityWave !== undefined) opacity *= d.opacityWave;
-      if (d.blur) blur += d.blur;
-      if (d.rgb) rgb = Math.max(rgb, d.rgb);
-      if (d.glow) glow = Math.max(glow, d.glow);
-      if (d.hud) { hud = true; hudFlicker = d.hudFlicker; }
-      if (d.flash) { flash = d.flash; flashA = d.flashA; }
-      if (d.scanBoost) scanBoost = Math.max(scanBoost, d.scanBoost);
-      if (d.breakup) breakup = Math.max(breakup, d.breakup);
-      if (d.pathDraw !== undefined) pathDraw = d.pathDraw;
-      if (d.pathTrim !== undefined) pathTrim = d.pathTrim;
-      if (d.skew) { if (allowT) skew += d.skew; }
-      // safe scale (blur-in 0.96->1) is allowed even without transform, it's tiny
-      if (d.scaleSafe !== undefined) extraScale *= d.scaleSafe;
-      // transform-only
-      if (isT) { if (d.tx) tx += d.tx; if (d.ty) ty += d.ty; if (d.rot) rot += d.rot; if (d.rotX) rotX += d.rotX; if (d.rotY) rotY += d.rotY; }
-    }
+    // v18.7: layer.fx sustained-toggle system removed.  Every effect
+    // is now a timeline clip.  The single loop below handles both
+    // sustained-style clips (evaluated with wall-clock time via
+    // EFFECTS[]) and event-style clips (evaluated with progress p via
+    // EVENT_EFFECTS[]) through the unified evaluateClipDelta().
 
     // --- Event clips: apply modules that are currently within their window ---
     if (sceneTime !== undefined) {
       const active = activeEventClipsAt(layer, sceneTime);
       for (const { c, p } of active) {
-        const mod = EVENT_EFFECTS[c.fxKey]; if (!mod) continue;
-        const d = mod(p, sig, c.params) || {};
+        const d = evaluateClipDelta(c, layer, sceneTime, p, sig, allowT);
+        if (!d) continue;
         // opacity mix: params.opacityMix (0-100) scales how much of the event's opacity effect is felt.
         const mix = c.params && c.params.opacityMix !== undefined ? c.params.opacityMix / 100 : 1;
         if (d.opacity !== undefined) { const eff = 1 - (1 - d.opacity) * mix; opacity *= eff; }
@@ -2876,6 +2919,14 @@
         if (d.ty) ty += d.ty;
         if (d.rot) rot += d.rot;
         if (d.scaleSafe !== undefined) extraScale *= d.scaleSafe;
+        // v18.7: migrated sustained effects (hologramTilt, digitalWave)
+        // emit rotX/rotY/skew.  These are transform-gated at the
+        // evaluator level (evaluateClipDelta returns null when a
+        // transform-only effect fires on a non-allowTransform layer),
+        // so it's safe to accumulate here without re-checking.
+        if (d.rotX) rotX += d.rotX;
+        if (d.rotY) rotY += d.rotY;
+        if (d.skew) skew += d.skew;
         // New per-layer channels used by drawExportFrame:
         if (d.tear !== undefined) layer._tear = d.tear; else if (layer._tear !== undefined) layer._tear = 0;
         if (d.targetPing !== undefined) layer._targetPing = d.targetPing; else if (layer._targetPing !== undefined) layer._targetPing = null;
@@ -3080,11 +3131,22 @@
 
   function animateSubLayers(layer, t, sig, allowT) {
     const fl = STATE.flicker / 100;
+    // v18.7: detect an active flickerBlocks clip at current time
+    // (was `layer.fx.includes("flickerBlocks")` under the old system).
+    const now = STATE.time;
+    let flickerBlocksActive = false;
+    if (layer.clips && layer.clips.length) {
+      for (const c of layer.clips) {
+        if (c.fxKey !== "flickerBlocks" || c.enabled === false) continue;
+        const s = layer.start + c.start, e = s + c.duration;
+        if (now >= s - 0.001 && now <= e + 0.001) { flickerBlocksActive = true; break; }
+      }
+    }
     layer.subLayers.forEach((node) => {
       const rc = node._recipe; if (!rc) return;
       const lt = t - rc.delay, band = rc.band === "bass" ? sig.bass : rc.band === "mid" ? sig.mid : sig.high;
       let op = 0.78 + 0.22 * Math.sin(lt * rc.freq * 1.3 + rc.phase);
-      if (layer.fx.includes("flickerBlocks") && Math.random() < 0.03 * fl * rc.flickerBias) op *= 0.25;
+      if (flickerBlocksActive && Math.random() < 0.03 * fl * rc.flickerBias) op *= 0.25;
       let transform = "";
       if (allowT) { const dx = Math.sin(lt * rc.freq + rc.phase) * rc.ampX * (1 + band * 2), dy = Math.cos(lt * rc.freq * 0.7 + rc.phase) * rc.ampY * (1 + band * 1.5); node.style.transformBox = "fill-box"; node.style.transformOrigin = "center"; transform = `translate(${dx.toFixed(2)}px, ${dy.toFixed(2)}px)`; }
       node.style.transform = transform; node.style.opacity = clamp01(op).toFixed(2);
@@ -3156,7 +3218,17 @@
     const targets = (toAll || !selectedLayer) ? layers : [selectedLayer];
     if (!targets.length) { toast("Add a layer first"); return; }
     targets.forEach((layer, i) => {
-      layer.fx = p.fx.slice();
+      // v18.7: preset "fx" list becomes clips on the layer's timeline.
+      // Each preset key gets a clip using its FX_EVENT_DEF metadata
+      // (defDur, placement).  Any pre-existing clip of the same
+      // fxKey is removed first so re-applying a preset doesn't
+      // stack duplicates.
+      const presetKeys = new Set(p.fx || []);
+      layer.clips = (layer.clips || []).filter((c) => !presetKeys.has(c.fxKey));
+      (p.fx || []).forEach((fxKey) => {
+        if (!FX_EVENT_DEF.has(fxKey)) return;   // unknown key — skip
+        createEventClip(fxKey, layer);
+      });
       // presets never force transform motion on; keep it as the user set it
       if (p.stagger && targets.length > 1) { layer.recipe = makeRecipe((layer.id * 131 + i * 997) >>> 0); layer.start = Math.min(STATE.duration * 0.5, i * 0.25); }
       else if (targets.length > 1) { layer.recipe = makeRecipe((layer.id * 131 + i * 331) >>> 0); }
@@ -3182,12 +3254,12 @@
       ch.push("transform motion disabled", "rotation reset to 0", "scale pulse disabled");
     }),
     _rule(["scanlines and rgb only", "scanline and rgb only", "scanlines only", "rgb only", "only opacity", "only appearance"], "Appearance only", (ch) => {
-      layerFxAll(["scanReveal", "rgbOffset", "flickerBlocks"]);
+      layerFxAll(["scanRevealEvent", "rgbOffset", "flickerBlocks"]);
       layers.forEach((l) => l.allowTransform = false);
-      ch.push("sustained fx set to scanReveal + rgbOffset + flickerBlocks", "transform motion disabled");
+      ch.push("sustained clips set to scanReveal + rgbOffset + flickerBlocks", "transform motion disabled");
     }),
     _rule(["cleaner", "clean", "minimal", "elegant"], "Cleaner", (ch) => { set("glitch", 10); set("noise", 8); set("flicker", 14); bump("blur", -4); layerFxAll(["blurIn", "pulseGlow"]); ch.push("glitch/noise/flicker lowered", "layer fx = Blur-in + Pulse Glow"); }),
-    _rule(["more aggressive", "aggressive", "harder", "intense", "harsh"], "Aggressive", (ch) => { bump("glitch", 25); bump("rgbSplit", 20); bump("bassReaction", 20); bump("motionIntensity", 15); layerFxAll(["hardCut", "rgbOffset", "flickerBlocks", "dataBreakup", "pulseGlow"]); ch.push("glitch/RGB/bass reaction increased", "layer fx = hard cut + RGB + flicker + breakup + glow"); }),
+    _rule(["more aggressive", "aggressive", "harder", "intense", "harsh"], "Aggressive", (ch) => { bump("glitch", 25); bump("rgbSplit", 20); bump("bassReaction", 20); bump("motionIntensity", 15); layerFxAll(["hardCutEvent", "rgbOffset", "flickerBlocks", "dataBreakEvent", "pulseGlow"]); ch.push("glitch/RGB/bass reaction increased", "clips added: hard cut + RGB + flicker + breakup + glow"); }),
     _rule(["synced to the beat", "more synced", "sync to the beat", "beat sync", "on beat", "on peaks"], "Beat sync", (ch) => {
       bump("beatSensitivity", 25); bump("bassReaction", 25); bump("peakThreshold", -10); bump("syncTightness", 20); bump("motionIntensity", 15);
       STATE.audioReactive = true; if (el.audioReactiveToggle) el.audioReactiveToggle.checked = true;
@@ -3238,8 +3310,27 @@
   const bump = (k, d) => (STATE[k] = clampP(STATE[k] + d));
   const set = (k, v) => (STATE[k] = clampP(v));
   const clampP = (v) => Math.max(0, Math.min(100, v));
-  function layerFxAll(arr) { (selectedLayer ? [selectedLayer] : layers).forEach((l) => l.fx = arr.slice()); renderInspector(); renderTimeline(); }
-  function layerFxAdd(fx) { (selectedLayer ? [selectedLayer] : layers).forEach((l) => { if (!l.fx.includes(fx)) l.fx.push(fx); }); renderInspector(); renderTimeline(); }
+  // v18.7: these helpers now create timeline clips rather than
+  // mutating a per-layer sustained-effect array.  The behavior stays
+  // the same from an AI Director perspective — same effect keys get
+  // applied to same layers — but users see them as visible timeline
+  // clips they can edit or remove.
+  function layerFxAll(arr) {
+    (selectedLayer ? [selectedLayer] : layers).forEach((l) => {
+      // Replace any existing preset-style sustained clips with the new set.
+      const presetKeys = new Set(arr);
+      l.clips = (l.clips || []).filter((c) => !presetKeys.has(c.fxKey));
+      arr.forEach((fxKey) => { if (FX_EVENT_DEF.has(fxKey)) createEventClip(fxKey, l); });
+    });
+    renderInspector(); renderTimeline();
+  }
+  function layerFxAdd(fx) {
+    (selectedLayer ? [selectedLayer] : layers).forEach((l) => {
+      const already = (l.clips || []).some((c) => c.fxKey === fx);
+      if (!already && FX_EVENT_DEF.has(fx)) createEventClip(fx, l);
+    });
+    renderInspector(); renderTimeline();
+  }
   function runAI() {
     const text = el.aiPrompt.value.toLowerCase().trim();
     if (!text) { el.aiEcho.innerHTML = 'Type a direction first, like <em>"make it more synced to the beat"</em>.'; return; }
@@ -4064,31 +4155,11 @@
       radarBar: null, scanMask: null, freeze: false,
       textSwap: null, layerSwap: 0,
     };
-    // sustained effects
-    for (const key of layer.fx) {
-      const mod = EFFECTS[key]; if (!mod) continue;
-      const isT = FX_TRANSFORM.has(key); if (isT && !allowT) continue;
-      const d = mod(sig, localTime) || {};
-      if (d.opacity !== undefined) s.opacity *= d.opacity;
-      if (d.opacityWave !== undefined) s.opacity *= d.opacityWave;
-      if (d.blur) s.blur += d.blur;
-      if (d.rgb) s.rgb = Math.max(s.rgb, d.rgb);
-      if (d.glow) s.glow = Math.max(s.glow, d.glow);
-      if (d.hud) { s.hud = true; s.hudFlicker = d.hudFlicker; }
-      if (d.flash) { s.flash = d.flash; s.flashA = d.flashA; }
-      if (d.scanBoost) s.scanBoost = Math.max(s.scanBoost, d.scanBoost);
-      if (d.breakup) s.breakup = Math.max(s.breakup, d.breakup);
-      if (d.pathDraw !== undefined) s.pathDraw = d.pathDraw;
-      if (d.pathTrim !== undefined) s.pathTrim = d.pathTrim;
-      if (d.skew && allowT) s.skew += d.skew;
-      if (d.scaleSafe !== undefined) s.extraScale *= d.scaleSafe;
-      if (isT) { if (d.tx) s.tx += d.tx; if (d.ty) s.ty += d.ty; if (d.rot) s.rot += d.rot; if (d.rotX) s.rotX += d.rotX; if (d.rotY) s.rotY += d.rotY; }
-    }
-    // event clips
+    // v18.7: unified clip evaluator handles both sustained and event clips
     const active = activeEventClipsAt(layer, sceneTime);
     for (const { c, p } of active) {
-      const mod = EVENT_EFFECTS[c.fxKey]; if (!mod) continue;
-      const d = mod(p, sig, c.params) || {};
+      const d = evaluateClipDelta(c, layer, sceneTime, p, sig, allowT);
+      if (!d) continue;
       const mix = c.params && c.params.opacityMix !== undefined ? c.params.opacityMix / 100 : 1;
       if (d.opacity !== undefined) { const eff = 1 - (1 - d.opacity) * mix; s.opacity *= eff; }
       if (d.opacityWave !== undefined) s.opacity *= d.opacityWave;
@@ -4105,10 +4176,13 @@
       if (d.scanMask !== undefined) s.scanMask = d.scanMask;
       if (d.freeze) s.freeze = true;
       if (d.textSwap !== undefined) s.textSwap = d.textSwap;
-      // Events may move / scale / rotate the layer briefly.
+      // Events / migrated sustained effects may move / scale / rotate.
       if (d.tx) s.tx += d.tx;
       if (d.ty) s.ty += d.ty;
       if (d.rot) s.rot += d.rot;
+      if (d.rotX) s.rotX += d.rotX;
+      if (d.rotY) s.rotY += d.rotY;
+      if (d.skew) s.skew += d.skew;
       if (d.scaleSafe !== undefined) s.extraScale *= d.scaleSafe;
       // New channels for the canvas renderer (drawExportFrame reads these).
       if (d.tear !== undefined) s.tear = d.tear;
