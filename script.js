@@ -1440,18 +1440,17 @@
       prim.setAttribute("rx", String(W / 2));
       prim.setAttribute("ry", String(H / 2));
     } else if (t === "line") {
-      // Line: from top-left (0,H/2) to top-right (W, H/2) by default;
-      // when H > 0 (created via diagonal drag), line spans corner to corner.
+      // v19.3: lines are stored INTERNALLY as always horizontal
+      // (left→right, centered vertically in the bounding box).
+      // Direction is expressed via layer.transform.rot so that:
+      //   - the 8-way Shift snap during drag maps cleanly onto exact
+      //     rotation values (0/45/90/... degrees)
+      //   - future stroke-animation effects can traverse a normalized
+      //     path without caring about direction
+      //   - the transform inspector's rotation control just works
       prim = document.createElementNS(svgNS, "line");
-      if (H <= 1) {
-        prim.setAttribute("x1", "0");    prim.setAttribute("y1", "0");
-        prim.setAttribute("x2", String(W)); prim.setAttribute("y2", "0");
-      } else {
-        prim.setAttribute("x1", "0");    prim.setAttribute("y1", "0");
-        prim.setAttribute("x2", String(W)); prim.setAttribute("y2", String(H));
-      }
-      // Lines need stroke to be visible — force it on with sensible
-      // defaults if the user has both stroke and fill off.
+      prim.setAttribute("x1", "0");           prim.setAttribute("y1", String(H / 2));
+      prim.setAttribute("x2", String(W));     prim.setAttribute("y2", String(H / 2));
       prim.setAttribute("stroke-linecap", "round");
     } else if (t === "polygon") {
       prim = document.createElementNS(svgNS, "polygon");
@@ -1482,17 +1481,48 @@
     const wrap = document.createElement("div"); wrap.className = "layer-el"; wrap.appendChild(node);
     el.layerHost.appendChild(wrap);
     const defSize = SHAPE_DEFAULT_SIZE[shapeType];
-    let x = bounds && bounds.x != null ? bounds.x : A.w / 2 - defSize.w / 2;
-    let y = bounds && bounds.y != null ? bounds.y : A.h / 2 - defSize.h / 2;
-    let w = bounds && bounds.w != null && Math.abs(bounds.w) >= 4 ? Math.abs(bounds.w) : defSize.w;
-    let h = bounds && bounds.h != null && Math.abs(bounds.h) >= 4 ? Math.abs(bounds.h) : defSize.h;
-    // Circle constrains to square; polygon defaults to square-ish.
-    if (shapeType === "circle") { const s = Math.min(w, h) || defSize.w; w = s; h = s; }
-    // Line: if user did a purely horizontal drag, keep h ≈ 0 for straight line
-    if (shapeType === "line" && h < 4) h = 0;
-    // Handle negative drag directions — normalize bounds
-    if (bounds && bounds.w < 0) x = bounds.x + bounds.w;
-    if (bounds && bounds.h < 0) y = bounds.y + bounds.h;
+
+    /* v19.3 LINE handling: convert the drag vector (dx, dy) into a
+       horizontal line + a rotation.  Length = drag magnitude, angle =
+       atan2(dy, dx).  The bounding box has enough height for the
+       stroke, and the layer's transform.rot controls direction.
+       This makes 8-way Shift snap map to exact 0/45/90/135/... rotations,
+       and keeps the internal SVG geometry consistent regardless of
+       drag direction. */
+    let layerRotation = 0;
+    let x, y, w, h;
+    if (shapeType === "line") {
+      const dx = bounds && bounds.w != null ? bounds.w : 0;
+      const dy = bounds && bounds.h != null ? bounds.h : 0;
+      const length = Math.hypot(dx, dy);
+      if (length < 4) {
+        // Click alone → default horizontal line
+        w = defSize.w; h = 12; layerRotation = 0;
+        x = (bounds && bounds.x != null ? bounds.x : A.w / 2) - w / 2;
+        y = (bounds && bounds.y != null ? bounds.y : A.h / 2) - h / 2;
+      } else {
+        w = length;
+        h = 12;   // enough vertical room for the stroke + hit target
+        layerRotation = Math.atan2(dy, dx) * 180 / Math.PI;
+        // Position the layer's CENTER at the midpoint of the drag.
+        const startX = bounds.x, startY = bounds.y;
+        const midX = startX + dx / 2, midY = startY + dy / 2;
+        x = midX - w / 2;
+        y = midY - h / 2;
+      }
+    } else {
+      // All non-line shapes: original bounding-box logic.
+      x = bounds && bounds.x != null ? bounds.x : A.w / 2 - defSize.w / 2;
+      y = bounds && bounds.y != null ? bounds.y : A.h / 2 - defSize.h / 2;
+      w = bounds && bounds.w != null && Math.abs(bounds.w) >= 4 ? Math.abs(bounds.w) : defSize.w;
+      h = bounds && bounds.h != null && Math.abs(bounds.h) >= 4 ? Math.abs(bounds.h) : defSize.h;
+      // Circle constrains to square
+      if (shapeType === "circle") { const s = Math.min(w, h) || defSize.w; w = s; h = s; }
+      // Normalize negative drag directions
+      if (bounds && bounds.w < 0) x = bounds.x + bounds.w;
+      if (bounds && bounds.h < 0) y = bounds.y + bounds.h;
+    }
+
     const style = defaultShapeStyle();
     // Lines: stroke is required for visibility, so turn it on by default
     if (shapeType === "line") { style.strokeOn = true; style.fillOn = false; style.strokeWidth = 3; }
@@ -1500,7 +1530,7 @@
       id, name: SHAPE_LABELS[shapeType], kind: "SHAPE", assetId: null, complex: false,
       node, wrap, subLayers: [], natW: w, natH: h,
       visible: true, locked: false,
-      transform: { cx: 0, cy: 0, wPct: 0, hPct: 0, rot: 0, opacity: 100 },
+      transform: { cx: 0, cy: 0, wPct: 0, hPct: 0, rot: layerRotation, opacity: 100 },
       start: 0, duration: STATE.duration,
       allowTransform: false,
       clips: [],
@@ -1509,14 +1539,11 @@
       shapeType, shapeStyle: style,
     };
     buildShapeLayerSVG(layer);
-    // Convert center-of-shape (x + w/2, y + h/2) into cx/cy % offset
+    // Position: layer center = (x + w/2, y + h/2)
     const centerX = x + w / 2, centerY = y + h / 2;
     layer.transform.cx = clamp(((centerX - A.w / 2) / A.w) * 100, -80, 80);
     layer.transform.cy = clamp(((centerY - A.h / 2) / A.h) * 100, -80, 80);
-    // Match the layer's on-canvas size to the intrinsic size at 1:1
     layer.transform.wPct = (w / A.w) * 100;
-    // Lines need a small vertical box so the layer wrapper has clickable
-    // area; keep a minimum height percent.
     layer.transform.hPct = (Math.max(h, 8) / A.h) * 100;
     layers.push(layer);
     renderLayers(); renderTimeline(); selectLayer(layer); updateHintVisibility();
@@ -2011,11 +2038,11 @@
     const btns = el.fxEventGrid.querySelectorAll(".fx-event");
     btns.forEach((btn) => {
       const key = btn.dataset.eventKey;
-      let hasEnabled = false, hasAny = false, isSel = false;
+      let hasEnabled = false, hasAny = false, isSel = false, count = 0;
       if (selectedLayer && selectedLayer.clips) {
         for (const c of selectedLayer.clips) {
           if (c.fxKey !== key) continue;
-          hasAny = true;
+          hasAny = true; count++;
           if (c.enabled !== false) hasEnabled = true;
           if (selectedEventClip && selectedEventClip.layer === selectedLayer && selectedEventClip.ec === c) isSel = true;
         }
@@ -2023,51 +2050,53 @@
       btn.classList.toggle("is-active",   hasEnabled);
       btn.classList.toggle("is-disabled", hasAny && !hasEnabled);
       btn.classList.toggle("is-selected", isSel);
+      // v19.3: multi-instance count badge.  Shows ×N when the layer
+      // has more than one instance of this effect (only meaningful
+      // once we allow multiple instances).  We compute this even
+      // when count===1 so the DOM slot exists; hide it visually
+      // unless count > 1.
+      let badge = btn.querySelector(".fx-count");
+      if (count > 1) {
+        if (!badge) { badge = document.createElement("span"); badge.className = "fx-count"; btn.appendChild(badge); }
+        badge.textContent = "×" + count;
+      } else if (badge) {
+        badge.remove();
+      }
     });
   }
 
-  /* Click behaviour for an Event Clip button:
-     - No layer selected → toast a hint.
-     - No clip of this type on layer → create a new one at the playhead.
-     - Existing clip(s) of this type → toggle enabled/disabled on the
-       most-relevant one (selected clip of that type if any; otherwise the
-       clip closest to the current playhead).
-     Never blindly creates duplicates. */
+  /* v19.3 Click behaviour for an Event Clip button:
+     Every click ADDS a NEW instance of that effect clip to the
+     selected layer.  This is the natural fit for the unified clip
+     system — users want multiple Pulse Glow / RGB Offset / Blur
+     moments at different points on the timeline, each with its own
+     timing and parameters.
+
+     Rationale for changing this:
+       - The previous behavior (click again to toggle enable) hid an
+         important interaction inside the button and prevented multi-
+         instance workflows entirely.
+       - Enable/disable of individual clips already lives in a better
+         place: click the clip on the timeline, then toggle in the
+         inspector or press Delete.
+       - Count badge on the button (×N) makes multi-instance state
+         visible so users don't accidentally create dozens of clips.
+
+     Never blindly creates duplicates if no layer is selected. */
   function toggleEventClipOnLayer(fxKey, label) {
     if (!selectedLayer) { toast("Select a layer first"); return; }
-    const layer = selectedLayer;
-    const candidates = (layer.clips || []).filter((c) => c.fxKey === fxKey);
-    let target = null;
-    if (candidates.length) {
-      // Prefer the currently-selected clip if it matches
-      if (selectedEventClip && selectedEventClip.layer === layer && candidates.includes(selectedEventClip.ec)) {
-        target = selectedEventClip.ec;
-      } else {
-        // Otherwise pick the clip whose midpoint is closest to the playhead
-        const pt = STATE.time - layer.start;
-        target = candidates.reduce((best, c) => {
-          const dc = Math.abs((c.start + c.duration / 2) - pt);
-          if (!best) return c;
-          const db = Math.abs((best.start + best.duration / 2) - pt);
-          return dc < db ? c : best;
-        }, null);
-      }
+    const c = createEventClip(fxKey, selectedLayer);
+    if (!c) return;
+    // Auto-select the new clip so the inspector immediately shows its
+    // parameters and the user can nudge / edit right away.
+    if (typeof selectEventClip === "function") {
+      selectEventClip(selectedLayer, c);
     }
-    if (target) {
-      target.enabled = target.enabled === false ? true : false;
-      toast(`${label} ${target.enabled ? "enabled" : "disabled"}`);
-      // If we disabled it, keep selection; if we re-enabled it while
-      // paused, refresh the preview.
-      renderTimeline(); renderEventButtons(); renderClipInspector(); paintIfPaused();
-      return;
-    }
-    // No existing clip → create a fresh one
-    const c = createEventClip(fxKey, layer);
-    if (c) {
-      toast(`+ ${label} @ ${(layer.start + c.start).toFixed(2)}s`);
-      selectEventClip(layer, c);
-      startPlayback();
-    }
+    // Count how many now exist — a toast helps confirm the add.
+    const total = selectedLayer.clips.filter((k) => k.fxKey === fxKey).length;
+    if (total > 1) toast(`${label} — instance ${total}`);
+    else toast(`${label} added`);
+    renderTimeline(); renderEventButtons(); renderClipInspector(); paintIfPaused();
   }
   function initialWPct(layer) {
     const A = STATE.format, fit = Math.min(A.w / layer.natW, A.h / layer.natH);
