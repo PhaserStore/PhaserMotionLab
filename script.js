@@ -379,6 +379,17 @@
     tcGoto: $("#tcGoto"),
     // v19.0 Text Tool + text inspector + playhead frame + status bar
     toolStrip: $("#toolStrip"), toolSelect: $("#toolSelect"), toolText: $("#toolText"),
+    // v19.2 Shape Tools — 5 tool buttons + shape inspector
+    toolRect: $("#toolRect"), toolCircle: $("#toolCircle"), toolEllipse: $("#toolEllipse"),
+    toolLine: $("#toolLine"), toolPolygon: $("#toolPolygon"),
+    shapeGroup: $("#shapeGroup"), shapeTypeBadge: $("#shapeTypeBadge"),
+    shapeFill: $("#shapeFill"), shapeFillHex: $("#shapeFillHex"), shapeFillOn: $("#shapeFillOn"),
+    shapeStroke: $("#shapeStroke"), shapeStrokeHex: $("#shapeStrokeHex"), shapeStrokeOn: $("#shapeStrokeOn"),
+    shapeStrokeW: $("#shapeStrokeW"), shapeStrokeWRange: $("#shapeStrokeWRange"),
+    shapeCornerR: $("#shapeCornerR"), shapeCornerRRange: $("#shapeCornerRRange"),
+    shapeCornerRow: $("#shapeCornerRow"),
+    shapeSides: $("#shapeSides"), shapeSidesRange: $("#shapeSidesRange"),
+    shapeSidesRow: $("#shapeSidesRow"),
     textGroup: $("#textGroup"),
     textContent: $("#textContent"), textFontFamily: $("#textFontFamily"),
     textSize: $("#textSize"), textSizeRange: $("#textSizeRange"),
@@ -1223,11 +1234,18 @@
      Auto-reverts to "select" after one placement. */
   function setTool(name) {
     STATE.tool = name || "select";
-    // v19.1: update all tool-strip buttons.  Select vs Text vs future.
-    if (el.toolSelect) el.toolSelect.classList.toggle("is-active", STATE.tool === "select");
-    if (el.toolText)   el.toolText.classList.toggle("is-active", STATE.tool === "text");
-    // Update stage cursor
-    if (el.stage) el.stage.classList.toggle("tool-text-active", STATE.tool === "text");
+    // v19.2: sync active state on every tool-strip button.
+    const btns = { select: el.toolSelect, text: el.toolText,
+      rect: el.toolRect, circle: el.toolCircle, ellipse: el.toolEllipse,
+      line: el.toolLine, polygon: el.toolPolygon };
+    Object.entries(btns).forEach(([n, btn]) => {
+      if (btn) btn.classList.toggle("is-active", STATE.tool === n);
+    });
+    // Stage cursor state
+    if (el.stage) {
+      el.stage.classList.toggle("tool-text-active", STATE.tool === "text");
+      el.stage.classList.toggle("tool-shape-active", SHAPE_TYPES.includes(STATE.tool));
+    }
   }
 
   /* Convert a page-space (clientX/clientY) point into artboard-space
@@ -1324,6 +1342,197 @@
       t.dataset.split = "1"; t.textContent = "";
       [...raw].forEach((ch) => { const s = document.createElementNS("http://www.w3.org/2000/svg", "tspan"); s.textContent = ch; s.setAttribute("data-glyph", "1"); t.appendChild(s); });
     });
+  }
+
+  /* ================ v19.2 SHAPE TOOLS ================
+     Native vector shape layers.  Each shape is stored as an SVG
+     containing a single primitive (rect, circle, ellipse, line,
+     polygon).  Same rendering path as text and imported SVG, so all
+     effects work with zero integration.
+
+     Data model:
+       layer.kind       = "SHAPE"
+       layer.shapeType  = "rect" | "circle" | "ellipse" | "line" | "polygon"
+       layer.shapeStyle = { fill, fillOn, stroke, strokeOn, strokeWidth,
+                            cornerRadius, sides }
+
+     Extensibility: future path-based effects (morphing, path
+     interpolation) can read layer.node.querySelector("path|rect|...")
+     to identify the primitive.  For morphing, converting rect/ellipse
+     to a normalized `<path>` at effect-application time is trivial —
+     no data-model change needed. */
+
+  const SHAPE_TYPES = ["rect", "circle", "ellipse", "line", "polygon"];
+  const SHAPE_LABELS = { rect: "Rectangle", circle: "Circle", ellipse: "Ellipse", line: "Line", polygon: "Polygon" };
+  const SHAPE_DEFAULT_SIZE = {
+    // default sizes when the user CLICKS (no drag).  Drag overrides.
+    rect:     { w: 240, h: 160 },
+    circle:   { w: 200, h: 200 },
+    ellipse:  { w: 260, h: 180 },
+    line:     { w: 240, h: 0   },
+    polygon:  { w: 200, h: 200 },
+  };
+  function defaultShapeStyle() {
+    return {
+      fill: "#7A5CFF",
+      fillOn: true,
+      stroke: "#FFFFFF",
+      strokeOn: false,
+      strokeWidth: 2,
+      cornerRadius: 0,   // rect only
+      sides: 6,          // polygon only
+    };
+  }
+
+  /* Compute polygon vertex points inside a box of (w, h). */
+  function polygonPointsInBox(sides, w, h) {
+    const cx = w / 2, cy = h / 2;
+    const rx = w / 2, ry = h / 2;
+    const n = Math.max(3, Math.min(24, sides | 0));
+    const pts = [];
+    // Start at the top so shapes read the way a designer expects.
+    for (let i = 0; i < n; i++) {
+      const a = -Math.PI / 2 + (i / n) * Math.PI * 2;
+      pts.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]);
+    }
+    return pts.map((p) => p[0].toFixed(2) + "," + p[1].toFixed(2)).join(" ");
+  }
+
+  /* Build the SVG for a shape layer.  Called on creation AND after
+     any style/geometry change.  Sizes viewBox to the shape's intrinsic
+     bounding box (including stroke overshoot) so the layer's outer
+     dimensions can be transform-scaled predictably. */
+  function buildShapeLayerSVG(layer) {
+    const svgNS = "http://www.w3.org/2000/svg";
+    const s = layer.shapeStyle;
+    const t = layer.shapeType;
+    const strokePad = Math.max(0, s.strokeWidth || 0);
+    // Intrinsic box W×H = layer.natW × natH set at creation time.
+    const W = layer.natW, H = layer.natH;
+    // Padding accounts for stroke growth outside the primitive edge.
+    const pad = strokePad + 2;
+    const vbW = W + pad * 2, vbH = H + pad * 2;
+    while (layer.node.firstChild) layer.node.removeChild(layer.node.firstChild);
+    layer.node.setAttribute("xmlns", svgNS);
+    layer.node.setAttribute("viewBox", `${-pad} ${-pad} ${vbW} ${vbH}`);
+    layer.node.setAttribute("width", "100%");
+    layer.node.setAttribute("height", "100%");
+    layer.node.setAttribute("preserveAspectRatio", "none");
+    const fillAttr   = s.fillOn ? s.fill : "none";
+    const strokeAttr = s.strokeOn ? s.stroke : "none";
+    let prim;
+    if (t === "rect") {
+      prim = document.createElementNS(svgNS, "rect");
+      prim.setAttribute("x", "0"); prim.setAttribute("y", "0");
+      prim.setAttribute("width", String(W));
+      prim.setAttribute("height", String(H));
+      const r = Math.max(0, Math.min(Math.min(W, H) / 2, s.cornerRadius || 0));
+      if (r > 0) { prim.setAttribute("rx", String(r)); prim.setAttribute("ry", String(r)); }
+    } else if (t === "circle") {
+      prim = document.createElementNS(svgNS, "circle");
+      prim.setAttribute("cx", String(W / 2));
+      prim.setAttribute("cy", String(H / 2));
+      prim.setAttribute("r",  String(Math.min(W, H) / 2));
+    } else if (t === "ellipse") {
+      prim = document.createElementNS(svgNS, "ellipse");
+      prim.setAttribute("cx", String(W / 2));
+      prim.setAttribute("cy", String(H / 2));
+      prim.setAttribute("rx", String(W / 2));
+      prim.setAttribute("ry", String(H / 2));
+    } else if (t === "line") {
+      // Line: from top-left (0,H/2) to top-right (W, H/2) by default;
+      // when H > 0 (created via diagonal drag), line spans corner to corner.
+      prim = document.createElementNS(svgNS, "line");
+      if (H <= 1) {
+        prim.setAttribute("x1", "0");    prim.setAttribute("y1", "0");
+        prim.setAttribute("x2", String(W)); prim.setAttribute("y2", "0");
+      } else {
+        prim.setAttribute("x1", "0");    prim.setAttribute("y1", "0");
+        prim.setAttribute("x2", String(W)); prim.setAttribute("y2", String(H));
+      }
+      // Lines need stroke to be visible — force it on with sensible
+      // defaults if the user has both stroke and fill off.
+      prim.setAttribute("stroke-linecap", "round");
+    } else if (t === "polygon") {
+      prim = document.createElementNS(svgNS, "polygon");
+      prim.setAttribute("points", polygonPointsInBox(s.sides || 6, W, H));
+    }
+    if (prim) {
+      // Lines don't have meaningful fill; force fill=none for them.
+      prim.setAttribute("fill",   t === "line" ? "none" : fillAttr);
+      // For lines, if user has BOTH fill+stroke off, still show stroke so
+      // the line is visible.
+      const effectiveStroke = (t === "line" && !s.strokeOn) ? s.stroke : strokeAttr;
+      prim.setAttribute("stroke", effectiveStroke);
+      prim.setAttribute("stroke-width", String(s.strokeWidth || 0));
+      layer.node.appendChild(prim);
+    }
+    return { W: vbW, H: vbH };
+  }
+
+  /* Create a shape layer.  `bounds` = { x, y, w, h } in artboard px.
+     If w/h are absent or too small, uses defaults for that shape type.
+     Returns the created layer. */
+  function createShapeLayerAt(shapeType, bounds) {
+    if (!SHAPE_TYPES.includes(shapeType)) return null;
+    const A = STATE.format;
+    const id = ++idSeq;
+    const svgNS = "http://www.w3.org/2000/svg";
+    const node = document.createElementNS(svgNS, "svg");
+    const wrap = document.createElement("div"); wrap.className = "layer-el"; wrap.appendChild(node);
+    el.layerHost.appendChild(wrap);
+    const defSize = SHAPE_DEFAULT_SIZE[shapeType];
+    let x = bounds && bounds.x != null ? bounds.x : A.w / 2 - defSize.w / 2;
+    let y = bounds && bounds.y != null ? bounds.y : A.h / 2 - defSize.h / 2;
+    let w = bounds && bounds.w != null && Math.abs(bounds.w) >= 4 ? Math.abs(bounds.w) : defSize.w;
+    let h = bounds && bounds.h != null && Math.abs(bounds.h) >= 4 ? Math.abs(bounds.h) : defSize.h;
+    // Circle constrains to square; polygon defaults to square-ish.
+    if (shapeType === "circle") { const s = Math.min(w, h) || defSize.w; w = s; h = s; }
+    // Line: if user did a purely horizontal drag, keep h ≈ 0 for straight line
+    if (shapeType === "line" && h < 4) h = 0;
+    // Handle negative drag directions — normalize bounds
+    if (bounds && bounds.w < 0) x = bounds.x + bounds.w;
+    if (bounds && bounds.h < 0) y = bounds.y + bounds.h;
+    const style = defaultShapeStyle();
+    // Lines: stroke is required for visibility, so turn it on by default
+    if (shapeType === "line") { style.strokeOn = true; style.fillOn = false; style.strokeWidth = 3; }
+    const layer = {
+      id, name: SHAPE_LABELS[shapeType], kind: "SHAPE", assetId: null, complex: false,
+      node, wrap, subLayers: [], natW: w, natH: h,
+      visible: true, locked: false,
+      transform: { cx: 0, cy: 0, wPct: 0, hPct: 0, rot: 0, opacity: 100 },
+      start: 0, duration: STATE.duration,
+      allowTransform: false,
+      clips: [],
+      recipe: makeRecipe(id * 131),
+      originalColors: null,
+      shapeType, shapeStyle: style,
+    };
+    buildShapeLayerSVG(layer);
+    // Convert center-of-shape (x + w/2, y + h/2) into cx/cy % offset
+    const centerX = x + w / 2, centerY = y + h / 2;
+    layer.transform.cx = clamp(((centerX - A.w / 2) / A.w) * 100, -80, 80);
+    layer.transform.cy = clamp(((centerY - A.h / 2) / A.h) * 100, -80, 80);
+    // Match the layer's on-canvas size to the intrinsic size at 1:1
+    layer.transform.wPct = (w / A.w) * 100;
+    // Lines need a small vertical box so the layer wrapper has clickable
+    // area; keep a minimum height percent.
+    layer.transform.hPct = (Math.max(h, 8) / A.h) * 100;
+    layers.push(layer);
+    renderLayers(); renderTimeline(); selectLayer(layer); updateHintVisibility();
+    renderStaticFrame();
+    return layer;
+  }
+
+  /* Update layer.shapeStyle with `patch` and rebuild the SVG.  For
+     geometry changes (cornerRadius, sides) natW/natH stay put — those
+     are the shape's outer bounds — only the internal primitive changes. */
+  function updateShapeLayer(layer, patch) {
+    if (!layer || layer.kind !== "SHAPE") return;
+    Object.assign(layer.shapeStyle, patch);
+    buildShapeLayerSVG(layer);
+    renderStaticFrame();
+    renderTimeline();
   }
 
   /* ---------------- LAYER CREATION ----------------
@@ -1471,6 +1680,12 @@
       // Overwrite defaults with the source's style + transform
       dup.textStyle = JSON.parse(JSON.stringify(s));
       buildTextLayerSVG(dup);
+    } else if (layer.kind === "SHAPE") {
+      // Rebuild the shape layer at the same intrinsic size, then
+      // copy the shapeStyle verbatim.  transform is copied below.
+      dup = createShapeLayerAt(layer.shapeType, { x: 0, y: 0, w: layer.natW, h: layer.natH });
+      dup.shapeStyle = JSON.parse(JSON.stringify(layer.shapeStyle));
+      buildShapeLayerSVG(dup);
     } else {
       const asset = assets.find((a) => a.id === layer.assetId);
       if (!asset) { toast("Original asset not in library"); return; }
@@ -1658,6 +1873,7 @@
     const isSvg = has && selectedLayer.kind === "SVG";
     const isVideo = has && selectedLayer.kind === "VIDEO";
     const isText = has && selectedLayer.kind === "TEXT";
+    const isShape = has && selectedLayer.kind === "SHAPE";
     el.colorEmpty.hidden = isSvg; el.colorBody.hidden = !isSvg;
     // v19.0: Text panel — visible only for TEXT layers.
     if (el.textGroup) {
@@ -1685,6 +1901,33 @@
             b.classList.toggle("active", b.dataset.align === s.align);
           });
         }
+      }
+    }
+    // v19.2 Shape panel — visible only for SHAPE layers.
+    if (el.shapeGroup) {
+      el.shapeGroup.hidden = !isShape;
+      const rightScroll2 = el.shapeGroup.closest(".panel-scroll");
+      if (rightScroll2) rightScroll2.classList.toggle("shape-layer-selected", isShape);
+      if (isShape) {
+        const s = selectedLayer.shapeStyle;
+        const type = selectedLayer.shapeType;
+        const setIf = (elm, val) => { if (elm && document.activeElement !== elm) elm.value = val; };
+        if (el.shapeTypeBadge) el.shapeTypeBadge.textContent = SHAPE_LABELS[type] || type;
+        setIf(el.shapeFill,   s.fill);
+        if (el.shapeFillHex)  el.shapeFillHex.textContent = (s.fill || "").toUpperCase();
+        setIf(el.shapeStroke, s.stroke);
+        if (el.shapeStrokeHex) el.shapeStrokeHex.textContent = (s.stroke || "").toUpperCase();
+        if (el.shapeFillOn && document.activeElement !== el.shapeFillOn)     el.shapeFillOn.checked   = !!s.fillOn;
+        if (el.shapeStrokeOn && document.activeElement !== el.shapeStrokeOn) el.shapeStrokeOn.checked = !!s.strokeOn;
+        setIf(el.shapeStrokeW, s.strokeWidth);
+        setIf(el.shapeStrokeWRange, Math.min(60, s.strokeWidth));
+        setIf(el.shapeCornerR, s.cornerRadius || 0);
+        setIf(el.shapeCornerRRange, Math.min(200, s.cornerRadius || 0));
+        setIf(el.shapeSides, s.sides || 6);
+        setIf(el.shapeSidesRange, s.sides || 6);
+        // Type-specific control visibility
+        if (el.shapeCornerRow) el.shapeCornerRow.style.display = (type === "rect") ? "" : "none";
+        if (el.shapeSidesRow)  el.shapeSidesRow.style.display  = (type === "polygon") ? "" : "none";
       }
     }
     // Video panel: only visible for VIDEO layers.
@@ -3653,9 +3896,6 @@
       renderStaticFrame();
     }
   }
-  // Start playback only if not already playing (used when an effect/preset
-  // is applied). Never toggles off.
-  function startPlayback() { if (!STATE.playing) togglePlay(); }
   // Start playback only if not already playing (used when an effect/preset
   // is applied). Never toggles off.
   function startPlayback() { if (!STATE.playing) togglePlay(); }
@@ -6326,6 +6566,154 @@
       });
     }
 
+    /* v19.2 SHAPE TOOL wiring.  Same modal-tool pattern as Text:
+       click the button, then click or drag on the canvas.
+       Click alone → default-sized shape at click point.
+       Drag → shape sized to the drag rectangle.
+       Shift-drag → constrain (square for rect, circle for ellipse,
+                    45°/90° for line). */
+    const _shapeBtns = { rect: el.toolRect, circle: el.toolCircle, ellipse: el.toolEllipse, line: el.toolLine, polygon: el.toolPolygon };
+    Object.entries(_shapeBtns).forEach(([type, btn]) => {
+      if (!btn) return;
+      btn.addEventListener("click", () => {
+        setTool(STATE.tool === type ? "select" : type);
+      });
+    });
+
+    let _shapeDrag = null;   // { type, startPt, previewEl, moved }
+    if (el.stage) {
+      el.stage.addEventListener("mousedown", (e) => {
+        if (!SHAPE_TYPES.includes(STATE.tool)) return;
+        if (e.button !== 0) return;
+        // Ignore mousedowns that started outside the artboard.
+        const pt = stagePointToArtboard(e.clientX, e.clientY);
+        if (!pt) return;
+        e.preventDefault(); e.stopPropagation();
+        // Preview rectangle in stage-space (not artboard), positioned by pageX/pageY
+        const stageRect = el.stage.getBoundingClientRect();
+        const previewEl = document.createElement("div");
+        previewEl.className = "shape-drag-preview";
+        el.stage.appendChild(previewEl);
+        _shapeDrag = {
+          type: STATE.tool,
+          startPt: pt,                                        // artboard px
+          startClient: { x: e.clientX, y: e.clientY },        // page px
+          stageOff:   { left: stageRect.left, top: stageRect.top,
+                        scrollLeft: el.stage.scrollLeft, scrollTop: el.stage.scrollTop },
+          previewEl,
+          moved: false,
+          shiftKey: e.shiftKey,
+        };
+        // Initialize preview at 0×0 at start point
+        previewEl.style.left = (e.clientX - stageRect.left + el.stage.scrollLeft) + "px";
+        previewEl.style.top  = (e.clientY - stageRect.top  + el.stage.scrollTop) + "px";
+        previewEl.style.width = "0px"; previewEl.style.height = "0px";
+      });
+    }
+    function onShapeDragMove(e) {
+      if (!_shapeDrag) return;
+      const dx = e.clientX - _shapeDrag.startClient.x;
+      const dy = e.clientY - _shapeDrag.startClient.y;
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) _shapeDrag.moved = true;
+      // Shift constraint: for rect/ellipse, square; for line, 45° snap.
+      let adjDx = dx, adjDy = dy;
+      if (e.shiftKey) {
+        if (_shapeDrag.type === "line") {
+          // Snap angle to nearest 45°
+          const ang = Math.atan2(dy, dx);
+          const snapAng = Math.round(ang / (Math.PI / 4)) * (Math.PI / 4);
+          const len = Math.hypot(dx, dy);
+          adjDx = Math.cos(snapAng) * len;
+          adjDy = Math.sin(snapAng) * len;
+        } else {
+          // Force equal magnitude for square/circle
+          const m = Math.max(Math.abs(dx), Math.abs(dy));
+          adjDx = Math.sign(dx || 1) * m;
+          adjDy = Math.sign(dy || 1) * m;
+        }
+      }
+      // Update preview element (stage-space coords)
+      const px = adjDx < 0 ? _shapeDrag.startClient.x + adjDx : _shapeDrag.startClient.x;
+      const py = adjDy < 0 ? _shapeDrag.startClient.y + adjDy : _shapeDrag.startClient.y;
+      _shapeDrag.previewEl.style.left = (px - _shapeDrag.stageOff.left + _shapeDrag.stageOff.scrollLeft) + "px";
+      _shapeDrag.previewEl.style.top  = (py - _shapeDrag.stageOff.top  + _shapeDrag.stageOff.scrollTop) + "px";
+      _shapeDrag.previewEl.style.width  = Math.abs(adjDx) + "px";
+      _shapeDrag.previewEl.style.height = Math.abs(adjDy) + "px";
+      _shapeDrag.lastAdj = { dx: adjDx, dy: adjDy };
+      _shapeDrag.shiftKey = e.shiftKey;
+    }
+    function onShapeDragEnd(e) {
+      if (!_shapeDrag) return;
+      const drag = _shapeDrag;
+      _shapeDrag = null;
+      if (drag.previewEl) drag.previewEl.remove();
+      const zoom = STATE.zoom || 1;
+      let dxArt, dyArt;
+      if (drag.moved && drag.lastAdj) {
+        // Drag: convert page-space delta into artboard-space
+        dxArt = drag.lastAdj.dx / zoom;
+        dyArt = drag.lastAdj.dy / zoom;
+      } else {
+        // Click (no meaningful drag): use default size
+        dxArt = 0; dyArt = 0;
+      }
+      const bounds = {
+        x: drag.startPt.x, y: drag.startPt.y,
+        w: dxArt, h: dyArt,
+      };
+      const layer = createShapeLayerAt(drag.type, bounds);
+      setTool("select");
+      renderInspector();
+    }
+    document.addEventListener("mousemove", onShapeDragMove);
+    document.addEventListener("mouseup",   onShapeDragEnd);
+
+    /* Shape inspector bindings — write back to selected shape. */
+    function wireShapeInput(elmt, patchFn) {
+      if (!elmt) return;
+      const h = () => {
+        if (!selectedLayer || selectedLayer.kind !== "SHAPE") return;
+        const patch = patchFn(elmt);
+        if (patch) updateShapeLayer(selectedLayer, patch);
+      };
+      elmt.addEventListener("input", h);
+      elmt.addEventListener("change", h);
+    }
+    wireShapeInput(el.shapeFill,     (n) => { if (el.shapeFillHex) el.shapeFillHex.textContent = n.value.toUpperCase(); return { fill: n.value }; });
+    wireShapeInput(el.shapeStroke,   (n) => { if (el.shapeStrokeHex) el.shapeStrokeHex.textContent = n.value.toUpperCase(); return { stroke: n.value }; });
+    wireShapeInput(el.shapeFillOn,   (n) => ({ fillOn: !!n.checked }));
+    wireShapeInput(el.shapeStrokeOn, (n) => ({ strokeOn: !!n.checked }));
+    wireShapeInput(el.shapeStrokeW,  (n) => {
+      const v = clamp(+n.value || 0, 0, 200);
+      if (el.shapeStrokeWRange) el.shapeStrokeWRange.value = Math.min(60, v);
+      return { strokeWidth: v };
+    });
+    wireShapeInput(el.shapeStrokeWRange, (n) => {
+      const v = +n.value;
+      if (el.shapeStrokeW) el.shapeStrokeW.value = v;
+      return { strokeWidth: v };
+    });
+    wireShapeInput(el.shapeCornerR, (n) => {
+      const v = clamp(+n.value || 0, 0, 500);
+      if (el.shapeCornerRRange) el.shapeCornerRRange.value = Math.min(200, v);
+      return { cornerRadius: v };
+    });
+    wireShapeInput(el.shapeCornerRRange, (n) => {
+      const v = +n.value;
+      if (el.shapeCornerR) el.shapeCornerR.value = v;
+      return { cornerRadius: v };
+    });
+    wireShapeInput(el.shapeSides, (n) => {
+      const v = clamp(+n.value | 0, 3, 24);
+      if (el.shapeSidesRange) el.shapeSidesRange.value = v;
+      return { sides: v };
+    });
+    wireShapeInput(el.shapeSidesRange, (n) => {
+      const v = +n.value | 0;
+      if (el.shapeSides) el.shapeSides.value = v;
+      return { sides: v };
+    });
+
     /* Text inspector bindings — write back to the selected text layer. */
     function wireTextInput(elmt, patchFn) {
       if (!elmt) return;
@@ -7230,7 +7618,7 @@
     requestAnimationFrame(() => fitZoom());
     setTimeout(() => { fitZoom(); renderTimeline(); }, 120);
     // Test hook: expose internals for automated verification (harmless in production).
-    window.__phaserDebug = { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, duplicateLayer, createTextLayerAt };
+    window.__phaserDebug = { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, duplicateLayer, createTextLayerAt, createShapeLayerAt };
   }
   document.addEventListener("DOMContentLoaded", init);
 })();
