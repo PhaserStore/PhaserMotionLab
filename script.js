@@ -429,6 +429,12 @@
   const assets = [];
   const layers = [];   // index 0 = back
   let selectedLayer = null, idSeq = 0;
+  /* v19.4 multi-selection.  selectedLayer stays as "primary" (drives
+     inspector, transform display, primary highlight); selectedLayers
+     mirrors selectedLayer for compatibility PLUS holds any additional
+     Shift/Cmd-clicked layers.  Multi-affecting operations (Delete,
+     Duplicate) iterate selectedLayers. */
+  let selectedLayers = [];   // includes primary; empty when nothing selected
 
   function toast(msg) {
     if (!el.toast) return;
@@ -1749,7 +1755,10 @@
     if (layer._exportCanvas) layer._exportCanvas = null;
     if (layer.wrap && layer.wrap.parentNode) layer.wrap.parentNode.removeChild(layer.wrap);
     layers.splice(i, 1);
-    if (selectedLayer === layer) selectedLayer = null;
+    // v19.4: also remove from selectedLayers so multi-select stays coherent.
+    const sIdx = selectedLayers.indexOf(layer);
+    if (sIdx >= 0) selectedLayers.splice(sIdx, 1);
+    if (selectedLayer === layer) selectedLayer = selectedLayers[selectedLayers.length - 1] || null;
     renderLayers(); renderTimeline(); renderInspector(); updateHintVisibility(); updateSelectionBox(); paintIfPaused();
   }
   function toggleLayerVisible(layer) { layer.visible = !layer.visible; layer.wrap.style.display = layer.visible ? "" : "none"; renderLayers(); paintIfPaused(); }
@@ -1763,7 +1772,16 @@
     el.layerStack.innerHTML = "";
     [...layers].reverse().forEach((layer) => {
       const li = document.createElement("li");
-      li.className = "layer-row" + (layer === selectedLayer ? " selected" : "") + (layer.visible ? "" : " hidden-layer") + (layer.locked ? " locked-layer" : "");
+      // v19.4: distinct classes for primary vs secondary selection.
+      //  - .selected      → primary (drives inspector; darker highlight)
+      //  - .multi-selected → secondary (part of the multi-selection)
+      const isPrimary = layer === selectedLayer;
+      const isMulti = selectedLayers.length > 1 && selectedLayers.includes(layer);
+      li.className = "layer-row"
+        + (isPrimary ? " selected" : "")
+        + (isMulti && !isPrimary ? " multi-selected" : "")
+        + (layer.visible ? "" : " hidden-layer")
+        + (layer.locked ? " locked-layer" : "");
       li.draggable = true; li.dataset.id = layer.id;
       const thumb = layer.kind === "IMG" ? `<img src="${layer.node.src}" alt="">` : svgThumb(layer.node);
       li.innerHTML =
@@ -1771,7 +1789,12 @@
         `<span class="layer-thumb">${thumb}</span>` +
         `<span class="layer-meta"><span class="layer-title">${layer.name}</span><span class="layer-sub">${layer.kind}${layer.subLayers && layer.subLayers.length ? " \u00b7 " + layer.subLayers.length + " parts" : ""}</span></span>` +
         `<button class="layer-eye" title="Hide / show">${layer.visible ? eyeOpen() : eyeClosed()}</button>`;
-      li.addEventListener("click", (e) => { if (e.target.closest(".layer-eye")) { toggleLayerVisible(layer); e.stopPropagation(); } else selectLayer(layer); });
+      li.addEventListener("click", (e) => {
+        if (e.target.closest(".layer-eye")) { toggleLayerVisible(layer); e.stopPropagation(); return; }
+        // v19.4: Shift/Cmd-click = additive; plain click = single-select.
+        const additive = e.shiftKey || e.metaKey || e.ctrlKey;
+        selectLayer(layer, { additive });
+      });
       addLayerDrag(li, layer);
       el.layerStack.appendChild(li);
     });
@@ -1795,10 +1818,42 @@
   }
   function applyZOrder() { layers.forEach((layer, i) => { if (layer.wrap) layer.wrap.style.zIndex = String(i + 1); }); }
 
-  function selectLayer(layer) {
-    selectedLayer = layer;
+  /* v19.4 selectLayer with multi-select support.
+     opts.additive  → toggle this layer's membership in selectedLayers
+                      (Shift-click / Cmd-click behavior).
+     opts.append    → add this layer without deselecting the others
+                      (used programmatically; rarely needed by UI).
+     Default (no opts) → single-select the layer (replaces selection).
+     Passing `null` clears the selection entirely. */
+  function selectLayer(layer, opts) {
+    opts = opts || {};
+    if (!layer) {
+      selectedLayer = null;
+      selectedLayers = [];
+    } else if (opts.additive) {
+      const idx = selectedLayers.indexOf(layer);
+      if (idx >= 0) {
+        // Toggle off — but keep at least one selected if possible.
+        selectedLayers.splice(idx, 1);
+        selectedLayer = selectedLayers.length ? selectedLayers[selectedLayers.length - 1] : null;
+      } else {
+        selectedLayers.push(layer);
+        selectedLayer = layer;
+      }
+    } else if (opts.append) {
+      if (!selectedLayers.includes(layer)) selectedLayers.push(layer);
+      selectedLayer = layer;
+    } else {
+      // Default: single-select
+      selectedLayer = layer;
+      selectedLayers = [layer];
+    }
     renderLayers(); renderInspector(); renderTimeline(); updateSelectionBox();
-    el.readoutSel.textContent = layer ? layer.name : "No layer selected";
+    if (el.readoutSel) {
+      if (!selectedLayer) el.readoutSel.textContent = "No layer selected";
+      else if (selectedLayers.length > 1) el.readoutSel.textContent = `${selectedLayers.length} layers selected`;
+      else el.readoutSel.textContent = selectedLayer.name;
+    }
   }
 
   /* ---------------- INSPECTOR (transform + color + fx) ---------------- */
@@ -6810,8 +6865,45 @@
       const typing = e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT";
       if (e.code === "Space" && !typing) { e.preventDefault(); togglePlay(); }
       if (e.key === "Escape") closeSheet();
-      if ((e.key === "Delete" || e.key === "Backspace") && selectedLayer && !typing) deleteLayer(selectedLayer);
+      // v19.4: Delete / Backspace removes ALL selected layers in one action.
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedLayers.length && !typing) {
+        e.preventDefault();
+        deleteSelectedLayers();
+      }
+      // v19.4: Cmd/Ctrl+D duplicates all selected layers at exact positions.
+      if ((e.key === "d" || e.key === "D") && (e.metaKey || e.ctrlKey) && selectedLayers.length && !typing) {
+        e.preventDefault();
+        duplicateSelectedLayers();
+      }
     });
+    // v19.4 multi-layer operation helpers.
+    function deleteSelectedLayers() {
+      if (!selectedLayers.length) return;
+      // Snapshot the array — deleteLayer mutates state which can
+      // reorder `layers` and change selection.
+      const toDelete = selectedLayers.slice();
+      const count = toDelete.length;
+      // Clear selection first so per-layer delete doesn't fight our loop.
+      selectedLayer = null;
+      selectedLayers = [];
+      toDelete.forEach((L) => { if (layers.includes(L)) deleteLayer(L); });
+      if (count > 1) toast(`Deleted ${count} layers`);
+    }
+    function duplicateSelectedLayers() {
+      if (!selectedLayers.length) return;
+      const originals = selectedLayers.slice();
+      const dups = [];
+      originals.forEach((L) => {
+        duplicateLayer(L);
+        // duplicateLayer appends to `layers` at the end; grab it.
+        dups.push(layers[layers.length - 1]);
+      });
+      // Update selection to be the newly-created duplicates
+      selectedLayers = dups;
+      selectedLayer = dups[dups.length - 1] || null;
+      renderLayers(); renderInspector(); renderTimeline(); updateSelectionBox();
+      if (originals.length > 1) toast(`Duplicated ${originals.length} layers`);
+    }
 
     // AI
     el.aiRun.addEventListener("click", runAI);
@@ -6827,8 +6919,8 @@
     el.tfFill.addEventListener("click", tfFill);
     el.tfReset.addEventListener("click", tfReset);
     if (el.tfOriginal) el.tfOriginal.addEventListener("click", tfOriginal);
-    el.layerDup.addEventListener("click", () => selectedLayer && duplicateLayer(selectedLayer));
-    el.layerDel.addEventListener("click", () => selectedLayer && deleteLayer(selectedLayer));
+    el.layerDup.addEventListener("click", () => selectedLayers.length && duplicateSelectedLayers());
+    el.layerDel.addEventListener("click", () => selectedLayers.length && deleteSelectedLayers());
     el.layerHide.addEventListener("click", () => { if (selectedLayer) { toggleLayerVisible(selectedLayer); renderInspector(); } });
     el.layerLock.addEventListener("click", () => selectedLayer && toggleLayerLock(selectedLayer));
 
@@ -7546,9 +7638,29 @@
         if (!L.visible || L.locked) continue;
         const A = STATE.format, T = L.transform;
         const wPx = (T.wPct / 100) * A.w, hPx = (T.hPct / 100) * A.h;
-        const leftPx = A.w / 2 + (T.cx / 100) * A.w - wPx / 2;
-        const topPx = A.h / 2 + (T.cy / 100) * A.h - hPx / 2;
-        if (ax >= leftPx && ax <= leftPx + wPx && ay >= topPx && ay <= topPx + hPx) return L;
+        const cxPx = A.w / 2 + (T.cx / 100) * A.w;
+        const cyPx = A.h / 2 + (T.cy / 100) * A.h;
+        // v19.4: rotation-aware hit testing.  Previously the hit box
+        // was axis-aligned around the layer's bounding rect, which
+        // failed for rotated content (lines with 90°/45° rotations
+        // where the visible geometry doesn't overlap the axis-aligned
+        // box).  Now we inverse-rotate the click point around the
+        // layer center, then test against the unrotated box.
+        let px = ax - cxPx, py = ay - cyPx;
+        if (T.rot) {
+          const a = -T.rot * Math.PI / 180;
+          const ca = Math.cos(a), sa = Math.sin(a);
+          const rx = px * ca - py * sa, ry = px * sa + py * ca;
+          px = rx; py = ry;
+        }
+        // v19.4: expand hit box for SHAPE lines so thin lines aren't
+        // impossible to click.  Standard vector-tool convention:
+        // visible stroke stays as-is, hit area padded by ~14px.
+        let hitW = wPx, hitH = hPx;
+        if (L.kind === "SHAPE" && L.shapeType === "line") {
+          hitH = Math.max(hitH, 16);
+        }
+        if (px >= -hitW / 2 && px <= hitW / 2 && py >= -hitH / 2 && py <= hitH / 2) return L;
       }
       return null;
     }
@@ -7556,7 +7668,9 @@
       // Ignore clicks on selection-box handles / other UI overlays
       if (e.target.closest(".sel-handle")) return;
       const L = pickLayerAtEvent(e); if (!L) return;
-      selectLayer(L);
+      // v19.4: Shift/Cmd-click on the canvas toggles additive selection.
+      const additive = e.shiftKey || e.metaKey || e.ctrlKey;
+      selectLayer(L, { additive });
       dragL = { layer: L, x0: e.clientX, y0: e.clientY, cx0: L.transform.cx, cy0: L.transform.cy };
       el.artboard.style.cursor = "grabbing";
       e.preventDefault();
