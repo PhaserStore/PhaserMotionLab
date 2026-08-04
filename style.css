@@ -626,6 +626,35 @@ body.focus-mode .selection-box { display: none !important; }
   z-index: 250;
 }
 
+/* v19.9: SVG diagnostics panel styling. */
+.svg-diag-body { padding: 4px 12px 8px; font-size: 11px; }
+.diag-grid { display: grid; grid-template-columns: 1fr auto; row-gap: 3px; column-gap: 12px; margin-bottom: 8px; }
+.diag-label { color: var(--text-3); }
+.diag-value { color: var(--text); font-variant-numeric: tabular-nums; text-align: right; }
+.diag-ok { color: var(--accent-2); font-weight: 600; }
+.diag-fail { color: #ff5566; font-weight: 600; }
+.diag-warnings { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.diag-warnings li { padding: 6px 8px; border-radius: var(--r-xs); background: var(--panel-2); border-left: 3px solid var(--border); }
+.diag-warnings li.diag-warn { border-left-color: #ff9944; }
+.diag-warnings li.diag-info { border-left-color: var(--accent); }
+.diag-warn-mark { margin-right: 4px; }
+.diag-fix { margin-top: 4px; font-size: 10px; color: var(--text-3); font-style: italic; }
+.diag-clean { color: var(--accent-2); font-weight: 500; padding: 4px 0; }
+.badge.status-ok      { background: color-mix(in oklab, var(--accent-2) 20%, transparent); color: var(--accent-2); }
+.badge.status-partial { background: rgba(255, 153, 68, 0.18); color: #ff9944; }
+.badge.status-warn    { background: rgba(255, 85, 102, 0.18); color: #ff5566; }
+
+/* v19.9: Morph compatibility badge in the clip inspector. */
+.morph-diag {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-radius: var(--r-xs);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.morph-diag-ok   { background: color-mix(in oklab, var(--accent-2) 15%, transparent); color: var(--accent-2); border-left: 3px solid var(--accent-2); }
+.morph-diag-fail { background: rgba(255, 85, 102, 0.15);                              color: #ff8899;       border-left: 3px solid #ff5566; }
+
 /* v19.0 Inline text edit overlay — appears over a text layer during
    double-click editing.  Positioned in JS to match the SVG text bounds. */
 .text-edit-overlay {
