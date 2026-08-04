@@ -195,6 +195,12 @@
     //     changes — see applyShapeStyleDelta. ---
     { key: "strokeWidthPulse", label: "Stroke Width Pulse", defDur: 0.60, group: "vector" },
     { key: "fillColorFlash",   label: "Fill Color Flash",   defDur: 0.40, group: "vector" },
+    // v19.12 Fill Reveal.  Progressively reveals filled SVG geometry
+    // via clip-path animation.  Unlike Line Draw (stroke geometry
+    // only), this works on any filled artwork — imports, native
+    // shapes, text — because it clips at the layer wrap level and
+    // never mutates fills / gradients / colors.
+    { key: "fillReveal",       label: "Fill Reveal",        defDur: 1.20, group: "vector", placement: "layerStart" },
     // v19.9 Morphing v1 — path-to-path interpolation.  Supports:
     //   rect ↔ rect · circle ↔ circle · ellipse ↔ ellipse · line ↔ line
     //   polygon ↔ polygon (same side count)
@@ -289,6 +295,11 @@
       //    inspector renders a color-picker row (see renderClipInspector).
       case "strokeWidthPulse": return { ...base, intensity: 60 };
       case "fillColorFlash":   return { ...base, intensity: 70, color: "#FF3366" };
+      // v19.12 Fill Reveal.  `direction` picks the reveal mode.
+      // Values: "left" (→ right), "right", "top", "bottom",
+      // "center-out" (rectangular growth), "radial" (circular growth).
+      // Angle-based directional reveal is planned separately.
+      case "fillReveal":       return { ...base, intensity: 100, direction: "left" };
       // v19.9 Shape Morph.  morphTargetLayerId is 0 by default (=
       // "no target"), and the effect no-ops until the user picks one.
       case "shapeMorph":       return { ...base, intensity: 100, morphTargetLayerId: 0, morphTargetIndex: 0 };
@@ -2701,6 +2712,31 @@
           }
           paramsHost.appendChild(status);
         }
+        // v19.12: Fill Reveal direction picker — appears for fillReveal clips.
+        if (selectedEventClip.ec.fxKey === "fillReveal") {
+          const row = document.createElement("div"); row.className = "prop-row";
+          row.innerHTML = `<span class="prop-label">Direction</span>`;
+          const sel = document.createElement("select");
+          sel.className = "ctl-num"; sel.style.minWidth = "0"; sel.style.flex = "1"; sel.style.width = "auto"; sel.style.padding = "2px 6px";
+          const opts = [
+            ["left",       "Left → Right"],
+            ["right",      "Right → Left"],
+            ["top",        "Top → Bottom"],
+            ["bottom",     "Bottom → Top"],
+            ["center-out", "Center Out"],
+            ["radial",     "Radial"],
+          ];
+          opts.forEach(([v, label]) => {
+            const o = document.createElement("option"); o.value = v; o.textContent = label;
+            sel.appendChild(o);
+          });
+          sel.value = p.direction || "left";
+          sel.addEventListener("change", () => {
+            p.direction = sel.value;
+            renderTimeline(); paintIfPaused();
+          });
+          row.appendChild(sel); paramsHost.appendChild(row);
+        }
         // Vector Beam growth easing seg (hard/ease) — separate from
         // direction because it uses different labels/values.
         if (selectedEventClip.ec.fxKey === "vectorBeam") {
@@ -3442,6 +3478,25 @@
         },
       };
     },
+
+    // v19.12 Fill Reveal.  Returns a fillReveal marker describing the
+    // mode + progress; composeLayer collects it and applyFillReveal
+    // sets the layer wrap's clip-path.  Uses clip-path (not opacity)
+    // so fills / gradients / colors are preserved exactly — the
+    // artwork looks like it's being uncovered, not fading in.
+    fillReveal(p, sig, params) {
+      const k = ((params?.intensity ?? 100) / 100);
+      // Ease progress slightly so the reveal feels smoother than a
+      // pure linear wipe.  Bias k so intensity=50 reveals halfway
+      // and intensity=100 reaches the full artwork at p=1.
+      const eased = 1 - Math.pow(1 - Math.max(0, Math.min(1, p)), 2);  // ease-out quad
+      return {
+        fillReveal: {
+          direction: (params && params.direction) || "left",
+          progress: eased * k,
+        },
+      };
+    },
   };
 
   // For each event key, which live layer field it modifies (used to
@@ -3863,6 +3918,10 @@
     // v19.9: morph contribution (source→target path interp).  Only one
     // active morph clip is used per frame (latest wins in the loop).
     let morphContrib = null;
+    // v19.12: fill-reveal contribution.  Latest-wins across clips —
+    // stacking two reveal modes on the same layer isn't a useful
+    // authoring pattern; the last-active clip's direction is used.
+    let fillRevealContrib = null;
     const allowT = layer.allowTransform;
 
     // v18.7: layer.fx sustained-toggle system removed.  Every effect
@@ -3910,6 +3969,8 @@
         // simultaneous morph clips on the same layer aren't a useful
         // authoring pattern; last one takes precedence.
         if (d.morph) morphContrib = d.morph;
+        // v19.12 Fill Reveal — latest-wins across active clips.
+        if (d.fillReveal) fillRevealContrib = d.fillReveal;
         // Event clips MAY move / scale / rotate the layer briefly even
         // when allowTransform is off (they're designed as short micro-
         // motions).
@@ -3960,6 +4021,13 @@
     // clip when incompatible.
     if (pathAnimatable && morphContrib) applyMorph(layer, morphContrib);
     else if (pathAnimatable && layer._morphApplied) clearMorph(layer);
+    // v19.12 Fill Reveal — works on ANY layer with a wrap element,
+    // including SVG imports, native shapes, text, and images.  Doesn't
+    // require the pathAnimatable gate because it clips the wrap, not
+    // primitives.  Restricting to the layer.wrap element preserves
+    // fills / gradients / colors exactly.
+    if (fillRevealContrib) applyFillReveal(layer, fillRevealContrib);
+    else if (layer._fillRevealApplied) clearFillReveal(layer);
 
     // Scan mask (event-only): reveal from left as p goes 0->1
     if (scanMask !== null) { layer.wrap.style.clipPath = `inset(0 ${((1 - scanMask) * 100).toFixed(1)}% 0 0)`; layer._clipApplied = true; }
@@ -4067,6 +4135,8 @@
     if (_va && layer._dashApplied) clearPathDash(layer);
     if (_va && layer._shapeStyleApplied) clearShapeStyleDelta(layer);
     if (_va && layer._morphApplied) clearMorph(layer);
+    // v19.12: fillReveal works on any layer kind (not just vector).
+    if (layer._fillRevealApplied) clearFillReveal(layer);
   }
 
   // Render one static frame (no animation) — every visible layer at rest,
@@ -4479,6 +4549,75 @@
     layer._morphDiag = null;
   }
 
+  /* ---------------- v19.12 FILL REVEAL ----------------
+     Progressively uncovers a layer's filled artwork over time by
+     animating a CSS clip-path on the layer wrap.  Because it operates
+     at the composite layer (not per-primitive), it:
+       - Works on imports, native shapes, text, and images uniformly.
+       - Preserves fills / gradients / colors / images exactly — the
+         artwork is never mutated; only the visible clip window
+         expands.
+       - Composes cleanly with other effects (Line Draw on strokes,
+         Fill Color Flash, etc.).
+       - Is cheap: pure CSS on one element per layer.
+
+     Modes (v1):
+       left           → wipes from left to right
+       right          → wipes from right to left
+       top            → wipes from top to bottom
+       bottom         → wipes from bottom to top
+       center-out     → rectangular reveal from center outward
+       radial         → circular reveal from center outward
+     Angle-based directional reveal is a natural next step. */
+  function applyFillReveal(layer, r) {
+    if (!layer || !layer.wrap) return;
+    const p = Math.max(0, Math.min(1, r.progress || 0));
+    // At p=0 the layer should be fully clipped (invisible); at p=1 the
+    // clip window equals the full layer bounds (fully visible).
+    let clip = "";
+    switch (r.direction) {
+      case "right":
+        // Reveal from right → left.  As p goes 0→1, the left edge of the
+        // clip window moves rightward from x=100% to x=0%.
+        clip = `inset(0 0 0 ${((1 - p) * 100).toFixed(2)}%)`;
+        break;
+      case "top":
+        clip = `inset(0 0 ${((1 - p) * 100).toFixed(2)}% 0)`;
+        break;
+      case "bottom":
+        clip = `inset(${((1 - p) * 100).toFixed(2)}% 0 0 0)`;
+        break;
+      case "center-out": {
+        // Expand a centered rectangle from 0×0 to full layer bounds.
+        const inset = ((1 - p) * 50).toFixed(2);   // 50% inset = zero rect
+        clip = `inset(${inset}% ${inset}% ${inset}% ${inset}%)`;
+        break;
+      }
+      case "radial": {
+        // Circle radius grows from 0 → the ~diagonal length so the
+        // whole layer is revealed at p=1.  71% covers the corners.
+        const r = (p * 71).toFixed(2);
+        clip = `circle(${r}% at 50% 50%)`;
+        break;
+      }
+      case "left":
+      default:
+        // Reveal from left → right.  As p goes 0→1, the right edge of
+        // the clip window moves rightward from x=0% to x=100%.
+        clip = `inset(0 ${((1 - p) * 100).toFixed(2)}% 0 0)`;
+        break;
+    }
+    layer.wrap.style.clipPath = clip;
+    layer.wrap.style.webkitClipPath = clip;
+    layer._fillRevealApplied = true;
+  }
+  function clearFillReveal(layer) {
+    if (!layer || !layer.wrap) { if (layer) layer._fillRevealApplied = false; return; }
+    layer.wrap.style.clipPath = "";
+    layer.wrap.style.webkitClipPath = "";
+    layer._fillRevealApplied = false;
+  }
+
   /* ---------------- v19.10 EXPORT / PREVIEW DOM PARITY ----------------
      `applyVectorEffectsAtTime(layer, t)` walks the layer's active
      clips at scene time `t` and applies just the DOM-mutating effects
@@ -4499,25 +4638,33 @@
   const VECTOR_FX_KEYS = new Set([
     "shapeMorph", "lineDraw", "trimPaths", "pathEnergize", "lineTrace",
     "strokeWidthPulse", "fillColorFlash",
+    "fillReveal",   // v19.12
   ]);
   function hasActiveVectorClip(layer, t) {
     if (!layer || !layer.clips || !layer.clips.length) return false;
-    if (layer.kind !== "SVG" && layer.kind !== "SHAPE") return false;
+    // v19.12: fillReveal works on ANY layer kind (via wrap clip-path),
+    // not just SHAPE/SVG.  Others still gate on kind.
     const active = activeEventClipsAt(layer, t);
-    return active.some(({ c }) => VECTOR_FX_KEYS.has(c.fxKey));
+    return active.some(({ c }) => {
+      if (!VECTOR_FX_KEYS.has(c.fxKey)) return false;
+      if (c.fxKey === "fillReveal") return true;
+      return layer.kind === "SVG" || layer.kind === "SHAPE";
+    });
   }
   function applyVectorEffectsAtTime(layer, t) {
-    if (layer.kind !== "SVG" && layer.kind !== "SHAPE") return;
     const active = activeEventClipsAt(layer, t);
+    const pathKind = layer.kind === "SVG" || layer.kind === "SHAPE";
     if (!active.length) {
-      if (layer._dashApplied)       clearPathDash(layer);
-      if (layer._shapeStyleApplied) clearShapeStyleDelta(layer);
-      if (layer._morphApplied)      clearMorph(layer);
+      if (pathKind && layer._dashApplied)       clearPathDash(layer);
+      if (pathKind && layer._shapeStyleApplied) clearShapeStyleDelta(layer);
+      if (pathKind && layer._morphApplied)      clearMorph(layer);
+      if (layer._fillRevealApplied)             clearFillReveal(layer);
       return;
     }
     let pathDraw = null, pathTrim = null;
     let shapeStyleDelta = null;
     let morphContrib = null;
+    let fillRevealContrib = null;
     const sig = (typeof audioSignal === "function") ? audioSignal() : { level: 0, bass: 0, mid: 0, high: 0, peak: 0, beat: 0 };
     for (const { c, p } of active) {
       const d = evaluateClipDelta(c, layer, t, p, sig, layer.allowTransform);
@@ -4534,14 +4681,19 @@
         if (ds.strokeOpacity    !== undefined) shapeStyleDelta.strokeOpacity    = ds.strokeOpacity;
         if (ds.fillOpacity      !== undefined) shapeStyleDelta.fillOpacity      = ds.fillOpacity;
       }
-      if (d.morph) morphContrib = d.morph;
+      if (d.morph)      morphContrib = d.morph;
+      if (d.fillReveal) fillRevealContrib = d.fillReveal;
     }
-    if (pathDraw !== null || pathTrim !== null) applyPathDash(layer, pathDraw, pathTrim);
-    else if (layer._dashApplied) clearPathDash(layer);
-    if (shapeStyleDelta) applyShapeStyleDelta(layer, shapeStyleDelta);
-    else if (layer._shapeStyleApplied) clearShapeStyleDelta(layer);
-    if (morphContrib) applyMorph(layer, morphContrib);
-    else if (layer._morphApplied) clearMorph(layer);
+    if (pathKind) {
+      if (pathDraw !== null || pathTrim !== null) applyPathDash(layer, pathDraw, pathTrim);
+      else if (layer._dashApplied) clearPathDash(layer);
+      if (shapeStyleDelta) applyShapeStyleDelta(layer, shapeStyleDelta);
+      else if (layer._shapeStyleApplied) clearShapeStyleDelta(layer);
+      if (morphContrib) applyMorph(layer, morphContrib);
+      else if (layer._morphApplied) clearMorph(layer);
+    }
+    if (fillRevealContrib) applyFillReveal(layer, fillRevealContrib);
+    else if (layer._fillRevealApplied) clearFillReveal(layer);
   }
 
   /* ---------------- v19.9 SVG COMPATIBILITY INSPECTOR ----------------
