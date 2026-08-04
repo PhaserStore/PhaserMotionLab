@@ -361,7 +361,7 @@
   const el = {
     dropzone: $("#dropzone"), fileInput: $("#fileInput"), exposeSubToggle: $("#exposeSubToggle"),
     assetList: $("#assetList"), assetCount: $("#assetCount"),
-    presetGrid: $("#presetGrid"), applyAll: $("#applyAll"),
+    presetGrid: $("#presetGrid"), applyAll: $("#applyAll"), clearPresetBtn: $("#clearPresetBtn"),
     layerStack: $("#layerStack"), layerCount: $("#layerCount"),
     stage: $("#stage"), stageWorkspace: $("#stageWorkspace"), artboardScaler: $("#artboardScaler"), artboard: $("#artboard"), artboardBg: $("#artboardBg"),
     layerHost: $("#layerHost"), artboardFrame: $("#artboardFrame"), selectionBox: $("#selectionBox"),
@@ -2077,12 +2077,6 @@
         if (vout) { vout.max = dur.toFixed(2); vout.value = (L.srcOutPoint || dur).toFixed(2); }
         if (vvin)  vvin.textContent  = (L.srcInPoint  || 0).toFixed(2);
         if (vvout) vvout.textContent = (L.srcOutPoint || dur).toFixed(2);
-    // v19.9 SVG Diagnostics — only visible for SVG imports.
-    if (el.svgDiagGroup) {
-      const isSvg = has && selectedLayer.kind === "SVG";
-      el.svgDiagGroup.hidden = !isSvg;
-      if (isSvg) populateSvgDiagnostics(selectedLayer);
-    }
         // Path B badge — tells the user which decoder is driving this layer.
         const badge = document.getElementById("videoDecoderBadge");
         if (badge) {
@@ -2098,6 +2092,15 @@
         // the environmental status + the fallback reason (if any).
         renderVideoDiagPanel(L);
       }
+    }
+    // v19.9 SVG Diagnostics — only visible for SVG imports.
+    // Bugfix (v19.10): previously nested inside `if (isVideo)`, which
+    // meant this branch only ran for video layers — SVG imports never
+    // triggered the panel to unhide.  Now a peer of the video block.
+    if (el.svgDiagGroup) {
+      const isSvg = has && selectedLayer.kind === "SVG";
+      el.svgDiagGroup.hidden = !isSvg;
+      if (isSvg) populateSvgDiagnostics(selectedLayer);
     }
     if (!has) return;
     const t = selectedLayer.transform;
@@ -4476,6 +4479,71 @@
     layer._morphDiag = null;
   }
 
+  /* ---------------- v19.10 EXPORT / PREVIEW DOM PARITY ----------------
+     `applyVectorEffectsAtTime(layer, t)` walks the layer's active
+     clips at scene time `t` and applies just the DOM-mutating effects
+     (path-dash, shape-style delta, morph).  It's the shared code path
+     that keeps preview and export in visual sync — call before
+     rasterizing the layer, and the layer's SVG DOM reflects the exact
+     state that preview would have shown at that time.
+
+     Bug it fixes: `drawExportFrame` reused `imgs[layer.id]` pre-
+     rasterized ONCE at export start, so morph / Line Draw / etc. only
+     showed whatever state the DOM was in when rasterizeAll ran.  Now
+     the export loop calls this then re-rasters the affected layer
+     each frame — expensive but correct.
+
+     Contained tightly: only mutates the three vector-effect states.
+     Transform / opacity / blur are handled by the canvas renderer, so
+     we don't apply them here (which would double-apply). */
+  const VECTOR_FX_KEYS = new Set([
+    "shapeMorph", "lineDraw", "trimPaths", "pathEnergize", "lineTrace",
+    "strokeWidthPulse", "fillColorFlash",
+  ]);
+  function hasActiveVectorClip(layer, t) {
+    if (!layer || !layer.clips || !layer.clips.length) return false;
+    if (layer.kind !== "SVG" && layer.kind !== "SHAPE") return false;
+    const active = activeEventClipsAt(layer, t);
+    return active.some(({ c }) => VECTOR_FX_KEYS.has(c.fxKey));
+  }
+  function applyVectorEffectsAtTime(layer, t) {
+    if (layer.kind !== "SVG" && layer.kind !== "SHAPE") return;
+    const active = activeEventClipsAt(layer, t);
+    if (!active.length) {
+      if (layer._dashApplied)       clearPathDash(layer);
+      if (layer._shapeStyleApplied) clearShapeStyleDelta(layer);
+      if (layer._morphApplied)      clearMorph(layer);
+      return;
+    }
+    let pathDraw = null, pathTrim = null;
+    let shapeStyleDelta = null;
+    let morphContrib = null;
+    const sig = (typeof audioSignal === "function") ? audioSignal() : { level: 0, bass: 0, mid: 0, high: 0, peak: 0, beat: 0 };
+    for (const { c, p } of active) {
+      const d = evaluateClipDelta(c, layer, t, p, sig, layer.allowTransform);
+      if (!d) continue;
+      if (d.pathDraw !== undefined) pathDraw = d.pathDraw;
+      if (d.pathTrim !== undefined) pathTrim = d.pathTrim;
+      if (d.shapeStyle) {
+        if (!shapeStyleDelta) shapeStyleDelta = {};
+        const ds = d.shapeStyle;
+        if (ds.strokeWidthDelta !== undefined) shapeStyleDelta.strokeWidthDelta = (shapeStyleDelta.strokeWidthDelta || 0) + ds.strokeWidthDelta;
+        if (ds.strokeWidthMul   !== undefined) shapeStyleDelta.strokeWidthMul   = (shapeStyleDelta.strokeWidthMul   || 1) * ds.strokeWidthMul;
+        if (ds.strokeColor      !== undefined) shapeStyleDelta.strokeColor      = ds.strokeColor;
+        if (ds.fillColor        !== undefined) shapeStyleDelta.fillColor        = ds.fillColor;
+        if (ds.strokeOpacity    !== undefined) shapeStyleDelta.strokeOpacity    = ds.strokeOpacity;
+        if (ds.fillOpacity      !== undefined) shapeStyleDelta.fillOpacity      = ds.fillOpacity;
+      }
+      if (d.morph) morphContrib = d.morph;
+    }
+    if (pathDraw !== null || pathTrim !== null) applyPathDash(layer, pathDraw, pathTrim);
+    else if (layer._dashApplied) clearPathDash(layer);
+    if (shapeStyleDelta) applyShapeStyleDelta(layer, shapeStyleDelta);
+    else if (layer._shapeStyleApplied) clearShapeStyleDelta(layer);
+    if (morphContrib) applyMorph(layer, morphContrib);
+    else if (layer._morphApplied) clearMorph(layer);
+  }
+
   /* ---------------- v19.9 SVG COMPATIBILITY INSPECTOR ----------------
      Read-only analyzer for imported SVG layers.  Reports the counts,
      structural features, and effect-compatibility status that
@@ -4682,10 +4750,30 @@
   }
   function applyPreset(name, toAll) {
     const p = PRESETS[name]; if (!p) return;
+    /* v19.10 PRESET TOGGLE + CLEAR + BASELINE RESTORE.
+       Clicking the same preset twice now disables it — removes every
+       clip that was created by that preset and restores the global
+       STATE.patch values (flicker/rgbSplit/scanline/glow/etc.) to
+       their pre-preset baseline.  Clicking a DIFFERENT preset also
+       clears the previous one first, so presets don't accumulate. */
+    // Case 1: user clicked the currently-active preset → toggle off.
+    if (STATE._activePreset === name) {
+      _removeActivePreset();
+      toast(`${name} disabled`);
+      return;
+    }
+    // Case 2: a different preset is active → remove it first.
+    if (STATE._activePreset) _removeActivePreset({ quiet: true });
+    // Case 3: fresh apply — snapshot baseline first so we can restore.
+    STATE._prePresetPatch = {};
+    Object.keys(p.patch || {}).forEach((k) => { if (k in STATE) STATE._prePresetPatch[k] = STATE[k]; });
     Object.entries(p.patch).forEach(([k, v]) => { if (k in STATE) STATE[k] = v; });
     syncControls();
     const targets = (toAll || !selectedLayer) ? layers : [selectedLayer];
     if (!targets.length) { toast("Add a layer first"); return; }
+    // Track which clips this apply created so we can remove exactly those
+    // on toggle-off, without touching user-added clips of the same fxKey.
+    const createdClipIds = [];
     targets.forEach((layer, i) => {
       // v18.7: preset "fx" list becomes clips on the layer's timeline.
       // Each preset key gets a clip using its FX_EVENT_DEF metadata
@@ -4696,16 +4784,59 @@
       layer.clips = (layer.clips || []).filter((c) => !presetKeys.has(c.fxKey));
       (p.fx || []).forEach((fxKey) => {
         if (!FX_EVENT_DEF.has(fxKey)) return;   // unknown key — skip
-        createEventClip(fxKey, layer);
+        const clip = createEventClip(fxKey, layer);
+        if (clip) {
+          // v19.10: tag every clip we just added so toggle-off can
+          // remove exactly these ones without disturbing user clips.
+          clip._presetTag = name;
+          createdClipIds.push(clip.id);
+        }
       });
       // presets never force transform motion on; keep it as the user set it
       if (p.stagger && targets.length > 1) { layer.recipe = makeRecipe((layer.id * 131 + i * 997) >>> 0); layer.start = Math.min(STATE.duration * 0.5, i * 0.25); }
       else if (targets.length > 1) { layer.recipe = makeRecipe((layer.id * 131 + i * 331) >>> 0); }
     });
+    STATE._activePreset = name;
+    STATE._activePresetClipIds = createdClipIds;
     $$(".preset").forEach((c) => c.classList.toggle("active", c.textContent.trim() === name));
     renderTimeline(); renderInspector();
     startPlayback();
     toast(targets.length > 1 ? `Applied ${name} to ${targets.length} layers` : `Applied ${name}`);
+  }
+  /* Remove the currently-active preset: uncreate its tagged clips and
+     restore the pre-preset STATE.patch values.  Called from applyPreset
+     when toggling and from #clearPresetBtn. */
+  function _removeActivePreset(opts) {
+    opts = opts || {};
+    const name = STATE._activePreset;
+    if (!name) return;
+    const ids = new Set(STATE._activePresetClipIds || []);
+    let removedCount = 0;
+    layers.forEach((layer) => {
+      if (!layer.clips) return;
+      const before = layer.clips.length;
+      layer.clips = layer.clips.filter((c) => !(c._presetTag === name || ids.has(c.id)));
+      removedCount += before - layer.clips.length;
+    });
+    // Restore snapshotted STATE.patch values so global sliders return
+    // to what the user had before the preset was applied.
+    if (STATE._prePresetPatch) {
+      Object.entries(STATE._prePresetPatch).forEach(([k, v]) => { if (k in STATE) STATE[k] = v; });
+    }
+    STATE._activePreset = null;
+    STATE._activePresetClipIds = null;
+    STATE._prePresetPatch = null;
+    syncControls();
+    $$(".preset").forEach((c) => c.classList.remove("active"));
+    renderTimeline(); renderInspector();
+    // Clear any lingering vector effect residue on affected layers.
+    layers.forEach((L) => {
+      if (typeof clearPathDash === "function")       clearPathDash(L);
+      if (typeof clearShapeStyleDelta === "function") clearShapeStyleDelta(L);
+      if (typeof clearMorph === "function")           clearMorph(L);
+    });
+    paintIfPaused();
+    if (!opts.quiet) toast(`Preset cleared (${removedCount} clip${removedCount === 1 ? "" : "s"} removed)`);
   }
   function applyMotionAll() { if (!layers.length) { toast("Add layers first"); return; } applyPreset("Signal System", true); toast("Motion applied to all layers"); }
 
@@ -5725,6 +5856,31 @@
     const sig = audioSignal();
     const drawList = exportLayers();
 
+    // v19.10: EXPORT / PREVIEW PARITY for vector effects.
+    //  imgs[] was pre-rasterized ONCE at export start (rasterizeAll).
+    //  For layers with morph / path-dash / shape-style clips active at
+    //  time `t`, the rasterized snapshot is stale — the DOM must
+    //  reflect the current frame's animated state and be re-rasterized
+    //  before the canvas composite reads it.  Cost: one extra
+    //  SVG→image rasterization per affected layer per frame.  Skipped
+    //  entirely for frames with no active vector clip on the layer,
+    //  so static layers pay nothing.
+    for (const layer of drawList) {
+      if (!hasActiveVectorClip(layer, t)) {
+        // No animation this frame — but if a prior frame DID mutate
+        // the DOM (e.g., morph applied at t=0.5, we're now at t=1.5),
+        // clear that state and re-rasterize to the baseline once.
+        const needsClear = (layer._morphApplied || layer._dashApplied || layer._shapeStyleApplied);
+        if (needsClear) {
+          applyVectorEffectsAtTime(layer, t);   // clears
+          try { imgs[layer.id] = await layerToImage(layer, W, H); } catch (e) {}
+        }
+        continue;
+      }
+      applyVectorEffectsAtTime(layer, t);
+      try { imgs[layer.id] = await layerToImage(layer, W, H); } catch (e) {}
+    }
+
     // Per-frame flash / hud collectors
     let frameFlash = null, frameFlashA = 0, frameHudFlicker = 0;
     const frameOverlays = []; // { type, ... } for radar sweeps etc
@@ -5954,7 +6110,7 @@
     // Scanlines: honor STATE.scanline + boost from events. In transparent
     // mode, use source-atop so they only darken existing artwork, never
     // add solid black to empty regions.
-    const scanTotal = clamp01(STATE.scanline / 100 + (drawList.some((l) => l.fx.length || l.clips.length) ? 0 : 0));
+    const scanTotal = clamp01(STATE.scanline / 100 + (drawList.some((l) => (l.fx && l.fx.length) || (l.clips && l.clips.length)) ? 0 : 0));
     if (scanTotal > 0.01) {
       ctx.save();
       if (transparent) ctx.globalCompositeOperation = "source-atop";
@@ -7637,6 +7793,12 @@
 
     // presets
     el.applyAll.addEventListener("click", applyMotionAll);
+    if (el.clearPresetBtn) {
+      el.clearPresetBtn.addEventListener("click", () => {
+        if (!STATE._activePreset) { toast("No preset active"); return; }
+        _removeActivePreset();
+      });
+    }
 
     // transform sliders + buttons
     bindTransform();
