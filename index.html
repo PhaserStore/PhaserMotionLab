@@ -307,6 +307,10 @@
               <button class="mini-btn" id="layerLock">Lock</button>
               <button class="mini-btn danger" id="layerDel">Delete</button>
             </div>
+            <!-- v19.9: Clear all effect clips from the selected layer(s) -->
+            <div class="btn-grid" style="margin-top:6px">
+              <button class="mini-btn" id="layerClearFx" title="Remove every effect clip from the selected layer(s). Keeps the layer.">Clear all effects</button>
+            </div>
           </div>
         </section>
 
@@ -428,6 +432,15 @@
         </section>
 
         <!-- TRANSFORM (existing) -->
+        <!-- v19.9 SVG Diagnostics — only visible for SVG imports.
+             Reports primitive counts + Line-Draw/Trim-Paths/Morph
+             compatibility so users can understand why an SVG works
+             (or doesn't) with vector effects. -->
+        <section class="prop-group" id="svgDiagGroup" hidden>
+          <div class="group-head"><h3>SVG Diagnostics</h3><span class="badge" id="svgDiagStatus">—</span></div>
+          <div class="svg-diag-body" id="svgDiagBody"></div>
+        </section>
+
         <!-- ALIGNMENT -->
         <section class="prop-group" id="alignGroup">
           <div class="group-head"><h3>Alignment</h3></div>
