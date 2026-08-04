@@ -201,6 +201,20 @@
     // shapes, text — because it clips at the layer wrap level and
     // never mutates fills / gradients / colors.
     { key: "fillReveal",       label: "Fill Reveal",        defDur: 1.20, group: "vector", placement: "layerStart" },
+    // v19.14 SEGMENT REVEAL — reveals individual primitives inside an
+    // SVG sequentially rather than wiping the composite.  Modes:
+    // sequential, sequential-reverse, random (seeded), center-out,
+    // edges-in.  Falls back to a single-primitive reveal on native
+    // SHAPE layers.  Uses per-primitive opacity — preserves fills,
+    // gradients, and stroke/fill colors exactly.
+    { key: "segmentReveal",    label: "Segment Reveal",     defDur: 1.60, group: "vector", placement: "layerStart" },
+    // v19.14 EXPANSION BUILD — transition from small centered graphic
+    // to full-frame visual.  Computes the target scale automatically
+    // from the canvas / layer size ratio so the layer fills the frame
+    // at p=1.  Optional cross-effects: fade during expansion, rotate
+    // during expansion.  This is a transform/opacity delta, not a
+    // vector-DOM mutation, so it works on every layer kind.
+    { key: "expansionBuild",   label: "Expansion Build",    defDur: 1.50, group: "vector", placement: "layerStart" },
     // v19.9 Morphing v1 — path-to-path interpolation.  Supports:
     //   rect ↔ rect · circle ↔ circle · ellipse ↔ ellipse · line ↔ line
     //   polygon ↔ polygon (same side count)
@@ -300,6 +314,22 @@
       // "center-out" (rectangular growth), "radial" (circular growth).
       // Angle-based directional reveal is planned separately.
       case "fillReveal":       return { ...base, intensity: 100, direction: "left" };
+      // v19.14 Segment Reveal defaults.
+      //  - mode: sequential | sequential-reverse | random | center-out | edges-in
+      //  - spread: 0-100 = how tight the stagger is.  0 = all-at-once
+      //    (degenerates to Fill Reveal), 100 = last piece starts as
+      //    the first piece ends.  Default 60 = pleasant overlap.
+      //  - seed: only used for random mode; kept stable across
+      //    replays so the animation is deterministic.
+      case "segmentReveal":    return { ...base, intensity: 100, mode: "sequential", spread: 60, seed: 1 };
+      // v19.14 Expansion Build defaults.
+      //  - mode: expand | expand-fade | expand-rotate | expand-focal
+      //  - targetScale: 0 = "compute from canvas size"; any positive
+      //    value = explicit target multiplier.  Defaults to auto.
+      //  - rotateAmount: degrees traversed during the expansion (used
+      //    only in expand-rotate mode).
+      //  - ease: "easeIn" | "linear" | "easeOut" | "easeInOut"
+      case "expansionBuild":   return { ...base, intensity: 100, mode: "expand", targetScale: 0, rotateAmount: 180, ease: "easeIn" };
       // v19.9 Shape Morph.  morphTargetLayerId is 0 by default (=
       // "no target"), and the effect no-ops until the user picks one.
       case "shapeMorph":       return { ...base, intensity: 100, morphTargetLayerId: 0, morphTargetIndex: 0 };
@@ -1478,7 +1508,7 @@
     // v19.8: same invalidation for the shape-style delta baseline
     // cache.  The baseline was measured from the old primitive; the
     // new one may have different stroke/fill defaults.
-    layer._primitives = null;
+    layer._primitives = null; layer._segmentPrims = null; layer._segmentOrder = null;
     layer._shapeStyleApplied = false;
     layer.node.setAttribute("xmlns", svgNS);
     layer.node.setAttribute("viewBox", `${-pad} ${-pad} ${vbW} ${vbH}`);
@@ -2737,6 +2767,107 @@
           });
           row.appendChild(sel); paramsHost.appendChild(row);
         }
+        // v19.14: Segment Reveal — mode + spread pickers.
+        if (selectedEventClip.ec.fxKey === "segmentReveal") {
+          // Mode dropdown
+          const row1 = document.createElement("div"); row1.className = "prop-row";
+          row1.innerHTML = `<span class="prop-label">Mode</span>`;
+          const sel = document.createElement("select");
+          sel.className = "ctl-num"; sel.style.minWidth = "0"; sel.style.flex = "1"; sel.style.width = "auto"; sel.style.padding = "2px 6px";
+          const opts = [
+            ["sequential",         "Sequential"],
+            ["sequential-reverse", "Reverse"],
+            ["random",             "Random"],
+            ["center-out",         "Center Out"],
+            ["edges-in",           "Edges In"],
+          ];
+          opts.forEach(([v, label]) => {
+            const o = document.createElement("option"); o.value = v; o.textContent = label;
+            sel.appendChild(o);
+          });
+          sel.value = p.mode || "sequential";
+          sel.addEventListener("change", () => {
+            p.mode = sel.value;
+            // Clear the segment-primitives cache — the sort signature changed.
+            const L = selectedEventClip.layer;
+            L._segmentPrims = null; L._segmentOrder = null; L._segmentSig = null;
+            renderTimeline(); paintIfPaused();
+          });
+          row1.appendChild(sel); paramsHost.appendChild(row1);
+          // Spread slider (stagger tightness)
+          const row2 = document.createElement("div"); row2.className = "prop-row";
+          row2.innerHTML = `<span class="prop-label">Spread</span>`;
+          const cell = document.createElement("div"); cell.style.display = "flex"; cell.style.gap = "6px"; cell.style.alignItems = "center"; cell.style.flex = "1";
+          const rng = document.createElement("input");
+          rng.type = "range"; rng.min = 0; rng.max = 100; rng.step = 1; rng.value = p.spread ?? 60;
+          rng.style.flex = "1";
+          const val = document.createElement("span");
+          val.className = "ctl-val"; val.textContent = String(p.spread ?? 60);
+          const write = () => {
+            p.spread = parseInt(rng.value, 10);
+            val.textContent = String(p.spread);
+            renderTimeline(); paintIfPaused();
+          };
+          rng.addEventListener("input", write);
+          cell.appendChild(rng); cell.appendChild(val);
+          row2.appendChild(cell); paramsHost.appendChild(row2);
+        }
+        // v19.14: Expansion Build — mode picker + rotate-amount when applicable.
+        if (selectedEventClip.ec.fxKey === "expansionBuild") {
+          const row1 = document.createElement("div"); row1.className = "prop-row";
+          row1.innerHTML = `<span class="prop-label">Mode</span>`;
+          const sel = document.createElement("select");
+          sel.className = "ctl-num"; sel.style.minWidth = "0"; sel.style.flex = "1"; sel.style.width = "auto"; sel.style.padding = "2px 6px";
+          const opts = [
+            ["expand",         "Expand"],
+            ["expand-fade",    "Expand + Fade"],
+            ["expand-rotate",  "Expand + Rotate"],
+          ];
+          opts.forEach(([v, label]) => {
+            const o = document.createElement("option"); o.value = v; o.textContent = label;
+            sel.appendChild(o);
+          });
+          sel.value = p.mode || "expand";
+          sel.addEventListener("change", () => {
+            p.mode = sel.value;
+            renderTimeline(); renderClipInspector(); paintIfPaused();
+          });
+          row1.appendChild(sel); paramsHost.appendChild(row1);
+          // Ease dropdown
+          const row2 = document.createElement("div"); row2.className = "prop-row";
+          row2.innerHTML = `<span class="prop-label">Ease</span>`;
+          const eSel = document.createElement("select");
+          eSel.className = "ctl-num"; eSel.style.minWidth = "0"; eSel.style.flex = "1"; eSel.style.width = "auto"; eSel.style.padding = "2px 6px";
+          [["easeIn","Ease In"],["linear","Linear"],["easeOut","Ease Out"],["easeInOut","Ease In-Out"]].forEach(([v, label]) => {
+            const o = document.createElement("option"); o.value = v; o.textContent = label;
+            eSel.appendChild(o);
+          });
+          eSel.value = p.ease || "easeIn";
+          eSel.addEventListener("change", () => {
+            p.ease = eSel.value;
+            renderTimeline(); paintIfPaused();
+          });
+          row2.appendChild(eSel); paramsHost.appendChild(row2);
+          // Rotate amount slider — only when mode = expand-rotate
+          if (p.mode === "expand-rotate") {
+            const row3 = document.createElement("div"); row3.className = "prop-row";
+            row3.innerHTML = `<span class="prop-label">Rotation</span>`;
+            const cell = document.createElement("div"); cell.style.display = "flex"; cell.style.gap = "6px"; cell.style.alignItems = "center"; cell.style.flex = "1";
+            const rng = document.createElement("input");
+            rng.type = "range"; rng.min = -720; rng.max = 720; rng.step = 15; rng.value = p.rotateAmount ?? 180;
+            rng.style.flex = "1";
+            const val = document.createElement("span");
+            val.className = "ctl-val"; val.textContent = `${p.rotateAmount ?? 180}°`;
+            const write = () => {
+              p.rotateAmount = parseInt(rng.value, 10);
+              val.textContent = `${p.rotateAmount}°`;
+              renderTimeline(); paintIfPaused();
+            };
+            rng.addEventListener("input", write);
+            cell.appendChild(rng); cell.appendChild(val);
+            row3.appendChild(cell); paramsHost.appendChild(row3);
+          }
+        }
         // Vector Beam growth easing seg (hard/ease) — separate from
         // direction because it uses different labels/values.
         if (selectedEventClip.ec.fxKey === "vectorBeam") {
@@ -3497,6 +3628,55 @@
         },
       };
     },
+
+    // v19.14 SEGMENT REVEAL.  Emits a marker with the mode + progress
+    // + spread; applySegmentReveal orders the layer's primitives per
+    // mode and computes per-element opacity from a staggered progress
+    // ramp.  Ease-out cubic per element makes the pop-in feel snappy.
+    segmentReveal(p, sig, params) {
+      const k = ((params?.intensity ?? 100) / 100);
+      const mode = (params && params.mode) || "sequential";
+      // Spread of 0 collapses to one simultaneous reveal.  100 spaces
+      // reveals across the whole clip window with no overlap.
+      const spread = ((params && params.spread) !== undefined ? params.spread : 60) / 100;
+      const seed = (params && params.seed) || 1;
+      return {
+        segmentReveal: {
+          mode,
+          progress: Math.max(0, Math.min(1, p)) * k,
+          spread,
+          seed,
+        },
+      };
+    },
+
+    // v19.14 EXPANSION BUILD.  Small graphic → full-frame visual.
+    //  - `extraScale` grows from 1 to (auto or user) target across p.
+    //  - Optional opacity fade + rotation via mode.
+    //  - Auto target uses canvas / layer size ratio so the layer
+    //    fills the frame at p=1.  applyMarker sets it lazily.
+    //  - Ease-in cubic default gives the "small → explosive growth"
+    //    feel users expect.
+    expansionBuild(p, sig, params) {
+      const k = ((params?.intensity ?? 100) / 100);
+      const t = Math.max(0, Math.min(1, p));
+      const mode = (params && params.mode) || "expand";
+      const easeMode = (params && params.ease) || "easeIn";
+      const easedT = (
+        easeMode === "linear"    ? t :
+        easeMode === "easeOut"   ? 1 - Math.pow(1 - t, 3) :
+        easeMode === "easeInOut" ? (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2) :
+        /* easeIn (default) */     t * t * t
+      );
+      return {
+        expansion: {
+          progress: easedT * k,
+          mode,
+          userTargetScale: (params && params.targetScale) || 0,
+          rotateAmount: (params && params.rotateAmount) || 0,
+        },
+      };
+    },
   };
 
   // For each event key, which live layer field it modifies (used to
@@ -3922,6 +4102,9 @@
     // stacking two reveal modes on the same layer isn't a useful
     // authoring pattern; the last-active clip's direction is used.
     let fillRevealContrib = null;
+    // v19.14: segment-reveal + expansion contributions.  Both latest-wins.
+    let segmentRevealContrib = null;
+    let expansionContrib = null;
     const allowT = layer.allowTransform;
 
     // v18.7: layer.fx sustained-toggle system removed.  Every effect
@@ -3971,6 +4154,9 @@
         if (d.morph) morphContrib = d.morph;
         // v19.12 Fill Reveal — latest-wins across active clips.
         if (d.fillReveal) fillRevealContrib = d.fillReveal;
+        // v19.14 Segment Reveal + Expansion — latest-wins.
+        if (d.segmentReveal) segmentRevealContrib = d.segmentReveal;
+        if (d.expansion)     expansionContrib     = d.expansion;
         // Event clips MAY move / scale / rotate the layer briefly even
         // when allowTransform is off (they're designed as short micro-
         // motions).
@@ -4028,6 +4214,19 @@
     // fills / gradients / colors exactly.
     if (fillRevealContrib) applyFillReveal(layer, fillRevealContrib);
     else if (layer._fillRevealApplied) clearFillReveal(layer);
+    // v19.14 Segment Reveal — per-primitive opacity animation.
+    // Works on any layer whose SVG contains primitives (SHAPE + SVG).
+    if (segmentRevealContrib) applySegmentReveal(layer, segmentRevealContrib);
+    else if (layer._segmentRevealApplied) clearSegmentReveal(layer);
+    // v19.14 Expansion Build — fold scale/opacity/rot deltas into the
+    // transform accumulators BEFORE the transform is written to the
+    // DOM.  Works on every layer kind.
+    if (expansionContrib) {
+      const ed = computeExpansionDelta(layer, expansionContrib, STATE.format);
+      extraScale *= ed.scaleSafe;
+      opacity *= ed.opacity;
+      rot += ed.rot;
+    }
 
     // Scan mask (event-only): reveal from left as p goes 0->1
     if (scanMask !== null) { layer.wrap.style.clipPath = `inset(0 ${((1 - scanMask) * 100).toFixed(1)}% 0 0)`; layer._clipApplied = true; }
@@ -4137,6 +4336,8 @@
     if (_va && layer._morphApplied) clearMorph(layer);
     // v19.12: fillReveal works on any layer kind (not just vector).
     if (layer._fillRevealApplied) clearFillReveal(layer);
+    // v19.14: segmentReveal is per-primitive opacity — clear on static.
+    if (layer._segmentRevealApplied) clearSegmentReveal(layer);
   }
 
   // Render one static frame (no animation) — every visible layer at rest,
@@ -4524,7 +4725,7 @@
       layer._morphPath = morphPath;
       // Invalidate caches that reference the old primitive.
       layer._strokes = null;
-      layer._primitives = null;
+      layer._primitives = null; layer._segmentPrims = null; layer._segmentOrder = null;
     }
     morphPath.setAttribute("d", dInterp);
     layer._morphApplied = true;
@@ -4543,7 +4744,7 @@
       layer._morphOrigNode = null;
       layer._morphOrigD = null;
       layer._strokes = null;
-      layer._primitives = null;
+      layer._primitives = null; layer._segmentPrims = null; layer._segmentOrder = null;
     }
     layer._morphApplied = false;
     layer._morphDiag = null;
@@ -4618,6 +4819,131 @@
     layer._fillRevealApplied = false;
   }
 
+  /* ---------------- v19.14 SEGMENT REVEAL ----------------
+     Reveals individual primitives inside an SVG or shape layer one at
+     a time.  Unlike Fill Reveal (which wipes the composite), this
+     mutates each primitive's opacity independently so the animation
+     feels like the artwork is being assembled piece-by-piece.
+
+     Ordering modes:
+       sequential          - document order (natural reading)
+       sequential-reverse  - reverse of document order
+       random              - deterministic shuffle (seed param stable)
+       center-out          - by distance from layer center, ascending
+       edges-in            - by distance from layer center, descending
+
+     Stagger math:
+       shift       = spread / N              (per-primitive start offset)
+       windowSize  = 1 - shift * (N - 1)     (each primitive's reveal window)
+       start_i     = i * shift               (in the sort-order space)
+       localP_i    = clamp((P - start_i) / windowSize, 0, 1)
+     At spread=0 every primitive reveals in sync (degenerates to Fill
+     Reveal); at spread=1 the last primitive starts exactly as the
+     first finishes.  Ease-out cubic per primitive for a snappy pop. */
+  function shufflePrimIndices(N, seed) {
+    // Deterministic LCG so replays are identical.  Fisher-Yates.
+    const arr = Array.from({ length: N }, (_, i) => i);
+    let s = (seed | 0) || 1;
+    for (let i = N - 1; i > 0; i--) {
+      s = (s * 1103515245 + 12345) & 0x7fffffff;
+      const j = s % (i + 1);
+      const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+    }
+    return arr;
+  }
+  function orderPrimitivesForReveal(prims, mode, seed) {
+    const N = prims.length;
+    if (!N) return [];
+    // Build sort-order indices — arr[sortIdx] = origIdx.
+    if (mode === "sequential")          return prims.map((_, i) => i);
+    if (mode === "sequential-reverse")  return prims.map((_, i) => N - 1 - i);
+    if (mode === "random")              return shufflePrimIndices(N, seed);
+    if (mode === "center-out" || mode === "edges-in") {
+      // Compute each primitive's centroid, then sort by distance from
+      // the layer's local center.  Use getBBox() (SVG-native) for the
+      // primitive's local bounds.
+      const dists = prims.map((n, i) => {
+        let cx = 0, cy = 0;
+        try {
+          const bb = n.getBBox();
+          cx = bb.x + bb.width / 2;
+          cy = bb.y + bb.height / 2;
+        } catch (e) {}
+        return { i, d: cx * cx + cy * cy };   // squared dist from origin; SVG local coords
+      });
+      // For center-out, sort ascending; edges-in, descending.
+      dists.sort((a, b) => (mode === "center-out" ? a.d - b.d : b.d - a.d));
+      return dists.map((x) => x.i);
+    }
+    return prims.map((_, i) => i);
+  }
+  function applySegmentReveal(layer, r) {
+    if (!layer || !layer.node) return;
+    // Cache the primitive list + sort order.  Invalidates on rebuild
+    // (buildShapeLayerSVG / SVG import) and on mode change.
+    const modeSig = `${r.mode}|${r.seed}`;
+    if (!layer._segmentPrims || layer._segmentSig !== modeSig) {
+      const prims = Array.from(layer.node.querySelectorAll("path, rect, circle, ellipse, line, polygon, polyline"));
+      const order = orderPrimitivesForReveal(prims, r.mode, r.seed);
+      layer._segmentPrims = prims;
+      layer._segmentOrder = order;
+      layer._segmentSig = modeSig;
+    }
+    const N = layer._segmentPrims.length;
+    if (!N) return;
+    const spread = Math.max(0, Math.min(1, r.spread));
+    const shift = N > 1 ? (spread / N) : 0;
+    const windowSize = Math.max(0.0001, 1 - shift * (N - 1));
+    const P = Math.max(0, Math.min(1, r.progress));
+    // Map sort-order → primitive.  primAtSortIdx = _segmentPrims[_segmentOrder[k]]
+    for (let k = 0; k < N; k++) {
+      const origIdx = layer._segmentOrder[k];
+      const prim = layer._segmentPrims[origIdx];
+      const startK = k * shift;
+      const localP = Math.max(0, Math.min(1, (P - startK) / windowSize));
+      // Ease-out cubic per primitive for a snappy pop-in.
+      const eased = 1 - Math.pow(1 - localP, 3);
+      prim.style.opacity = eased.toFixed(3);
+    }
+    layer._segmentRevealApplied = true;
+  }
+  function clearSegmentReveal(layer) {
+    if (layer && layer._segmentPrims) {
+      layer._segmentPrims.forEach((n) => { n.style.opacity = ""; });
+    }
+    if (layer) layer._segmentRevealApplied = false;
+  }
+
+  /* ---------------- v19.14 EXPANSION BUILD ----------------
+     Not an applier — returns scale/opacity/rot deltas that composeLayer
+     folds into its existing extraScale / opacity / rot accumulators.
+     Target scale is computed from the canvas/layer size ratio so the
+     layer covers the frame at progress=1, unless the user overrode it
+     with an explicit targetScale.  Called from composeLayer directly. */
+  function computeExpansionDelta(layer, r, STATEFormat) {
+    const T = layer.transform;
+    // Current layer size in canvas pixels.
+    const wPx = (T.wPct / 100) * STATEFormat.w;
+    const hPx = (T.hPct / 100) * STATEFormat.h;
+    // Auto target = the smaller of (canvas.w / layer.w, canvas.h / layer.h)
+    // multiplied by a small safety margin so edges reach the frame.
+    let target;
+    if (r.userTargetScale && r.userTargetScale > 0) target = r.userTargetScale;
+    else {
+      const kw = STATEFormat.w / Math.max(1, wPx);
+      const kh = STATEFormat.h / Math.max(1, hPx);
+      target = Math.max(kw, kh) * 1.05;   // 5% overshoot so edges leave the frame
+    }
+    // Interpolate 1 → target across progress.  Bounded to avoid runaway
+    // when the source layer is already large.
+    const scaleFactor = 1 + (Math.max(1, target) - 1) * r.progress;
+    let opacityMul = 1;
+    let rotDelta = 0;
+    if (r.mode === "expand-fade")    opacityMul = 1 - r.progress;
+    if (r.mode === "expand-rotate")  rotDelta = (r.rotateAmount || 0) * r.progress;
+    return { scaleSafe: scaleFactor, opacity: opacityMul, rot: rotDelta };
+  }
+
   /* ---------------- v19.10 EXPORT / PREVIEW DOM PARITY ----------------
      `applyVectorEffectsAtTime(layer, t)` walks the layer's active
      clips at scene time `t` and applies just the DOM-mutating effects
@@ -4638,16 +4964,22 @@
   const VECTOR_FX_KEYS = new Set([
     "shapeMorph", "lineDraw", "trimPaths", "pathEnergize", "lineTrace",
     "strokeWidthPulse", "fillColorFlash",
-    "fillReveal",   // v19.12
+    "fillReveal",       // v19.12
+    "segmentReveal",    // v19.14  (per-primitive opacity - DOM mutation)
+    // NOTE: expansionBuild is intentionally NOT here.  It's a
+    // transform/opacity delta only — no DOM mutation — so it doesn't
+    // need per-frame re-rasterization.  The export evaluator picks it
+    // up via evaluateLayerAtTime → scaleSafe/opacity/rot accumulators.
   ]);
   function hasActiveVectorClip(layer, t) {
     if (!layer || !layer.clips || !layer.clips.length) return false;
-    // v19.12: fillReveal works on ANY layer kind (via wrap clip-path),
-    // not just SHAPE/SVG.  Others still gate on kind.
+    // v19.12: fillReveal + segmentReveal work on any layer with a wrap
+    // (fillReveal) or primitives (segmentReveal).  Other DOM-mutating
+    // vector effects gate on kind === SVG|SHAPE.
     const active = activeEventClipsAt(layer, t);
     return active.some(({ c }) => {
       if (!VECTOR_FX_KEYS.has(c.fxKey)) return false;
-      if (c.fxKey === "fillReveal") return true;
+      if (c.fxKey === "fillReveal" || c.fxKey === "segmentReveal") return true;
       return layer.kind === "SVG" || layer.kind === "SHAPE";
     });
   }
@@ -4659,12 +4991,14 @@
       if (pathKind && layer._shapeStyleApplied) clearShapeStyleDelta(layer);
       if (pathKind && layer._morphApplied)      clearMorph(layer);
       if (layer._fillRevealApplied)             clearFillReveal(layer);
+      if (layer._segmentRevealApplied)          clearSegmentReveal(layer);
       return;
     }
     let pathDraw = null, pathTrim = null;
     let shapeStyleDelta = null;
     let morphContrib = null;
     let fillRevealContrib = null;
+    let segmentRevealContrib = null;
     const sig = (typeof audioSignal === "function") ? audioSignal() : { level: 0, bass: 0, mid: 0, high: 0, peak: 0, beat: 0 };
     for (const { c, p } of active) {
       const d = evaluateClipDelta(c, layer, t, p, sig, layer.allowTransform);
@@ -4681,8 +5015,9 @@
         if (ds.strokeOpacity    !== undefined) shapeStyleDelta.strokeOpacity    = ds.strokeOpacity;
         if (ds.fillOpacity      !== undefined) shapeStyleDelta.fillOpacity      = ds.fillOpacity;
       }
-      if (d.morph)      morphContrib = d.morph;
-      if (d.fillReveal) fillRevealContrib = d.fillReveal;
+      if (d.morph)          morphContrib = d.morph;
+      if (d.fillReveal)     fillRevealContrib = d.fillReveal;
+      if (d.segmentReveal)  segmentRevealContrib = d.segmentReveal;
     }
     if (pathKind) {
       if (pathDraw !== null || pathTrim !== null) applyPathDash(layer, pathDraw, pathTrim);
@@ -4694,6 +5029,8 @@
     }
     if (fillRevealContrib) applyFillReveal(layer, fillRevealContrib);
     else if (layer._fillRevealApplied) clearFillReveal(layer);
+    if (segmentRevealContrib) applySegmentReveal(layer, segmentRevealContrib);
+    else if (layer._segmentRevealApplied) clearSegmentReveal(layer);
   }
 
   /* ---------------- v19.9 SVG COMPATIBILITY INSPECTOR ----------------
@@ -5014,7 +5351,7 @@
       layer._svgSnapshot = null;
       layer._svgRepairsApplied = [];
       // Invalidate every cached DOM reference — the primitives are new nodes.
-      layer._primitives = null;
+      layer._primitives = null; layer._segmentPrims = null; layer._segmentOrder = null;
       layer._strokes = null;
       layer._morphPath = null;
       layer._morphOrigNode = null;
@@ -5038,7 +5375,7 @@
     else { toast("Unknown repair"); return; }
     if (!layer._svgRepairsApplied.includes(op)) layer._svgRepairsApplied.push(op);
     // Invalidate caches — DOM has been mutated.
-    layer._primitives = null;
+    layer._primitives = null; layer._segmentPrims = null; layer._segmentOrder = null;
     layer._strokes = null;
     layer._dashApplied = false;
     layer._shapeStyleApplied = false;
@@ -6238,6 +6575,16 @@
       if (d.rotY) s.rotY += d.rotY;
       if (d.skew) s.skew += d.skew;
       if (d.scaleSafe !== undefined) s.extraScale *= d.scaleSafe;
+      // v19.14 Expansion Build in export.  Same computation as preview
+      // but folded into export's `s` accumulator so the resulting MP4
+      // matches preview exactly.  Uses STATE.format (global) for the
+      // canvas dimensions, matching the preview path.
+      if (d.expansion) {
+        const ed = computeExpansionDelta(layer, d.expansion, STATE.format);
+        s.extraScale *= ed.scaleSafe;
+        s.opacity   *= ed.opacity;
+        s.rot       += ed.rot;
+      }
       // New channels for the canvas renderer (drawExportFrame reads these).
       if (d.tear !== undefined) s.tear = d.tear;
       if (d.targetPing !== undefined) s.targetPing = d.targetPing;
