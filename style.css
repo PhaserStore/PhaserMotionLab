@@ -633,6 +633,17 @@ body.focus-mode .selection-box { display: none !important; }
 .diag-value { color: var(--text); font-variant-numeric: tabular-nums; text-align: right; }
 .diag-ok { color: var(--accent-2); font-weight: 600; }
 .diag-fail { color: #ff5566; font-weight: 600; }
+.diag-warn-inline { color: #ff9944; font-weight: 600; }
+/* v19.13: effect coverage report — one horizontal bar per effect
+   family, filled proportionally to the fraction of primitives in the
+   SVG that satisfy the effect's requirements. */
+.coverage-block { margin: 8px 0 4px; padding: 8px 0 6px; border-top: 1px dashed var(--border); border-bottom: 1px dashed var(--border); }
+.coverage-head { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-3); margin-bottom: 6px; }
+.coverage-row { display: grid; grid-template-columns: 130px 1fr auto; gap: 8px; align-items: center; margin-bottom: 4px; font-size: 10px; }
+.coverage-label { color: var(--text-2); }
+.coverage-bar { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; }
+.coverage-fill { height: 100%; background: linear-gradient(to right, var(--accent), var(--accent-2)); border-radius: 3px; transition: width 0.2s; }
+.coverage-pct { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 500; }
 .diag-warnings { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
 .diag-warnings li { padding: 6px 8px; border-radius: var(--r-xs); background: var(--panel-2); border-left: 3px solid var(--border); }
 .diag-warnings li.diag-warn { border-left-color: #ff9944; }
