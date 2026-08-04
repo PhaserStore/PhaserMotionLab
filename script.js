@@ -322,14 +322,26 @@
       //  - seed: only used for random mode; kept stable across
       //    replays so the animation is deterministic.
       case "segmentReveal":    return { ...base, intensity: 100, mode: "sequential", spread: 60, seed: 1 };
-      // v19.14 Expansion Build defaults.
-      //  - mode: expand | expand-fade | expand-rotate | expand-focal
-      //  - targetScale: 0 = "compute from canvas size"; any positive
-      //    value = explicit target multiplier.  Defaults to auto.
-      //  - rotateAmount: degrees traversed during the expansion (used
-      //    only in expand-rotate mode).
-      //  - ease: "easeIn" | "linear" | "easeOut" | "easeInOut"
-      case "expansionBuild":   return { ...base, intensity: 100, mode: "expand", targetScale: 0, rotateAmount: 180, ease: "easeIn" };
+      // v19.14 Expansion Build defaults (v19.15 redesigned for cinematic drama).
+      //  - mode: expand | expand-fade | expand-rotate | expand-blur |
+      //          explosive | fit-canvas
+      //    Default `expand`: pure scale to the user's targetScale.
+      //    `explosive`: preset combining fade + blur + rotate + easeInQuint.
+      //    `fit-canvas`: auto-computes targetScale from canvas/layer ratio.
+      //  - targetScale: 1..100x multiplier.  Default 20x for immediate
+      //    drama (was 0=auto-fit in v19.14, which felt too tame).
+      //    Ignored when mode = fit-canvas.
+      //  - origin: "object-center" (default, expands from layer's own
+      //    center — cinematic zoom-into feel) or "canvas-center"
+      //    (layer's on-canvas position pulled toward center as scale
+      //    grows).  Custom focal point is a planned future addition.
+      //  - ease: easeIn | easeInQuint | linear | easeOut | easeInOut
+      //    easeInQuint (t^5) gives the "held still then explodes" feel.
+      //  - rotateAmount: degrees during expansion (rotate/explosive modes).
+      //  - blurAmount: max blur px (blur/explosive modes).
+      case "expansionBuild":   return { ...base, intensity: 100,
+        mode: "expand", targetScale: 20, origin: "object-center",
+        ease: "easeIn", rotateAmount: 180, blurAmount: 12 };
       // v19.9 Shape Morph.  morphTargetLayerId is 0 by default (=
       // "no target"), and the effect no-ops until the user picks one.
       case "shapeMorph":       return { ...base, intensity: 100, morphTargetLayerId: 0, morphTargetIndex: 0 };
@@ -2812,8 +2824,9 @@
           cell.appendChild(rng); cell.appendChild(val);
           row2.appendChild(cell); paramsHost.appendChild(row2);
         }
-        // v19.14: Expansion Build — mode picker + rotate-amount when applicable.
+        // v19.14/19.15: Expansion Build — cinematic zoom controls.
         if (selectedEventClip.ec.fxKey === "expansionBuild") {
+          // Mode dropdown — presets that enable different cross-effects.
           const row1 = document.createElement("div"); row1.className = "prop-row";
           row1.innerHTML = `<span class="prop-label">Mode</span>`;
           const sel = document.createElement("select");
@@ -2822,6 +2835,9 @@
             ["expand",         "Expand"],
             ["expand-fade",    "Expand + Fade"],
             ["expand-rotate",  "Expand + Rotate"],
+            ["expand-blur",    "Expand + Blur"],
+            ["explosive",      "Explosive"],
+            ["fit-canvas",     "Fit to canvas"],
           ];
           opts.forEach(([v, label]) => {
             const o = document.createElement("option"); o.value = v; o.textContent = label;
@@ -2833,12 +2849,53 @@
             renderTimeline(); renderClipInspector(); paintIfPaused();
           });
           row1.appendChild(sel); paramsHost.appendChild(row1);
-          // Ease dropdown
+          // Target scale slider — 1x..100x direct multiplier.  Only
+          // hidden when mode = fit-canvas (which auto-computes).
+          if (p.mode !== "fit-canvas") {
+            const rowS = document.createElement("div"); rowS.className = "prop-row";
+            rowS.innerHTML = `<span class="prop-label">Scale</span>`;
+            const cell = document.createElement("div"); cell.style.display = "flex"; cell.style.gap = "6px"; cell.style.alignItems = "center"; cell.style.flex = "1";
+            const rng = document.createElement("input");
+            rng.type = "range"; rng.min = 1; rng.max = 100; rng.step = 1; rng.value = p.targetScale ?? 20;
+            rng.style.flex = "1";
+            const val = document.createElement("span");
+            val.className = "ctl-val"; val.textContent = `${p.targetScale ?? 20}×`;
+            const write = () => {
+              p.targetScale = parseInt(rng.value, 10);
+              val.textContent = `${p.targetScale}×`;
+              renderTimeline(); paintIfPaused();
+            };
+            rng.addEventListener("input", write);
+            cell.appendChild(rng); cell.appendChild(val);
+            rowS.appendChild(cell); paramsHost.appendChild(rowS);
+          }
+          // Origin dropdown — object-center vs canvas-center.
+          const rowO = document.createElement("div"); rowO.className = "prop-row";
+          rowO.innerHTML = `<span class="prop-label">Origin</span>`;
+          const oSel = document.createElement("select");
+          oSel.className = "ctl-num"; oSel.style.minWidth = "0"; oSel.style.flex = "1"; oSel.style.width = "auto"; oSel.style.padding = "2px 6px";
+          [["object-center","Object center"],["canvas-center","Canvas center"]].forEach(([v, label]) => {
+            const o = document.createElement("option"); o.value = v; o.textContent = label;
+            oSel.appendChild(o);
+          });
+          oSel.value = p.origin || "object-center";
+          oSel.addEventListener("change", () => {
+            p.origin = oSel.value;
+            renderTimeline(); paintIfPaused();
+          });
+          rowO.appendChild(oSel); paramsHost.appendChild(rowO);
+          // Ease dropdown — includes "explosive" ease-in-quint.
           const row2 = document.createElement("div"); row2.className = "prop-row";
           row2.innerHTML = `<span class="prop-label">Ease</span>`;
           const eSel = document.createElement("select");
           eSel.className = "ctl-num"; eSel.style.minWidth = "0"; eSel.style.flex = "1"; eSel.style.width = "auto"; eSel.style.padding = "2px 6px";
-          [["easeIn","Ease In"],["linear","Linear"],["easeOut","Ease Out"],["easeInOut","Ease In-Out"]].forEach(([v, label]) => {
+          [
+            ["easeIn",      "Ease In (cubic)"],
+            ["easeInQuint", "Explosive (quintic)"],
+            ["linear",      "Linear"],
+            ["easeOut",     "Ease Out"],
+            ["easeInOut",   "Ease In-Out"],
+          ].forEach(([v, label]) => {
             const o = document.createElement("option"); o.value = v; o.textContent = label;
             eSel.appendChild(o);
           });
@@ -2848,8 +2905,8 @@
             renderTimeline(); paintIfPaused();
           });
           row2.appendChild(eSel); paramsHost.appendChild(row2);
-          // Rotate amount slider — only when mode = expand-rotate
-          if (p.mode === "expand-rotate") {
+          // Rotate amount slider — only when rotate or explosive.
+          if (p.mode === "expand-rotate" || p.mode === "explosive") {
             const row3 = document.createElement("div"); row3.className = "prop-row";
             row3.innerHTML = `<span class="prop-label">Rotation</span>`;
             const cell = document.createElement("div"); cell.style.display = "flex"; cell.style.gap = "6px"; cell.style.alignItems = "center"; cell.style.flex = "1";
@@ -2866,6 +2923,25 @@
             rng.addEventListener("input", write);
             cell.appendChild(rng); cell.appendChild(val);
             row3.appendChild(cell); paramsHost.appendChild(row3);
+          }
+          // Blur amount slider — only when blur or explosive.
+          if (p.mode === "expand-blur" || p.mode === "explosive") {
+            const row4 = document.createElement("div"); row4.className = "prop-row";
+            row4.innerHTML = `<span class="prop-label">Blur</span>`;
+            const cell = document.createElement("div"); cell.style.display = "flex"; cell.style.gap = "6px"; cell.style.alignItems = "center"; cell.style.flex = "1";
+            const rng = document.createElement("input");
+            rng.type = "range"; rng.min = 0; rng.max = 50; rng.step = 1; rng.value = p.blurAmount ?? 12;
+            rng.style.flex = "1";
+            const val = document.createElement("span");
+            val.className = "ctl-val"; val.textContent = `${p.blurAmount ?? 12}px`;
+            const write = () => {
+              p.blurAmount = parseInt(rng.value, 10);
+              val.textContent = `${p.blurAmount}px`;
+              renderTimeline(); paintIfPaused();
+            };
+            rng.addEventListener("input", write);
+            cell.appendChild(rng); cell.appendChild(val);
+            row4.appendChild(cell); paramsHost.appendChild(row4);
           }
         }
         // Vector Beam growth easing seg (hard/ease) — separate from
@@ -3650,30 +3726,35 @@
       };
     },
 
-    // v19.14 EXPANSION BUILD.  Small graphic → full-frame visual.
-    //  - `extraScale` grows from 1 to (auto or user) target across p.
-    //  - Optional opacity fade + rotation via mode.
-    //  - Auto target uses canvas / layer size ratio so the layer
-    //    fills the frame at p=1.  applyMarker sets it lazily.
-    //  - Ease-in cubic default gives the "small → explosive growth"
-    //    feel users expect.
+    // v19.14 EXPANSION BUILD (v19.15 cinematic redesign).
+    //  Grows the layer to a large user-defined multiplier (up to 100x)
+    //  so the artwork transforms into a full-screen visual field
+    //  rather than merely filling the frame.  Origin controls whether
+    //  the growth focal point is the layer's own center (cinematic
+    //  zoom-in) or the canvas center (position-anchored zoom).  Ease
+    //  profiles include easeInQuint for "held still, then explodes"
+    //  timing.  Optional cross-effects (fade / rotate / blur) compose
+    //  with the base scale; `explosive` mode enables all three.
     expansionBuild(p, sig, params) {
       const k = ((params?.intensity ?? 100) / 100);
       const t = Math.max(0, Math.min(1, p));
       const mode = (params && params.mode) || "expand";
       const easeMode = (params && params.ease) || "easeIn";
       const easedT = (
-        easeMode === "linear"    ? t :
-        easeMode === "easeOut"   ? 1 - Math.pow(1 - t, 3) :
-        easeMode === "easeInOut" ? (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2) :
-        /* easeIn (default) */     t * t * t
+        easeMode === "linear"       ? t :
+        easeMode === "easeOut"      ? 1 - Math.pow(1 - t, 3) :
+        easeMode === "easeInOut"    ? (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2) :
+        easeMode === "easeInQuint"  ? t * t * t * t * t :        // "explosive" — held then rockets
+        /* easeIn (default) */        t * t * t
       );
       return {
         expansion: {
           progress: easedT * k,
           mode,
-          userTargetScale: (params && params.targetScale) || 0,
+          userTargetScale: (params && params.targetScale) || 20,
+          origin: (params && params.origin) || "object-center",
           rotateAmount: (params && params.rotateAmount) || 0,
+          blurAmount:   (params && params.blurAmount)   || 0,
         },
       };
     },
@@ -4075,6 +4156,9 @@
     const T = layer.transform;
     // static base transform (position/size/rotation set by user)
     let tx = 0, ty = 0, extraScale = 1, rot = 0, rotX = 0, rotY = 0, skew = 0;
+    // v19.15: expansion origin translation — bypasses the
+    // allowTransform gate that limits per-clip jitter.
+    let expansionTx = 0, expansionTy = 0;
     let opacity = T.opacity / 100, blur = 0, rgb = 0, glow = 0;
     let hud = false, hudFlicker = 1, flash = null, flashA = 0, scanBoost = 0, breakup = 0;
     let pathDraw = null, pathTrim = null;
@@ -4224,8 +4308,14 @@
     if (expansionContrib) {
       const ed = computeExpansionDelta(layer, expansionContrib, STATE.format);
       extraScale *= ed.scaleSafe;
-      opacity *= ed.opacity;
-      rot += ed.rot;
+      opacity   *= ed.opacity;
+      rot       += ed.rot;
+      blur      += ed.blur;
+      // Expansion's tx/ty must bypass the allowTransform gate — it's
+      // an intentional camera/origin shift, not per-clip audio jitter.
+      // Store separately from the general tx/ty accumulator.
+      expansionTx = ed.tx;
+      expansionTy = ed.ty;
     }
 
     // Scan mask (event-only): reveal from left as p goes 0->1
@@ -4238,8 +4328,8 @@
     // artboard-space placement: size in %, center offset in %
     const A = STATE.format;
     const wPx = (T.wPct / 100) * A.w * extraScale, hPx = (T.hPct / 100) * A.h * extraScale;
-    const cxPx = (T.cx / 100) * A.w + (allowT ? (tx / 100) * A.w : 0);
-    const cyPx = (T.cy / 100) * A.h + (allowT ? (ty / 100) * A.h : 0);
+    const cxPx = (T.cx / 100) * A.w + (allowT ? (tx / 100) * A.w : 0) + (expansionTx / 100) * A.w;
+    const cyPx = (T.cy / 100) * A.h + (allowT ? (ty / 100) * A.h : 0) + (expansionTy / 100) * A.h;
     const leftPx = A.w / 2 + cxPx - wPx / 2, topPx = A.h / 2 + cyPx - hPx / 2;
 
     layer.wrap.style.width = wPx + "px"; layer.wrap.style.height = hPx + "px";
@@ -4914,34 +5004,77 @@
     if (layer) layer._segmentRevealApplied = false;
   }
 
-  /* ---------------- v19.14 EXPANSION BUILD ----------------
-     Not an applier — returns scale/opacity/rot deltas that composeLayer
-     folds into its existing extraScale / opacity / rot accumulators.
-     Target scale is computed from the canvas/layer size ratio so the
-     layer covers the frame at progress=1, unless the user overrode it
-     with an explicit targetScale.  Called from composeLayer directly. */
+  /* ---------------- v19.14/19.15 EXPANSION BUILD ----------------
+     Returns scale/opacity/rot/blur/tx/ty deltas that composeLayer
+     folds into its transform accumulators.
+
+     Target scale (`S`):
+       - fit-canvas mode  : computed from canvas/layer ratio + margin
+       - all other modes  : userTargetScale (1..100, direct multiplier)
+
+     Origin math:
+       - object-center    : no positional shift; layer grows in place,
+                            giving a cinematic "zoom into the object"
+                            feel (the layer's own center is the focus).
+       - canvas-center    : layer's canvas offset (cx, cy) is scaled
+                            by S, so the layer's on-canvas center
+                            travels outward with the growth.  Effect:
+                            growth appears to originate from the
+                            canvas center rather than the layer.
+
+     Cross-effects (mode-driven):
+       - expand-fade / explosive  → opacity *= (1 - progress)
+       - expand-rotate / explosive → rot     += rotateAmount * progress
+       - expand-blur / explosive   → blur    += blurAmount * progress
+
+     `explosive` combines all three so a single mode gives the
+     "camera-slam" feel.  targetScale still applies; author picks
+     20x, 50x, or 100x depending on desired intensity. */
   function computeExpansionDelta(layer, r, STATEFormat) {
     const T = layer.transform;
-    // Current layer size in canvas pixels.
-    const wPx = (T.wPct / 100) * STATEFormat.w;
-    const hPx = (T.hPct / 100) * STATEFormat.h;
-    // Auto target = the smaller of (canvas.w / layer.w, canvas.h / layer.h)
-    // multiplied by a small safety margin so edges reach the frame.
+    // Resolve target scale.
     let target;
-    if (r.userTargetScale && r.userTargetScale > 0) target = r.userTargetScale;
-    else {
+    if (r.mode === "fit-canvas") {
+      // Backwards-compat with v19.14 auto-fit behavior for users who
+      // want a subtle transition.  Computes exactly-fills-frame + 5%.
+      const wPx = (T.wPct / 100) * STATEFormat.w;
+      const hPx = (T.hPct / 100) * STATEFormat.h;
       const kw = STATEFormat.w / Math.max(1, wPx);
       const kh = STATEFormat.h / Math.max(1, hPx);
-      target = Math.max(kw, kh) * 1.05;   // 5% overshoot so edges leave the frame
+      target = Math.max(kw, kh) * 1.05;
+    } else {
+      // Direct multiplier.  Range 1..100 in the UI; clamp defensively.
+      target = Math.max(1, Math.min(100, r.userTargetScale || 20));
     }
-    // Interpolate 1 → target across progress.  Bounded to avoid runaway
-    // when the source layer is already large.
-    const scaleFactor = 1 + (Math.max(1, target) - 1) * r.progress;
-    let opacityMul = 1;
-    let rotDelta = 0;
-    if (r.mode === "expand-fade")    opacityMul = 1 - r.progress;
-    if (r.mode === "expand-rotate")  rotDelta = (r.rotateAmount || 0) * r.progress;
-    return { scaleSafe: scaleFactor, opacity: opacityMul, rot: rotDelta };
+    const scaleFactor = 1 + (target - 1) * r.progress;
+    // Modes that enable each cross-effect.
+    const isFade    = r.mode === "expand-fade"   || r.mode === "explosive";
+    const isRotate  = r.mode === "expand-rotate" || r.mode === "explosive";
+    const isBlur    = r.mode === "expand-blur"   || r.mode === "explosive";
+    const opacityMul = isFade   ? (1 - r.progress) : 1;
+    const rotDelta   = isRotate ? (r.rotateAmount || 0) * r.progress : 0;
+    const blurDelta  = isBlur   ? (r.blurAmount   || 0) * r.progress : 0;
+    // Origin translation.  For object-center (default), no shift —
+    // the layer grows in place around its own center.  For canvas-
+    // center, translate the layer so growth appears to originate from
+    // (A.w/2, A.h/2) regardless of where the layer sits on canvas.
+    let tx = 0, ty = 0;
+    if (r.origin === "canvas-center") {
+      // Layer center is at (A.w/2 + cxPx, A.h/2 + cyPx) in canvas
+      // coords.  To scale from canvas-center, layer center at scale S
+      // should be at (A.w/2 + cxPx * S, A.h/2 + cyPx * S).  The
+      // additional translation is (cxPx * (S-1), cyPx * (S-1)).
+      // tx/ty are in canvas percent; T.cx/T.cy are already in %.
+      tx = T.cx * (scaleFactor - 1);
+      ty = T.cy * (scaleFactor - 1);
+    }
+    return {
+      scaleSafe: scaleFactor,
+      opacity:   opacityMul,
+      rot:       rotDelta,
+      blur:      blurDelta,
+      tx, ty,
+    };
   }
 
   /* ---------------- v19.10 EXPORT / PREVIEW DOM PARITY ----------------
@@ -6584,6 +6717,10 @@
         s.extraScale *= ed.scaleSafe;
         s.opacity   *= ed.opacity;
         s.rot       += ed.rot;
+        s.blur      += ed.blur;
+        // Bypasses allowTransform gate — see preview path.
+        s.expansionTx = (s.expansionTx || 0) + ed.tx;
+        s.expansionTy = (s.expansionTy || 0) + ed.ty;
       }
       // New channels for the canvas renderer (drawExportFrame reads these).
       if (d.tear !== undefined) s.tear = d.tear;
@@ -6724,8 +6861,8 @@
       // Layer placement in artboard coordinates
       const wPx = (T.wPct / 100) * A.w * s.extraScale;
       const hPx = (T.hPct / 100) * A.h * s.extraScale;
-      const cxPx = (T.cx / 100) * A.w + (allowT ? (s.tx / 100) * A.w : 0);
-      const cyPx = (T.cy / 100) * A.h + (allowT ? (s.ty / 100) * A.h : 0);
+      const cxPx = (T.cx / 100) * A.w + (allowT ? (s.tx / 100) * A.w : 0) + ((s.expansionTx || 0) / 100) * A.w;
+      const cyPx = (T.cy / 100) * A.h + (allowT ? (s.ty / 100) * A.h : 0) + ((s.expansionTy || 0) / 100) * A.h;
       const centerX = (A.w / 2 + cxPx - offX) * sx;
       const centerY = (A.h / 2 + cyPx - offY) * sy;
       const dw = wPx * sx, dh = hPx * sy;
