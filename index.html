@@ -194,8 +194,13 @@
           <p class="view-hint">Gives every layer a coherent interface-style animation with stagger and depth. No rotation or zoom unless transform motion is on.</p>
 
           <div class="section-head"><span>Presets</span></div>
-          <p class="view-hint">Applies to the selected layer, or all layers if none is selected.</p>
+          <p class="view-hint">Click a preset to apply. Click it again to disable and restore your previous state.</p>
           <div class="preset-list" id="presetGrid"></div>
+          <!-- v19.10: explicit clear-preset button.  Redundant with
+               click-again toggling but gives a discoverable UI affordance. -->
+          <div style="margin-top:8px">
+            <button class="mini-btn" id="clearPresetBtn" title="Remove the currently-active preset and restore your previous state">Clear active preset</button>
+          </div>
         </section>
 
         <!-- LAYERS TAB -->
