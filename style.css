@@ -655,6 +655,26 @@ body.focus-mode .selection-box { display: none !important; }
 .morph-diag-ok   { background: color-mix(in oklab, var(--accent-2) 15%, transparent); color: var(--accent-2); border-left: 3px solid var(--accent-2); }
 .morph-diag-fail { background: rgba(255, 85, 102, 0.15);                              color: #ff8899;       border-left: 3px solid #ff5566; }
 
+/* v19.11: SVG Repair section inside the diagnostics panel. */
+.repair-section { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.repair-head { font-size: 11px; font-weight: 600; color: var(--text); margin-bottom: 4px; letter-spacing: 0.02em; }
+.repair-note { font-size: 10px; color: var(--text-3); font-style: italic; margin-bottom: 8px; line-height: 1.4; }
+.repair-btns { display: flex; flex-direction: column; gap: 6px; }
+.repair-btn { display: flex; align-items: center; justify-content: space-between; padding: 6px 9px; font-size: 11px; text-align: left; }
+.repair-btn .repair-count {
+  background: var(--accent);
+  color: var(--panel);
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.repair-unavailable { opacity: 0.5; cursor: not-allowed; }
+.repair-unavailable .repair-count { background: var(--border); color: var(--text-3); }
+.repair-undo { border-color: color-mix(in oklab, var(--accent) 30%, var(--border)); }
+.repair-undo:hover:not(:disabled) { background: color-mix(in oklab, var(--accent-soft) 60%, transparent); }
+
 /* v19.0 Inline text edit overlay — appears over a text layer during
    double-click editing.  Positioned in JS to match the SVG text bounds. */
 .text-edit-overlay {
