@@ -4723,51 +4723,141 @@
     ["path","rect","circle","ellipse","line","polygon","polyline"].forEach((t) => { primsByTag[t] = 0; });
     let primitiveCount = 0;
     let visibleStrokes = 0, visibleFills = 0;
+    // v19.13: per-primitive reachability analysis.  For every drawable
+    // element, we record whether it satisfies the requirements for
+    // each effect family, so the diagnostic can report "X of Y paths
+    // are reachable by Line Draw" instead of just "Y paths exist".
+    const primEntries = [];   // { tag, hasStroke, hasFill, lineDrawReady, morphReady, reasons[] }
+    let pathsMLCZOnly = 0;        // paths with only M/L/C/Z commands (morph-compatible)
+    let pathsWithQ    = 0;        // quadratic bezier (Line Draw OK, morph NO)
+    let pathsWithA    = 0;        // arc commands (Line Draw OK, morph NO)
+    let pathsCompound = 0;        // multiple M commands = compound subpath
+    let zeroLength    = 0;        // getTotalLength() === 0
+    let lineDrawReady = 0;        // has stroke + non-zero length
+    let morphReady    = 0;        // path/prim with M/L/C/Z-only geometry
+    let fillRevealReady = 0;      // any drawable primitive is fill-reveal reachable
     root.querySelectorAll("path,rect,circle,ellipse,line,polygon,polyline").forEach((n) => {
       primitiveCount++;
       const tag = n.tagName.toLowerCase();
       if (primsByTag[tag] !== undefined) primsByTag[tag]++;
-      // Visibility via getComputedStyle (catches CSS-based styling).
       const cs = window.getComputedStyle(n);
       const stroke = (n.getAttribute("stroke") != null ? n.getAttribute("stroke") : cs.stroke) || "none";
       const fill   = (n.getAttribute("fill")   != null ? n.getAttribute("fill")   : cs.fill)   || "none";
       const sw = parseFloat(n.getAttribute("stroke-width")) || parseFloat(cs.strokeWidth) || 0;
-      if (stroke !== "none" && sw > 0) visibleStrokes++;
-      if (fill !== "none") visibleFills++;
+      const hasStroke = stroke !== "none" && sw > 0;
+      const hasFill   = fill !== "none";
+      if (hasStroke) visibleStrokes++;
+      if (hasFill) visibleFills++;
+      // Length check — 0 means the primitive is degenerate.
+      let len = 0;
+      try { if (typeof n.getTotalLength === "function") len = n.getTotalLength(); } catch (e) {}
+      if (len === 0) zeroLength++;
+      // Path command inventory (only meaningful for <path>).
+      const reasons = [];
+      let mlczOnly = true;
+      let isCompound = false;
+      if (tag === "path") {
+        const d = n.getAttribute("d") || "";
+        const cmds = d.match(/[a-zA-Z]/g) || [];
+        const upper = cmds.map((c) => c.toUpperCase());
+        const mCount = upper.filter((c) => c === "M").length;
+        if (mCount > 1) { isCompound = true; pathsCompound++; }
+        const hasQ = upper.some((c) => c === "Q" || c === "T");
+        const hasA = upper.some((c) => c === "A");
+        const hasS = upper.some((c) => c === "S");
+        if (hasQ) { pathsWithQ++; mlczOnly = false; reasons.push("has quadratic (Q/T)"); }
+        if (hasA) { pathsWithA++; mlczOnly = false; reasons.push("has arc (A)"); }
+        if (hasS) { mlczOnly = false; reasons.push("has smooth cubic (S)"); }
+        if (isCompound) reasons.push("compound (multi-M)");
+        if (mlczOnly && !isCompound) pathsMLCZOnly++;
+      } else {
+        // Non-path primitives normalize cleanly to M/L/C/Z via primitiveToCanonicalPath.
+        pathsMLCZOnly++;
+      }
+      const ldReady = hasStroke && len > 0;
+      const morphOK = mlczOnly && !isCompound;
+      if (ldReady) lineDrawReady++;
+      if (morphOK) morphReady++;
+      fillRevealReady++;   // Fill Reveal works on any drawable
+      if (!hasStroke) reasons.unshift("no visible stroke");
+      if (len === 0)  reasons.unshift("zero length");
+      primEntries.push({
+        tag, hasStroke, hasFill,
+        lineDrawReady: ldReady,
+        morphReady: morphOK,
+        reasons,
+      });
     });
+    // Non-primitive elements that block animation coverage.
+    const useCount    = root.querySelectorAll("use").length;
+    const symbolCount = root.querySelectorAll("symbol").length;
+    const groupWithTransform = Array.from(root.querySelectorAll("g")).filter((g) => g.getAttribute("transform")).length;
     const hasClipPath = !!root.querySelector("clipPath, [clip-path]");
     const hasMask     = !!root.querySelector("mask, [mask]");
     const hasFilter   = !!root.querySelector("filter, [filter]:not([filter='none'])");
     const hasLiveText = !!root.querySelector("text");
-    const hasUse      = !!root.querySelector("use");
+    const hasUse      = useCount > 0;
     const hasImage    = !!root.querySelector("image");
     const hasForeignObject = !!root.querySelector("foreignObject");
     const warnings = [];
     // Compatibility judgements
     const pathAnimatable = visibleStrokes > 0;
-    const morphReady = primitiveCount > 0;
+    const anyMorphReady = morphReady > 0;
+    // v19.13: Coverage percentages — reported per effect family.  Base
+    // is the primitive count; excludes <use> and <text> which never
+    // reach effects even in principle.
+    const coverage = {
+      lineDraw:   primitiveCount > 0 ? Math.round((lineDrawReady   / primitiveCount) * 100) : 0,
+      morph:      primitiveCount > 0 ? Math.round((morphReady      / primitiveCount) * 100) : 0,
+      fillReveal: primitiveCount > 0 ? Math.round((fillRevealReady / primitiveCount) * 100) : 0,
+    };
     if (visibleStrokes === 0 && visibleFills > 0) {
       warnings.push({ level: "warn", text: "Fill-only shapes: no visible strokes to animate.",
-        fix: "In Illustrator/Figma: enable a stroke, or use Object > Path > Outline Stroke, then re-export." });
+        fix: "In Illustrator/Figma: enable a stroke, or use Object > Path > Outline Stroke, then re-export.  Or use Fill Reveal instead, which works on filled artwork." });
     }
     if (primitiveCount === 0) {
       warnings.push({ level: "warn", text: "No drawable primitives found — this SVG has no paths, rects, circles, etc." });
     }
+    // v19.13: report the invisible-to-effects categories.
+    if (useCount > 0) warnings.push({ level: "warn",
+      text: `${useCount} <use> reference${useCount===1?"":"s"} detected — effects apply to the referenced <symbol>, not per-instance.`,
+      fix: `Illustrator: File > Export > Export As... > SVG > "Object IDs: Layer Names" and disable "Preserve Illustrator Editing Capabilities" to inline instances.  Or expand <use> to inline copies before export.` });
+    if (pathsWithQ > 0 || pathsWithA > 0) {
+      const parts = [];
+      if (pathsWithQ) parts.push(`${pathsWithQ} with quadratic beziers (Q/T)`);
+      if (pathsWithA) parts.push(`${pathsWithA} with arcs (A)`);
+      warnings.push({ level: "info",
+        text: `${parts.join(", ")} — Line Draw / Fill Reveal work, but Morph will report command-count mismatches on these.`,
+        fix: `In Illustrator/Figma: Object > Path > Simplify, or export with "Cubic beziers only" if the option exists.` });
+    }
+    if (pathsCompound > 0) warnings.push({ level: "info",
+      text: `${pathsCompound} compound path${pathsCompound===1?"":"s"} (multiple M commands) — Line Draw treats subpaths as one continuous run, which may look off.`,
+      fix: `In Illustrator: Object > Compound Path > Release.` });
+    if (zeroLength > 0) warnings.push({ level: "warn",
+      text: `${zeroLength} degenerate primitive${zeroLength===1?"":"s"} with zero geometry — invisible to Line Draw.`,
+      fix: `Usually caused by transform errors during export or empty paths.  Check the original file for stray empty shapes.` });
+    if (groupWithTransform > 0) warnings.push({ level: "info",
+      text: `${groupWithTransform} group${groupWithTransform===1?"":"s"} with transform attributes — path lengths are measured in local coords, so dash-based reveals may not match the visual scale.` });
     if (hasClipPath) warnings.push({ level: "warn", text: "Clip paths detected — may hide primitives from Line Draw.",
-      fix: "Release clipping mask before export, or ensure the clipped primitive still has a visible stroke." });
+      fix: "Release clipping mask before export, or use the Repair button below." });
     if (hasMask)     warnings.push({ level: "warn", text: "Masks detected — masked regions may not animate.",
-      fix: "Flatten mask into the source primitives, or remove the mask." });
+      fix: "Flatten mask into the source primitives, or use the Repair button below." });
     if (hasFilter)   warnings.push({ level: "info", text: "Filters detected — may not render identically in preview vs export." });
     if (hasLiveText) warnings.push({ level: "warn", text: "Live <text> detected — text glyphs are not path-animatable.",
       fix: "Convert to outlines (Illustrator: Type > Create Outlines) before export." });
-    if (hasUse)      warnings.push({ level: "info", text: "<use> references detected — path animation targets the definition, not the instance." });
     if (hasImage)    warnings.push({ level: "info", text: "Embedded <image> detected — raster content will not path-animate." });
     if (hasForeignObject) warnings.push({ level: "warn", text: "<foreignObject> detected — not compatible with vector effects." });
     return {
       primitiveCount, pathCount: primsByTag.path, primsByTag,
       visibleStrokes, visibleFills,
       hasClipPath, hasMask, hasFilter, hasLiveText, hasUse, hasImage, hasForeignObject,
-      pathAnimatable, morphReady, warnings,
+      pathAnimatable, morphReady: anyMorphReady, warnings,
+      // v19.13 additions
+      useCount, symbolCount, groupWithTransform,
+      pathsMLCZOnly, pathsWithQ, pathsWithA, pathsCompound, zeroLength,
+      lineDrawReady, morphReadyCount: morphReady, fillRevealReady,
+      coverage,
+      primEntries,
     };
   }
   function populateSvgDiagnostics(layer) {
@@ -4789,15 +4879,39 @@
     ["rect","circle","ellipse","line","polygon","polyline"].forEach((t) => {
       if (rep.primsByTag[t]) row(t.charAt(0).toUpperCase() + t.slice(1), rep.primsByTag[t]);
     });
+    // v19.13: structural counts users need to understand coverage gaps.
+    if (rep.useCount) row("&lt;use&gt; refs",  rep.useCount);
+    if (rep.symbolCount) row("&lt;symbol&gt; defs", rep.symbolCount);
+    if (rep.groupWithTransform) row("Groups with transform", rep.groupWithTransform);
     row("Visible strokes", rep.visibleStrokes);
     row("Visible fills",   rep.visibleFills);
-    row("Line Draw / Trim Paths", rep.pathAnimatable
-        ? `<span class="diag-ok">Compatible</span>`
-        : `<span class="diag-fail">Unavailable — no visible strokes</span>`);
-    row("Morph source ready", rep.morphReady
-        ? `<span class="diag-ok">Yes (${rep.primitiveCount} primitive${rep.primitiveCount===1?"":"s"})</span>`
-        : `<span class="diag-fail">No primitives</span>`);
+    // v19.13: path command inventory (only shown if paths exist).
+    if (rep.primsByTag.path > 0) {
+      if (rep.pathsMLCZOnly)  row("Paths — M/L/C/Z only", `<span class="diag-ok">${rep.pathsMLCZOnly}</span>`);
+      if (rep.pathsWithQ)     row("Paths — with Q/T",     `<span class="diag-warn-inline">${rep.pathsWithQ}</span>`);
+      if (rep.pathsWithA)     row("Paths — with arc (A)", `<span class="diag-warn-inline">${rep.pathsWithA}</span>`);
+      if (rep.pathsCompound)  row("Compound paths",       `<span class="diag-warn-inline">${rep.pathsCompound}</span>`);
+      if (rep.zeroLength)     row("Zero-length primitives", `<span class="diag-fail">${rep.zeroLength}</span>`);
+    }
     let html = `<div class="diag-grid">${rows.join("")}</div>`;
+    // v19.13: effect-by-effect coverage report — the "what will
+    // actually animate on this SVG" report the user asked for.
+    if (rep.primitiveCount > 0) {
+      html += `<div class="coverage-block">`;
+      html += `<div class="coverage-head">Effect coverage</div>`;
+      const bar = (label, pct, count, total) => `
+        <div class="coverage-row">
+          <span class="coverage-label">${label}</span>
+          <div class="coverage-bar"><div class="coverage-fill" style="width:${pct}%"></div></div>
+          <span class="coverage-pct">${count}/${total} · ${pct}%</span>
+        </div>`;
+      html += bar("Line Draw / Path Energize", rep.coverage.lineDraw,   rep.lineDrawReady,   rep.primitiveCount);
+      html += bar("Fill Reveal",               rep.coverage.fillReveal, rep.fillRevealReady, rep.primitiveCount);
+      html += bar("Shape Morph",               rep.coverage.morph,      rep.morphReadyCount, rep.primitiveCount);
+      html += `</div>`;
+    }
+    // Legacy summary lines kept for continuity.
+    html = html.replace('<div class="coverage-block">', `<div class="coverage-block">`);
     if (rep.warnings.length) {
       html += `<ul class="diag-warnings">`;
       rep.warnings.forEach((w) => {
