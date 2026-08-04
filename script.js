@@ -195,6 +195,16 @@
     //     changes — see applyShapeStyleDelta. ---
     { key: "strokeWidthPulse", label: "Stroke Width Pulse", defDur: 0.60, group: "vector" },
     { key: "fillColorFlash",   label: "Fill Color Flash",   defDur: 0.40, group: "vector" },
+    // v19.9 Morphing v1 — path-to-path interpolation.  Supports:
+    //   rect ↔ rect · circle ↔ circle · ellipse ↔ ellipse · line ↔ line
+    //   polygon ↔ polygon (same side count)
+    //   rect ↔ circle ↔ ellipse (via 4-cubic-bezier normalization)
+    //   SVG import ↔ SVG import (first primitive, matching command count)
+    // Not supported v1: polygon side-count mismatch, path command count
+    // mismatch, TEXT layers, multi-primitive SVG interpolation.  These
+    // cases report through the clip inspector's compatibility badge
+    // and skip the morph gracefully.
+    { key: "shapeMorph",       label: "Shape Morph",        defDur: 1.00, group: "vector" },
     // --- SIGNAL / GLITCH events ---
     { key: "terminalBlink",   label: "Terminal Blink",   defDur: 0.35, group: "signal" },
     { key: "signalDrop",      label: "Signal Drop",      defDur: 0.18, group: "signal" },
@@ -279,6 +289,9 @@
       //    inspector renders a color-picker row (see renderClipInspector).
       case "strokeWidthPulse": return { ...base, intensity: 60 };
       case "fillColorFlash":   return { ...base, intensity: 70, color: "#FF3366" };
+      // v19.9 Shape Morph.  morphTargetLayerId is 0 by default (=
+      // "no target"), and the effect no-ops until the user picks one.
+      case "shapeMorph":       return { ...base, intensity: 100, morphTargetLayerId: 0, morphTargetIndex: 0 };
       default: return { ...base };
     }
   }
@@ -364,6 +377,8 @@
     lockAspect: $("#lockAspect"),
     tfCenter: $("#tfCenter"), tfFit: $("#tfFit"), tfFill: $("#tfFill"), tfOriginal: $("#tfOriginal"), tfReset: $("#tfReset"),
     layerDup: $("#layerDup"), layerHide: $("#layerHide"), layerLock: $("#layerLock"), layerDel: $("#layerDel"),
+    layerClearFx: $("#layerClearFx"),
+    svgDiagGroup: $("#svgDiagGroup"), svgDiagStatus: $("#svgDiagStatus"), svgDiagBody: $("#svgDiagBody"),
     // video (Phase 2)
     videoGroup: $("#videoGroup"), videoDurLabel: $("#videoDurLabel"),
     vFitTrim: $("#vFitTrim"), vResetTrim: $("#vResetTrim"),
@@ -2062,6 +2077,12 @@
         if (vout) { vout.max = dur.toFixed(2); vout.value = (L.srcOutPoint || dur).toFixed(2); }
         if (vvin)  vvin.textContent  = (L.srcInPoint  || 0).toFixed(2);
         if (vvout) vvout.textContent = (L.srcOutPoint || dur).toFixed(2);
+    // v19.9 SVG Diagnostics — only visible for SVG imports.
+    if (el.svgDiagGroup) {
+      const isSvg = has && selectedLayer.kind === "SVG";
+      el.svgDiagGroup.hidden = !isSvg;
+      if (isSvg) populateSvgDiagnostics(selectedLayer);
+    }
         // Path B badge — tells the user which decoder is driving this layer.
         const badge = document.getElementById("videoDecoderBadge");
         if (badge) {
@@ -2633,6 +2654,49 @@
           cell.appendChild(input); cell.appendChild(hex);
           row.appendChild(cell);
           paramsHost.appendChild(row);
+        }
+        // v19.9: Morph target picker — appears for shapeMorph clips.
+        //  - Dropdown lists other layers as morph targets.
+        //  - Live compatibility badge below the picker updates as
+        //    source/target changes.
+        //  - Runs a fresh analyzeMorph each render so the report is
+        //    always current with the DOM.
+        if (selectedEventClip.ec.fxKey === "shapeMorph") {
+          const layer = selectedEventClip.layer;
+          // Target picker
+          const row = document.createElement("div"); row.className = "prop-row";
+          row.innerHTML = `<span class="prop-label">Target</span>`;
+          const sel = document.createElement("select");
+          sel.className = "ctl-num"; sel.style.minWidth = "0"; sel.style.flex = "1"; sel.style.width = "auto"; sel.style.padding = "2px 6px";
+          const noneOpt = document.createElement("option");
+          noneOpt.value = "0"; noneOpt.textContent = "— pick a layer —";
+          sel.appendChild(noneOpt);
+          layers.forEach((L) => {
+            if (L === layer) return;    // can't morph to self
+            const o = document.createElement("option");
+            o.value = String(L.id); o.textContent = `${L.name} · ${L.kind}${L.kind === "SHAPE" ? " (" + L.shapeType + ")" : ""}`;
+            sel.appendChild(o);
+          });
+          sel.value = String(p.morphTargetLayerId || 0);
+          sel.addEventListener("change", () => {
+            p.morphTargetLayerId = parseInt(sel.value, 10) || 0;
+            renderClipInspector(); renderTimeline(); paintIfPaused();
+          });
+          row.appendChild(sel); paramsHost.appendChild(row);
+          // Compatibility badge
+          const target = layers.find((L) => L.id === p.morphTargetLayerId);
+          const analysis = analyzeMorph(layer, target, p.morphTargetIndex);
+          const status = document.createElement("div");
+          status.className = "morph-diag " + (analysis.ok ? "morph-diag-ok" : "morph-diag-fail");
+          if (analysis.ok) {
+            status.innerHTML = `<b>✓ Compatible</b> · ${analysis.sourceCmds} commands · source ${layer.kind === "SHAPE" ? layer.shapeType : "SVG"} → target ${target.kind === "SHAPE" ? target.shapeType : "SVG"}`;
+          } else {
+            status.innerHTML = `<b>⚠ ${analysis.reason}</b>`;
+            if (analysis.sourceCmds && analysis.targetCmds) {
+              status.innerHTML += ` · source ${analysis.sourceCmds} cmds, target ${analysis.targetCmds} cmds`;
+            }
+          }
+          paramsHost.appendChild(status);
         }
         // Vector Beam growth easing seg (hard/ease) — separate from
         // direction because it uses different labels/values.
@@ -3359,6 +3423,22 @@
       // opaque, so the underlying artwork is still readable.
       return { shapeStyle: { fillColor: color, fillOpacity: env * k } };
     },
+
+    // v19.9 Shape Morph.  Emits a morph marker that composeLayer picks
+    // up; the actual path interpolation happens in applyMorph (which
+    // has access to `layers` for the target lookup).  Intensity controls
+    // how far along the morph goes at peak — 100 = full morph reached
+    // at p=1, 50 = only half the transformation is visible.
+    shapeMorph(p, sig, params) {
+      const k = ((params?.intensity ?? 100) / 100);
+      return {
+        morph: {
+          targetLayerId: params?.morphTargetLayerId ?? 0,
+          targetIndex:   params?.morphTargetIndex   ?? 0,
+          progress: p * k,
+        },
+      };
+    },
   };
 
   // For each event key, which live layer field it modifies (used to
@@ -3777,6 +3857,9 @@
        (_shapeStyleApplied) clearShapeStyleDelta(...)` fires when the
        last active clip ends and we can restore the base primitive. */
     let shapeStyleDelta = null;
+    // v19.9: morph contribution (source→target path interp).  Only one
+    // active morph clip is used per frame (latest wins in the loop).
+    let morphContrib = null;
     const allowT = layer.allowTransform;
 
     // v18.7: layer.fx sustained-toggle system removed.  Every effect
@@ -3820,6 +3903,10 @@
           if (ds.strokeOpacity    !== undefined) shapeStyleDelta.strokeOpacity    = ds.strokeOpacity;
           if (ds.fillOpacity      !== undefined) shapeStyleDelta.fillOpacity      = ds.fillOpacity;
         }
+        // v19.9 Shape Morph — latest-wins across active clips.  Multiple
+        // simultaneous morph clips on the same layer aren't a useful
+        // authoring pattern; last one takes precedence.
+        if (d.morph) morphContrib = d.morph;
         // Event clips MAY move / scale / rotate the layer briefly even
         // when allowTransform is off (they're designed as short micro-
         // motions).
@@ -3865,6 +3952,11 @@
     // no clip is currently contributing.
     if (pathAnimatable && shapeStyleDelta) applyShapeStyleDelta(layer, shapeStyleDelta);
     else if (pathAnimatable && layer._shapeStyleApplied) clearShapeStyleDelta(layer);
+    // v19.9 Morph — same gate.  applyMorph handles source/target
+    // compatibility internally and no-ops with a diagnostic on the
+    // clip when incompatible.
+    if (pathAnimatable && morphContrib) applyMorph(layer, morphContrib);
+    else if (pathAnimatable && layer._morphApplied) clearMorph(layer);
 
     // Scan mask (event-only): reveal from left as p goes 0->1
     if (scanMask !== null) { layer.wrap.style.clipPath = `inset(0 ${((1 - scanMask) * 100).toFixed(1)}% 0 0)`; layer._clipApplied = true; }
@@ -3971,6 +4063,7 @@
     const _va = layer.kind === "SVG" || layer.kind === "SHAPE";
     if (_va && layer._dashApplied) clearPathDash(layer);
     if (_va && layer._shapeStyleApplied) clearShapeStyleDelta(layer);
+    if (_va && layer._morphApplied) clearMorph(layer);
   }
 
   // Render one static frame (no animation) — every visible layer at rest,
@@ -4129,6 +4222,374 @@
       n.style.fillOpacity = "";
     });
     layer._shapeStyleApplied = false;
+  }
+
+  /* ---------------- v19.9 MORPHING FOUNDATION ----------------
+     Path-to-path interpolation for the Shape Morph event effect.
+
+     Design:
+       - Each drawable primitive is normalized to a `<path>` with a
+         canonical `d` command sequence (only M / L / C / Z used, no
+         Q or A).  This makes command-count matching predictable
+         without a full path-parser + rebuilder.
+       - Interpolation is per-command: matching command types are lerp'd
+         numerically; mismatches abort with a diagnostic.
+       - Result is a `d` string written to the source primitive.  If the
+         source primitive isn't a `<path>` (e.g., a native <rect>), we
+         REPLACE it with a `<path>` at first morph, then continue
+         updating that path's `d`.  Original is restored in clearMorph
+         via layer._morphOrigNode.
+
+     Compatibility model:
+       - Rect ↔ Rect      : normalized to M L L L Z (5 cmds)
+       - Circle ↔ Circle  : normalized to M C C C C Z (6 cmds, 4 arc cubics)
+       - Ellipse ↔ Ellipse: same as circle
+       - Line ↔ Line      : M L (2 cmds)
+       - Polygon ↔ Polygon: M L^n Z (n+2 cmds; MUST match side count)
+       - Rect ↔ Circle    : both to M C C C C Z (6 cmds) via cubic-approx
+                            straight-edge form for rect
+       - Rect ↔ Ellipse   : same as above
+       - Circle ↔ Ellipse : both are 4-cubic circles
+       - Any → Any via SVG <path>: only if command sequences match
+                                    exactly (both must produce same M/L/C/Z pattern)
+       - Anything else    : incompatible, reported to clip inspector
+
+     Diagnostics surfaced through layer._morphDiag which the clip
+     inspector reads and displays. */
+
+  // Circle-to-bezier control offset — makes a 4-cubic circle
+  // approximation visually indistinguishable from a true arc.
+  const CIRCLE_KAPPA = 0.5522847498307936;
+
+  /* Convert an SVG primitive element to a canonical path `d` string.
+     Returns { d, cmds } where `cmds` is a list of command letters
+     (e.g., ["M","C","C","C","C","Z"]) used for compatibility matching.
+     For unknown or unsupported elements returns null. */
+  function primitiveToCanonicalPath(node, form) {
+    // `form` steers the normalization for rectangles:
+    //   "straight"  → M L L L Z (5 cmds) — matches other rects
+    //   "cubic"     → M C C C C Z (6 cmds) — matches circles/ellipses
+    // Circles/ellipses always use "cubic" (their only representation).
+    if (!node) return null;
+    const tag = node.tagName.toLowerCase();
+    if (tag === "path") {
+      const d = node.getAttribute("d") || "";
+      const cmds = (d.match(/[a-zA-Z]/g) || []).map((c) => c.toUpperCase());
+      return { d, cmds };
+    }
+    if (tag === "rect") {
+      const x = parseFloat(node.getAttribute("x")) || 0;
+      const y = parseFloat(node.getAttribute("y")) || 0;
+      const w = parseFloat(node.getAttribute("width")) || 0;
+      const h = parseFloat(node.getAttribute("height")) || 0;
+      if (form === "cubic") {
+        // Represent rectangle sides as degenerate cubics so segment
+        // counts match circles/ellipses.  Control points sit ON the
+        // straight edge, so shape stays a rectangle.
+        const c = (x1, y1, x2, y2) => {
+          const cx1 = x1 + (x2 - x1) / 3, cy1 = y1 + (y2 - y1) / 3;
+          const cx2 = x1 + (x2 - x1) * 2 / 3, cy2 = y1 + (y2 - y1) * 2 / 3;
+          return `C${cx1},${cy1} ${cx2},${cy2} ${x2},${y2}`;
+        };
+        const d = `M${x},${y} ${c(x,y,x+w,y)} ${c(x+w,y,x+w,y+h)} ${c(x+w,y+h,x,y+h)} ${c(x,y+h,x,y)} Z`;
+        return { d, cmds: ["M","C","C","C","C","Z"] };
+      }
+      const d = `M${x},${y} L${x+w},${y} L${x+w},${y+h} L${x},${y+h} Z`;
+      return { d, cmds: ["M","L","L","L","Z"] };
+    }
+    if (tag === "circle" || tag === "ellipse") {
+      const cx = parseFloat(node.getAttribute("cx")) || 0;
+      const cy = parseFloat(node.getAttribute("cy")) || 0;
+      let rx, ry;
+      if (tag === "circle") { rx = ry = parseFloat(node.getAttribute("r")) || 0; }
+      else { rx = parseFloat(node.getAttribute("rx")) || 0; ry = parseFloat(node.getAttribute("ry")) || 0; }
+      const K = CIRCLE_KAPPA;
+      const okx = rx * K, oky = ry * K;
+      // 4-arc cubic circle: start at top, go clockwise
+      const d = [
+        `M${cx},${cy - ry}`,
+        `C${cx + okx},${cy - ry} ${cx + rx},${cy - oky} ${cx + rx},${cy}`,
+        `C${cx + rx},${cy + oky} ${cx + okx},${cy + ry} ${cx},${cy + ry}`,
+        `C${cx - okx},${cy + ry} ${cx - rx},${cy + oky} ${cx - rx},${cy}`,
+        `C${cx - rx},${cy - oky} ${cx - okx},${cy - ry} ${cx},${cy - ry}`,
+        `Z`,
+      ].join(" ");
+      return { d, cmds: ["M","C","C","C","C","Z"] };
+    }
+    if (tag === "line") {
+      const x1 = parseFloat(node.getAttribute("x1")) || 0;
+      const y1 = parseFloat(node.getAttribute("y1")) || 0;
+      const x2 = parseFloat(node.getAttribute("x2")) || 0;
+      const y2 = parseFloat(node.getAttribute("y2")) || 0;
+      return { d: `M${x1},${y1} L${x2},${y2}`, cmds: ["M","L"] };
+    }
+    if (tag === "polygon" || tag === "polyline") {
+      const pts = (node.getAttribute("points") || "").trim().split(/[\s,]+/).map(parseFloat);
+      if (pts.length < 4 || pts.length % 2 !== 0) return null;
+      const parts = [];
+      const cmds = [];
+      for (let i = 0; i < pts.length; i += 2) {
+        if (i === 0) { parts.push(`M${pts[i]},${pts[i+1]}`); cmds.push("M"); }
+        else         { parts.push(`L${pts[i]},${pts[i+1]}`); cmds.push("L"); }
+      }
+      if (tag === "polygon") { parts.push("Z"); cmds.push("Z"); }
+      return { d: parts.join(" "), cmds };
+    }
+    return null;
+  }
+
+  /* Parse a canonical `d` string into an array of { cmd, coords[] }.
+     Only handles the commands our normalizer emits (M/L/C/Z). */
+  function parseCanonicalPath(d) {
+    const out = [];
+    // Match a command letter followed by a run of numeric values.
+    const rx = /([MLCZ])((?:\s*-?\d*\.?\d+(?:[eE][+-]?\d+)?\s*,?\s*)*)/g;
+    let m;
+    while ((m = rx.exec(d)) !== null) {
+      const cmd = m[1];
+      const coords = (m[2] || "").trim().split(/[\s,]+/).filter(Boolean).map(parseFloat);
+      out.push({ cmd, coords });
+    }
+    return out;
+  }
+  /* Serialize the parsed representation back to a `d` string. */
+  function serializeCanonicalPath(parsed) {
+    return parsed.map(({ cmd, coords }) => coords.length ? `${cmd}${coords.join(",")}` : cmd).join(" ");
+  }
+  /* Interpolate two parsed paths.  Returns null if incompatible. */
+  function interpolateCanonicalPaths(A, B, t) {
+    if (A.length !== B.length) return null;
+    const out = [];
+    for (let i = 0; i < A.length; i++) {
+      if (A[i].cmd !== B[i].cmd) return null;
+      if (A[i].coords.length !== B[i].coords.length) return null;
+      const coords = A[i].coords.map((v, j) => v + (B[i].coords[j] - v) * t);
+      out.push({ cmd: A[i].cmd, coords });
+    }
+    return serializeCanonicalPath(out);
+  }
+
+  /* Compatibility analysis for a morph.  Returns { ok, reason?, sourceCmds?, targetCmds? }.
+     Called on every morph frame to keep the diagnostic live. */
+  function analyzeMorph(sourceLayer, targetLayer, targetIndex) {
+    if (!sourceLayer) return { ok: false, reason: "No source layer" };
+    if (!targetLayer) return { ok: false, reason: "No target layer selected" };
+    if (sourceLayer === targetLayer) return { ok: false, reason: "Source and target must differ" };
+    if (targetLayer.kind === "TEXT" || sourceLayer.kind === "TEXT") {
+      return { ok: false, reason: "TEXT layers not supported — convert to outlines first (future)" };
+    }
+    const srcNode = sourceLayer.node && sourceLayer.node.querySelector("path,rect,circle,ellipse,line,polygon,polyline");
+    const tgtNodes = targetLayer.node ? targetLayer.node.querySelectorAll("path,rect,circle,ellipse,line,polygon,polyline") : [];
+    if (!srcNode) return { ok: false, reason: "Source has no drawable primitive" };
+    if (!tgtNodes.length) return { ok: false, reason: "Target has no drawable primitives" };
+    const tgtNode = tgtNodes[Math.min(targetIndex || 0, tgtNodes.length - 1)];
+    // Try both "cubic" and "straight" forms for rectangles to find a match.
+    // Circles/ellipses always want cubic; other primitives have one form.
+    const srcTag = srcNode.tagName.toLowerCase();
+    const tgtTag = tgtNode.tagName.toLowerCase();
+    const wantsCubic = (t) => t === "circle" || t === "ellipse";
+    const useCubic = wantsCubic(srcTag) || wantsCubic(tgtTag);
+    const src = primitiveToCanonicalPath(srcNode, useCubic ? "cubic" : "straight");
+    const tgt = primitiveToCanonicalPath(tgtNode, useCubic ? "cubic" : "straight");
+    if (!src) return { ok: false, reason: `Source <${srcTag}> not convertible` };
+    if (!tgt) return { ok: false, reason: `Target <${tgtTag}> not convertible` };
+    if (src.cmds.length !== tgt.cmds.length) {
+      return { ok: false, sourceCmds: src.cmds.length, targetCmds: tgt.cmds.length,
+        reason: `Command count mismatch (${src.cmds.length} vs ${tgt.cmds.length}) — polygons need equal sides, paths need matching structure` };
+    }
+    // Sanity check: commands must match position-by-position too.
+    for (let i = 0; i < src.cmds.length; i++) {
+      if (src.cmds[i] !== tgt.cmds[i]) {
+        return { ok: false, reason: `Command sequence differs at position ${i} (${src.cmds[i]} vs ${tgt.cmds[i]})` };
+      }
+    }
+    return { ok: true, sourceCmds: src.cmds.length, targetCmds: tgt.cmds.length,
+      sourceForm: src, targetForm: tgt, srcNode, tgtNode, useCubic };
+  }
+
+  /* Apply a morph contribution to the source layer.  Writes the
+     interpolated `d` to the source primitive (replacing it with a
+     `<path>` if it's a native shape primitive).  Updates
+     layer._morphDiag for the inspector to display. */
+  function applyMorph(layer, morph) {
+    if (!morph || !morph.targetLayerId) {
+      layer._morphDiag = { ok: false, reason: "No target selected" };
+      return;
+    }
+    const target = layers.find((L) => L.id === morph.targetLayerId);
+    const analysis = analyzeMorph(layer, target, morph.targetIndex);
+    layer._morphDiag = { ok: analysis.ok, reason: analysis.reason,
+      sourceCmds: analysis.sourceCmds, targetCmds: analysis.targetCmds };
+    if (!analysis.ok) return;
+    const t = Math.max(0, Math.min(1, morph.progress || 0));
+    const A = parseCanonicalPath(analysis.sourceForm.d);
+    const B = parseCanonicalPath(analysis.targetForm.d);
+    const dInterp = interpolateCanonicalPaths(A, B, t);
+    if (!dInterp) { layer._morphDiag = { ok: false, reason: "Interpolation failed (unexpected)" }; return; }
+    // Locate or create the morph <path> node.  If the source primitive
+    // isn't a <path>, we swap in a <path> on first morph and restore
+    // the original in clearMorph.
+    let morphPath = layer._morphPath;
+    if (!morphPath) {
+      const srcNode = analysis.srcNode;
+      if (srcNode.tagName.toLowerCase() === "path") {
+        morphPath = srcNode;
+        layer._morphOrigD = srcNode.getAttribute("d");
+      } else {
+        // Replace primitive with a <path> that inherits stroke/fill.
+        const svgNS = "http://www.w3.org/2000/svg";
+        morphPath = document.createElementNS(svgNS, "path");
+        // Copy stroke/fill attributes so appearance is preserved.
+        ["fill","stroke","stroke-width","stroke-linecap","stroke-linejoin","opacity","fill-opacity","stroke-opacity"].forEach((a) => {
+          const v = srcNode.getAttribute(a);
+          if (v != null) morphPath.setAttribute(a, v);
+        });
+        srcNode.parentNode.insertBefore(morphPath, srcNode);
+        srcNode.style.display = "none";
+        layer._morphOrigNode = srcNode;
+      }
+      layer._morphPath = morphPath;
+      // Invalidate caches that reference the old primitive.
+      layer._strokes = null;
+      layer._primitives = null;
+    }
+    morphPath.setAttribute("d", dInterp);
+    layer._morphApplied = true;
+  }
+  function clearMorph(layer) {
+    if (layer._morphPath) {
+      if (layer._morphOrigNode) {
+        // We swapped in a <path>; restore the original primitive.
+        layer._morphOrigNode.style.display = "";
+        layer._morphPath.parentNode.removeChild(layer._morphPath);
+      } else if (layer._morphOrigD != null) {
+        // Restore the source path's original `d`.
+        layer._morphPath.setAttribute("d", layer._morphOrigD);
+      }
+      layer._morphPath = null;
+      layer._morphOrigNode = null;
+      layer._morphOrigD = null;
+      layer._strokes = null;
+      layer._primitives = null;
+    }
+    layer._morphApplied = false;
+    layer._morphDiag = null;
+  }
+
+  /* ---------------- v19.9 SVG COMPATIBILITY INSPECTOR ----------------
+     Read-only analyzer for imported SVG layers.  Reports the counts,
+     structural features, and effect-compatibility status that
+     determine whether Line Draw / Trim Paths / Path Energize / Morph
+     will do anything useful on the layer.
+
+     No auto-repair yet.  Warnings identify what to fix externally
+     (Illustrator / Figma) or via a future Conversion Assistance UI.
+
+     Return shape:
+       {
+         primitiveCount, pathCount, primsByTag: {path,rect,...},
+         visibleStrokes, visibleFills,
+         hasClipPath, hasMask, hasFilter, hasLiveText, hasUse,
+         pathAnimatable: bool,          // Line Draw / Trim Paths ready
+         morphReady:    bool,           // >=1 drawable primitive present
+         warnings: [{ level: "warn"|"info", text, fix?: string }]
+       }
+     Called from renderInspector when an SVG layer is selected; results
+     rendered by populateSvgDiagnostics into #svgDiagBody. */
+  function analyzeSvgLayer(layer) {
+    const root = layer && layer.node;
+    if (!root) return null;
+    const primsByTag = {};
+    ["path","rect","circle","ellipse","line","polygon","polyline"].forEach((t) => { primsByTag[t] = 0; });
+    let primitiveCount = 0;
+    let visibleStrokes = 0, visibleFills = 0;
+    root.querySelectorAll("path,rect,circle,ellipse,line,polygon,polyline").forEach((n) => {
+      primitiveCount++;
+      const tag = n.tagName.toLowerCase();
+      if (primsByTag[tag] !== undefined) primsByTag[tag]++;
+      // Visibility via getComputedStyle (catches CSS-based styling).
+      const cs = window.getComputedStyle(n);
+      const stroke = (n.getAttribute("stroke") != null ? n.getAttribute("stroke") : cs.stroke) || "none";
+      const fill   = (n.getAttribute("fill")   != null ? n.getAttribute("fill")   : cs.fill)   || "none";
+      const sw = parseFloat(n.getAttribute("stroke-width")) || parseFloat(cs.strokeWidth) || 0;
+      if (stroke !== "none" && sw > 0) visibleStrokes++;
+      if (fill !== "none") visibleFills++;
+    });
+    const hasClipPath = !!root.querySelector("clipPath, [clip-path]");
+    const hasMask     = !!root.querySelector("mask, [mask]");
+    const hasFilter   = !!root.querySelector("filter, [filter]:not([filter='none'])");
+    const hasLiveText = !!root.querySelector("text");
+    const hasUse      = !!root.querySelector("use");
+    const hasImage    = !!root.querySelector("image");
+    const hasForeignObject = !!root.querySelector("foreignObject");
+    const warnings = [];
+    // Compatibility judgements
+    const pathAnimatable = visibleStrokes > 0;
+    const morphReady = primitiveCount > 0;
+    if (visibleStrokes === 0 && visibleFills > 0) {
+      warnings.push({ level: "warn", text: "Fill-only shapes: no visible strokes to animate.",
+        fix: "In Illustrator/Figma: enable a stroke, or use Object > Path > Outline Stroke, then re-export." });
+    }
+    if (primitiveCount === 0) {
+      warnings.push({ level: "warn", text: "No drawable primitives found — this SVG has no paths, rects, circles, etc." });
+    }
+    if (hasClipPath) warnings.push({ level: "warn", text: "Clip paths detected — may hide primitives from Line Draw.",
+      fix: "Release clipping mask before export, or ensure the clipped primitive still has a visible stroke." });
+    if (hasMask)     warnings.push({ level: "warn", text: "Masks detected — masked regions may not animate.",
+      fix: "Flatten mask into the source primitives, or remove the mask." });
+    if (hasFilter)   warnings.push({ level: "info", text: "Filters detected — may not render identically in preview vs export." });
+    if (hasLiveText) warnings.push({ level: "warn", text: "Live <text> detected — text glyphs are not path-animatable.",
+      fix: "Convert to outlines (Illustrator: Type > Create Outlines) before export." });
+    if (hasUse)      warnings.push({ level: "info", text: "<use> references detected — path animation targets the definition, not the instance." });
+    if (hasImage)    warnings.push({ level: "info", text: "Embedded <image> detected — raster content will not path-animate." });
+    if (hasForeignObject) warnings.push({ level: "warn", text: "<foreignObject> detected — not compatible with vector effects." });
+    return {
+      primitiveCount, pathCount: primsByTag.path, primsByTag,
+      visibleStrokes, visibleFills,
+      hasClipPath, hasMask, hasFilter, hasLiveText, hasUse, hasImage, hasForeignObject,
+      pathAnimatable, morphReady, warnings,
+    };
+  }
+  function populateSvgDiagnostics(layer) {
+    if (!el.svgDiagBody) return;
+    const rep = analyzeSvgLayer(layer);
+    if (!rep) { el.svgDiagBody.innerHTML = ""; if (el.svgDiagStatus) el.svgDiagStatus.textContent = "—"; return; }
+    // Status badge — quick visual summary.
+    if (el.svgDiagStatus) {
+      if (!rep.morphReady) { el.svgDiagStatus.textContent = "Empty"; el.svgDiagStatus.className = "badge status-warn"; }
+      else if (!rep.pathAnimatable) { el.svgDiagStatus.textContent = "Fill-only"; el.svgDiagStatus.className = "badge status-warn"; }
+      else if (rep.warnings.some((w) => w.level === "warn")) { el.svgDiagStatus.textContent = "Partial"; el.svgDiagStatus.className = "badge status-partial"; }
+      else { el.svgDiagStatus.textContent = "Compatible"; el.svgDiagStatus.className = "badge status-ok"; }
+    }
+    const rows = [];
+    const row = (label, value, cls) => rows.push(`<div class="diag-row ${cls || ""}"><span class="diag-label">${label}</span><span class="diag-value">${value}</span></div>`);
+    row("Primitives", rep.primitiveCount);
+    row("Paths",      rep.primsByTag.path);
+    // Only show other primitive counts if non-zero
+    ["rect","circle","ellipse","line","polygon","polyline"].forEach((t) => {
+      if (rep.primsByTag[t]) row(t.charAt(0).toUpperCase() + t.slice(1), rep.primsByTag[t]);
+    });
+    row("Visible strokes", rep.visibleStrokes);
+    row("Visible fills",   rep.visibleFills);
+    row("Line Draw / Trim Paths", rep.pathAnimatable
+        ? `<span class="diag-ok">Compatible</span>`
+        : `<span class="diag-fail">Unavailable — no visible strokes</span>`);
+    row("Morph source ready", rep.morphReady
+        ? `<span class="diag-ok">Yes (${rep.primitiveCount} primitive${rep.primitiveCount===1?"":"s"})</span>`
+        : `<span class="diag-fail">No primitives</span>`);
+    let html = `<div class="diag-grid">${rows.join("")}</div>`;
+    if (rep.warnings.length) {
+      html += `<ul class="diag-warnings">`;
+      rep.warnings.forEach((w) => {
+        html += `<li class="diag-${w.level}"><span class="diag-warn-mark">${w.level === "warn" ? "⚠" : "ℹ"}</span> ${w.text}`;
+        if (w.fix) html += `<div class="diag-fix">${w.fix}</div>`;
+        html += `</li>`;
+      });
+      html += `</ul>`;
+    } else {
+      html += `<div class="diag-clean">No compatibility warnings detected.</div>`;
+    }
+    el.svgDiagBody.innerHTML = html;
   }
 
   function animateSubLayers(layer, t, sig, allowT) {
@@ -7186,6 +7647,29 @@
     if (el.tfOriginal) el.tfOriginal.addEventListener("click", tfOriginal);
     el.layerDup.addEventListener("click", () => selectedLayers.length && duplicateSelectedLayers());
     el.layerDel.addEventListener("click", () => selectedLayers.length && deleteSelectedLayers());
+    // v19.9: Clear all effect clips from every selected layer.  Keeps
+    // the layer itself.  Toast reports how many clips were removed
+    // total so users can confirm the operation ran.
+    if (el.layerClearFx) {
+      el.layerClearFx.addEventListener("click", () => {
+        if (!selectedLayers.length) return;
+        let removed = 0;
+        selectedLayers.forEach((L) => {
+          removed += (L.clips || []).length;
+          L.clips = [];
+          // Also clear any live effect residue so the shape returns to baseline immediately.
+          if (typeof clearPathDash === "function")       clearPathDash(L);
+          if (typeof clearShapeStyleDelta === "function") clearShapeStyleDelta(L);
+          if (typeof clearMorph === "function")           clearMorph(L);
+        });
+        // Any selected clip belonging to those layers is gone now.
+        if (selectedEventClip && selectedLayers.includes(selectedEventClip.layer)) selectedEventClip = null;
+        renderTimeline(); renderInspector(); renderEventButtons(); renderClipInspector(); paintIfPaused();
+        if (removed === 0) toast("No effects to clear");
+        else if (selectedLayers.length === 1) toast(`Cleared ${removed} effect${removed === 1 ? "" : "s"}`);
+        else toast(`Cleared ${removed} effects from ${selectedLayers.length} layers`);
+      });
+    }
     el.layerHide.addEventListener("click", () => { if (selectedLayer) { toggleLayerVisible(selectedLayer); renderInspector(); } });
     el.layerLock.addEventListener("click", () => selectedLayer && toggleLayerLock(selectedLayer));
 
@@ -8195,7 +8679,7 @@
     requestAnimationFrame(() => fitZoom());
     setTimeout(() => { fitZoom(); renderTimeline(); }, 120);
     // Test hook: expose internals for automated verification (harmless in production).
-    window.__phaserDebug = { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused };
+    window.__phaserDebug = { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath };
   }
   document.addEventListener("DOMContentLoaded", init);
 })();
