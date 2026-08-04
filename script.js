@@ -4657,7 +4657,183 @@
     } else {
       html += `<div class="diag-clean">No compatibility warnings detected.</div>`;
     }
+    // v19.11: SVG Repair — actionable buttons that mutate the imported
+    // SVG in-place to remove blockers for path-based vector effects.
+    // Shown only when there's something to repair.  All operations are
+    // reversible via the Undo button, which restores the original
+    // serialized SVG innerHTML captured at first repair.
+    const repairOps = collectSvgRepairOps(layer);
+    if (repairOps.available.length || layer._svgSnapshot) {
+      html += `<div class="repair-section">`;
+      html += `<div class="repair-head">Repairs</div>`;
+      html += `<div class="repair-note">Repairs modify the imported SVG in-place. Clipped/masked regions become fully visible after release. Use Undo to revert.</div>`;
+      html += `<div class="repair-btns">`;
+      repairOps.available.forEach((op) => {
+        html += `<button class="mini-btn repair-btn" data-repair="${op.key}" title="${op.tooltip}">${op.label} <span class="repair-count">${op.count}</span></button>`;
+      });
+      repairOps.unavailable.forEach((op) => {
+        html += `<button class="mini-btn repair-btn repair-unavailable" disabled title="${op.tooltip}">${op.label} <span class="repair-count">—</span></button>`;
+      });
+      if (layer._svgSnapshot) {
+        html += `<button class="mini-btn repair-undo" data-repair="undo" title="Restore the SVG to how it looked at import.">Undo repairs</button>`;
+      }
+      html += `</div></div>`;
+    }
     el.svgDiagBody.innerHTML = html;
+    // Wire the repair buttons.  Each button dispatches to runSvgRepair
+    // which mutates the DOM, invalidates caches, and re-renders the
+    // diagnostics panel so users see the new compatibility state.
+    el.svgDiagBody.querySelectorAll(".repair-btn, .repair-undo").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const key = btn.dataset.repair;
+        if (!key) return;
+        runSvgRepair(layer, key);
+      });
+    });
+  }
+
+  /* Inventory of repairs available for a layer.  Each entry has:
+     { key, label, tooltip, count } — count = number of elements the
+     repair will affect.  Ops with count===0 are omitted.  */
+  function collectSvgRepairOps(layer) {
+    const root = layer && layer.node; if (!root) return { available: [], unavailable: [] };
+    const clipRefs = root.querySelectorAll("[clip-path]").length;
+    const maskRefs = root.querySelectorAll("[mask]").length;
+    // Convertible primitives = anything that isn't already a <path>.
+    const convertibles = root.querySelectorAll("rect, circle, ellipse, line, polygon, polyline").length;
+    const available = [];
+    if (clipRefs > 0) available.push({
+      key: "release-clip-paths",
+      label: "Release clip paths",
+      tooltip: `Remove ${clipRefs} clip-path attribute${clipRefs===1?"":"s"} and their <clipPath> definitions. Clipped regions become fully visible.`,
+      count: clipRefs,
+    });
+    if (maskRefs > 0) available.push({
+      key: "remove-masks",
+      label: "Remove masks",
+      tooltip: `Remove ${maskRefs} mask attribute${maskRefs===1?"":"s"} and their <mask> definitions. Masked regions become fully visible.`,
+      count: maskRefs,
+    });
+    if (convertibles > 0) available.push({
+      key: "convert-shapes",
+      label: "Convert shapes to paths",
+      tooltip: `Convert ${convertibles} primitive shape${convertibles===1?"":"s"} (rect/circle/ellipse/line/polygon) into <path> elements. Improves compatibility with external tools and future features.`,
+      count: convertibles,
+    });
+    // Unavailable ops — surfaced so users know they exist but aren't ready.
+    const unavailable = [];
+    // Expand Strokes needs a real stroke-offset library.  Flag it as
+    // planned rather than pretending to implement it.
+    const strokedPaths = Array.from(root.querySelectorAll("path, rect, circle, ellipse, line, polygon, polyline")).filter((n) => {
+      const cs = window.getComputedStyle(n);
+      const s = n.getAttribute("stroke") ?? cs.stroke;
+      return s && s !== "none";
+    }).length;
+    if (strokedPaths > 0) unavailable.push({
+      key: "expand-strokes",
+      label: "Expand strokes",
+      tooltip: `Not yet available — accurate stroke-to-fill conversion requires a geometry library. Planned for a future update. (${strokedPaths} stroked primitives would be affected.)`,
+    });
+    return { available, unavailable };
+  }
+
+  /* Run a repair operation.  Snapshots the SVG on first mutation so
+     undo can restore the original.  Invalidates layer caches so path
+     effects find the new elements. */
+  function runSvgRepair(layer, op) {
+    if (!layer || !layer.node) return;
+    if (op === "undo") {
+      if (!layer._svgSnapshot) { toast("Nothing to undo"); return; }
+      layer.node.innerHTML = layer._svgSnapshot;
+      layer._svgSnapshot = null;
+      layer._svgRepairsApplied = [];
+      // Invalidate every cached DOM reference — the primitives are new nodes.
+      layer._primitives = null;
+      layer._strokes = null;
+      layer._morphPath = null;
+      layer._morphOrigNode = null;
+      layer._morphOrigD = null;
+      layer._dashApplied = false;
+      layer._shapeStyleApplied = false;
+      layer._morphApplied = false;
+      populateSvgDiagnostics(layer);
+      renderLayers();       // refresh thumbnail
+      paintIfPaused();
+      toast("SVG repairs undone");
+      return;
+    }
+    // Snapshot BEFORE first mutation.
+    if (!layer._svgSnapshot) layer._svgSnapshot = layer.node.innerHTML;
+    if (!layer._svgRepairsApplied) layer._svgRepairsApplied = [];
+    let n = 0;
+    if (op === "release-clip-paths") n = releaseClipPaths(layer.node);
+    else if (op === "remove-masks") n = removeMasks(layer.node);
+    else if (op === "convert-shapes") n = convertShapesToPaths(layer.node);
+    else { toast("Unknown repair"); return; }
+    if (!layer._svgRepairsApplied.includes(op)) layer._svgRepairsApplied.push(op);
+    // Invalidate caches — DOM has been mutated.
+    layer._primitives = null;
+    layer._strokes = null;
+    layer._dashApplied = false;
+    layer._shapeStyleApplied = false;
+    // Refresh diagnostics + thumbnail + paint.
+    populateSvgDiagnostics(layer);
+    renderLayers();
+    paintIfPaused();
+    toast(`Repaired: ${n} element${n===1?"":"s"} affected`);
+  }
+
+  /* --- Individual repair operations --- */
+
+  /* Release all clip paths: remove <clipPath> definitions AND clip-path
+     attributes.  Returns the number of ELEMENTS whose appearance
+     changes (i.e., that had clip-path references).  Definitions are
+     removed as cleanup — they don't render on their own. */
+  function releaseClipPaths(root) {
+    let refs = 0;
+    root.querySelectorAll("[clip-path]").forEach((n) => { n.removeAttribute("clip-path"); refs++; });
+    // Also strip `clip-path` from inline styles (some Illustrator exports use style="clip-path:...")
+    root.querySelectorAll("*").forEach((n) => {
+      if (n.style && n.style.clipPath) { n.style.clipPath = ""; refs++; }
+    });
+    root.querySelectorAll("clipPath").forEach((cp) => cp.parentNode.removeChild(cp));
+    return refs;
+  }
+  /* Remove all masks: <mask> definitions + mask attributes. */
+  function removeMasks(root) {
+    let refs = 0;
+    root.querySelectorAll("[mask]").forEach((n) => { n.removeAttribute("mask"); refs++; });
+    root.querySelectorAll("*").forEach((n) => {
+      if (n.style && n.style.mask) { n.style.mask = ""; refs++; }
+    });
+    root.querySelectorAll("mask").forEach((m) => m.parentNode.removeChild(m));
+    return refs;
+  }
+  /* Convert primitive shapes into <path> elements.  Reuses the same
+     canonicalization used by the morph subsystem so behavior is
+     consistent.  Preserves stroke/fill/opacity/transform/id/class. */
+  function convertShapesToPaths(root) {
+    const svgNS = "http://www.w3.org/2000/svg";
+    let converted = 0;
+    // Snapshot the list — we're going to replace each node.
+    const nodes = Array.from(root.querySelectorAll("rect, circle, ellipse, line, polygon, polyline"));
+    nodes.forEach((node) => {
+      const canonical = primitiveToCanonicalPath(node, "straight");
+      if (!canonical) return;
+      const path = document.createElementNS(svgNS, "path");
+      path.setAttribute("d", canonical.d);
+      // Copy every attribute except geometry-defining ones.  Preserves
+      // fill/stroke/stroke-width/opacity/transform/class/id and any
+      // custom data-* attributes the source SVG uses.
+      const skip = new Set(["x","y","width","height","rx","ry","cx","cy","r","x1","y1","x2","y2","points"]);
+      for (const attr of Array.from(node.attributes)) {
+        if (skip.has(attr.name)) continue;
+        path.setAttribute(attr.name, attr.value);
+      }
+      node.parentNode.replaceChild(path, node);
+      converted++;
+    });
+    return converted;
   }
 
   function animateSubLayers(layer, t, sig, allowT) {
@@ -8841,7 +9017,7 @@
     requestAnimationFrame(() => fitZoom());
     setTimeout(() => { fitZoom(); renderTimeline(); }, 120);
     // Test hook: expose internals for automated verification (harmless in production).
-    window.__phaserDebug = { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath };
+    window.__phaserDebug = { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath, runSvgRepair, collectSvgRepairOps, releaseClipPaths, removeMasks, convertShapesToPaths };
   }
   document.addEventListener("DOMContentLoaded", init);
 })();
