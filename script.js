@@ -514,6 +514,26 @@
 
   /* ---------------- ASSETS + LAYERS ---------------- */
   const assets = [];
+  /* v19.18: Cross-layer ID resolution that also searches group
+     members.  When layers are grouped, they're removed from the
+     top-level `layers[]` array and stored in `group._members[]`.
+     Cross-layer references (morph targetLayerId, and any future
+     effects that reference other layers by ID) must still resolve
+     when the target is inside a group — otherwise grouping silently
+     invalidates existing animation relationships. */
+  function findLayerAnywhere(id) {
+    if (id == null) return null;
+    const top = layers.find((L) => L.id === id);
+    if (top) return top;
+    for (const L of layers) {
+      if (L.kind === "GROUP" && L._members) {
+        const found = L._members.find((m) => m.id === id);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
   const layers = [];   // index 0 = back
   // v19.17: forward references to group helpers (defined inside setup()).
   // Allows module-scope functions like duplicateLayer to invoke them.
@@ -2783,10 +2803,21 @@
           const noneOpt = document.createElement("option");
           noneOpt.value = "0"; noneOpt.textContent = "— pick a layer —";
           sel.appendChild(noneOpt);
+          // v19.18: also include group members as valid targets, since
+          // pre-existing morph relationships must survive grouping.  A
+          // member that hosts the source clip is filtered out below.
+          const targets = [];
           layers.forEach((L) => {
+            if (L.kind === "GROUP" && L._members) {
+              L._members.forEach((m) => targets.push({ L: m, groupTag: ` (in ${L.name})` }));
+            } else {
+              targets.push({ L, groupTag: "" });
+            }
+          });
+          targets.forEach(({ L, groupTag }) => {
             if (L === layer) return;    // can't morph to self
             const o = document.createElement("option");
-            o.value = String(L.id); o.textContent = `${L.name} · ${L.kind}${L.kind === "SHAPE" ? " (" + L.shapeType + ")" : ""}`;
+            o.value = String(L.id); o.textContent = `${L.name} · ${L.kind}${L.kind === "SHAPE" ? " (" + L.shapeType + ")" : ""}${groupTag}`;
             sel.appendChild(o);
           });
           sel.value = String(p.morphTargetLayerId || 0);
@@ -2796,7 +2827,7 @@
           });
           row.appendChild(sel); paramsHost.appendChild(row);
           // Compatibility badge
-          const target = layers.find((L) => L.id === p.morphTargetLayerId);
+          const target = findLayerAnywhere(p.morphTargetLayerId);
           const analysis = analyzeMorph(layer, target, p.morphTargetIndex);
           const status = document.createElement("div");
           status.className = "morph-diag " + (analysis.ok ? "morph-diag-ok" : "morph-diag-fail");
@@ -4388,6 +4419,19 @@
     // local canvas px) scale together as one visual unit.  Regular
     // layers keep the original width/height-based scaling.
     if (layer.kind === "GROUP") {
+      // v19.18: process member clips before positioning the group
+      // wrap.  This makes pre-existing member animations (morph,
+      // line draw, fill color flash, etc.) survive grouping — the
+      // user's expectation is that grouping is a container operation
+      // that doesn't invalidate existing clip relationships.
+      // applyVectorEffectsAtTime handles all vector effect appliers
+      // and uses findLayerAnywhere for cross-layer refs, so a morph
+      // between two group members continues to resolve correctly.
+      if (layer._members) {
+        for (const m of layer._members) {
+          if (m && m.clips && m.clips.length) applyVectorEffectsAtTime(m, sceneTime);
+        }
+      }
       const natWpx = ((layer._groupNatWpct || T.wPct) / 100) * A.w;
       const natHpx = ((layer._groupNatHpct || T.hPct) / 100) * A.h;
       const scaleX = (T.wPct / (layer._groupNatWpct || T.wPct)) * extraScale;
@@ -4591,7 +4635,17 @@
     // playhead, paint an animated frame so event params visibly affect
     // the preview. Otherwise fall back to the plain static frame.
     const t = STATE.time;
-    const hasActiveEvent = layers.some((L) => activeEventClipsAt(L, t).length > 0);
+    // v19.18: include group members in the check — a morph on member A
+    // inside a group should still trigger animated rendering even if
+    // the group itself has no clips.
+    const layerHasActive = (L) => {
+      if (activeEventClipsAt(L, t).length > 0) return true;
+      if (L.kind === "GROUP" && L._members) {
+        return L._members.some((m) => m && m.clips && activeEventClipsAt(m, t).length > 0);
+      }
+      return false;
+    };
+    const hasActiveEvent = layers.some(layerHasActive);
     if (hasActiveEvent) renderOneAnimatedFrame();
     else renderStaticFrame();
   }
@@ -4915,7 +4969,7 @@
       layer._morphDiag = { ok: false, reason: "No target selected" };
       return;
     }
-    const target = layers.find((L) => L.id === morph.targetLayerId);
+    const target = findLayerAnywhere(morph.targetLayerId);
     const analysis = analyzeMorph(layer, target, morph.targetIndex);
     layer._morphDiag = { ok: analysis.ok, reason: analysis.reason,
       sourceCmds: analysis.sourceCmds, targetCmds: analysis.targetCmds };
@@ -5245,16 +5299,24 @@
     // up via evaluateLayerAtTime → scaleSafe/opacity/rot accumulators.
   ]);
   function hasActiveVectorClip(layer, t) {
-    if (!layer || !layer.clips || !layer.clips.length) return false;
-    // v19.12: fillReveal + segmentReveal work on any layer with a wrap
-    // (fillReveal) or primitives (segmentReveal).  Other DOM-mutating
-    // vector effects gate on kind === SVG|SHAPE.
-    const active = activeEventClipsAt(layer, t);
-    return active.some(({ c }) => {
-      if (!VECTOR_FX_KEYS.has(c.fxKey)) return false;
-      if (c.fxKey === "fillReveal" || c.fxKey === "segmentReveal") return true;
-      return layer.kind === "SVG" || layer.kind === "SHAPE" || layer.kind === "GROUP";
-    });
+    if (!layer) return false;
+    // Check layer's own clips first.
+    if (layer.clips && layer.clips.length) {
+      const active = activeEventClipsAt(layer, t);
+      const own = active.some(({ c }) => {
+        if (!VECTOR_FX_KEYS.has(c.fxKey)) return false;
+        if (c.fxKey === "fillReveal" || c.fxKey === "segmentReveal") return true;
+        return layer.kind === "SVG" || layer.kind === "SHAPE" || layer.kind === "GROUP";
+      });
+      if (own) return true;
+    }
+    // v19.18: for GROUP, also check whether any member has an active
+    // vector clip.  Export needs to re-rasterize the group whenever
+    // any member's clip mutates member DOM (morph, dash, etc.).
+    if (layer.kind === "GROUP" && layer._members) {
+      return layer._members.some((m) => hasActiveVectorClip(m, t));
+    }
+    return false;
   }
   function applyVectorEffectsAtTime(layer, t) {
     const active = activeEventClipsAt(layer, t);
@@ -5304,6 +5366,17 @@
     else if (layer._fillRevealApplied) clearFillReveal(layer);
     if (segmentRevealContrib) applySegmentReveal(layer, segmentRevealContrib);
     else if (layer._segmentRevealApplied) clearSegmentReveal(layer);
+    // v19.18: recurse into group members so per-member clips (morph,
+    // line draw, fill color flash, etc.) continue to fire after
+    // grouping.  Member layers keep their own clips array; grouping
+    // shouldn't invalidate pre-existing animation relationships.  The
+    // recursion is safe — members can't themselves be groups (nested
+    // groups are blocked at group-creation time).
+    if (layer.kind === "GROUP" && layer._members) {
+      for (const m of layer._members) {
+        if (m && m.clips && m.clips.length) applyVectorEffectsAtTime(m, t);
+      }
+    }
   }
 
   /* ---------------- v19.9 SVG COMPATIBILITY INSPECTOR ----------------
