@@ -5312,6 +5312,25 @@
     }
     return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
   }
+  // v19.25: full bounding box for size normalization between source
+  // and target.  Together with bboxCenter these let analyzeMorph
+  // normalize both sample sets into the same frame BEFORE alignment
+  // and interpolation.
+  function bboxOfPoints(points) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i < points.length; i++) {
+      const p = points[i];
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+    return { minX, minY, maxX, maxY,
+             width:  maxX - minX,
+             height: maxY - minY,
+             cx: (minX + maxX) / 2,
+             cy: (minY + maxY) / 2 };
+  }
   // v19.24: return a translated copy so the sequence's bbox center is
   // at the origin.  Original array untouched.
   function centerPoints(points, center) {
@@ -5372,8 +5391,25 @@
     const tgtCenter = bboxCenter(tgtSample.points);
     const srcCentered = centerPoints(srcSample.points, srcCenter);
     let tgtCentered  = centerPoints(tgtSample.points, tgtCenter);
-    // Vertex alignment for closed shapes — done in centered space so
-    // the alignment measures shape similarity, not positional offset.
+    // v19.25: normalize target's size to source's bounding box so the
+    // morph output stays within source's frame throughout the
+    // animation.  Without this, source and target with different
+    // sizes produce intermediate shapes whose visible bbox no longer
+    // matches the layer's selection rectangle — the drift shown in
+    // the user's screenshot even though centers stay aligned.
+    // Non-uniform scale (each axis independently) matches Illustrator
+    // Blend semantics: source's frame is preserved, target's shape
+    // adapts to fill it.
+    const srcBB = bboxOfPoints(srcCentered);
+    const tgtBB = bboxOfPoints(tgtCentered);
+    const scaleX = tgtBB.width  > 0.001 ? srcBB.width  / tgtBB.width  : 1;
+    const scaleY = tgtBB.height > 0.001 ? srcBB.height / tgtBB.height : 1;
+    if (scaleX !== 1 || scaleY !== 1) {
+      tgtCentered = tgtCentered.map((p) => ({ x: p.x * scaleX, y: p.y * scaleY }));
+    }
+    // Vertex alignment for closed shapes — done in centered+normalized
+    // space so the alignment measures pure shape similarity, not
+    // positional or scale offset.
     if (srcSample.closed && tgtSample.closed) {
       tgtCentered = alignPointSequence(srcCentered, tgtCentered);
     }
