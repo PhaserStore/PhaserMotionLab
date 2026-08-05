@@ -1545,15 +1545,25 @@
   // v19.22: SVG-only utility — set fill and stroke to a single color
   // on every drawable primitive.  Used by the "Monochrome" button.
   // The button in the unified panel takes the current Fill color.
+  // v19.24: detection uses computed style (catches CSS-classed fills)
+  // and mutations write both attribute and inline style (inline beats
+  // inlined <style> block per SVG specificity).
   function applySvgMonochrome(layer, color) {
     if (!layer || layer.kind !== "SVG" || !layer.node) return 0;
     ensureSvgSnapshot(layer);
     const prims = layer.node.querySelectorAll("path, rect, circle, ellipse, line, polygon, polyline");
     let count = 0;
     prims.forEach((n) => {
-      const f = n.getAttribute("fill"); const s = n.getAttribute("stroke");
-      if (f && f !== "none") n.setAttribute("fill", color);
-      if (s && s !== "none") n.setAttribute("stroke", color);
+      const attrFill = n.getAttribute("fill");
+      const attrStroke = n.getAttribute("stroke");
+      const cs = window.getComputedStyle(n);
+      // "Visible" if either attribute or computed style says so.
+      const hasFill = (attrFill !== null && attrFill !== "none") ||
+                      (attrFill === null && cs.fill && cs.fill !== "none" && cs.fill !== "rgba(0, 0, 0, 0)");
+      const hasStroke = (attrStroke !== null && attrStroke !== "none") ||
+                        (attrStroke === null && cs.stroke && cs.stroke !== "none" && cs.stroke !== "rgba(0, 0, 0, 0)");
+      if (hasFill)   { n.setAttribute("fill", color);   n.style.fill = color; }
+      if (hasStroke) { n.setAttribute("stroke", color); n.style.stroke = color; }
       n.removeAttribute("data-saved-fill"); n.removeAttribute("data-saved-stroke");
       count++;
     });
@@ -1562,6 +1572,8 @@
     return count;
   }
   // v19.22: SVG-only utility — invert every fill/stroke color.
+  // v19.24: same treatment — use computed style for detection, write
+  // both attribute and inline style so CSS class rules don't mask.
   function applySvgInvert(layer) {
     if (!layer || layer.kind !== "SVG" || !layer.node) return 0;
     ensureSvgSnapshot(layer);
@@ -1577,9 +1589,17 @@
     };
     let count = 0;
     prims.forEach((n) => {
+      const cs = window.getComputedStyle(n);
       ["fill", "stroke"].forEach((attr) => {
-        const v = n.getAttribute(attr); const iv = inv(v);
-        if (iv) n.setAttribute(attr, iv);
+        const v = n.getAttribute(attr);
+        // Effective color: attribute wins if set, otherwise computed style.
+        const effective = (v !== null && v !== "none") ? v :
+                          (v === null ? cs[attr] : null);
+        const iv = inv(effective);
+        if (iv) {
+          n.setAttribute(attr, iv);
+          n.style[attr] = iv;
+        }
       });
       count++;
     });
@@ -1621,28 +1641,35 @@
     const prims = layer.node.querySelectorAll("path, rect, circle, ellipse, line, polygon, polyline");
     let count = 0;
     prims.forEach((n) => {
+      // v19.24: also write inline style alongside attribute.  CSS
+      // rules from an inlined <style> block override presentation
+      // attributes in SVG specificity — very common in Illustrator
+      // "Save for Web" exports.  Inline style beats <style> block,
+      // so setting style.fill/stroke ensures the change is visible.
       if (patch.fill !== undefined) {
         n.setAttribute("fill", patch.fill);
-        n.removeAttribute("data-saved-fill");   // fresh color supersedes any saved
+        n.style.fill = patch.fill;
+        n.removeAttribute("data-saved-fill");
       }
       if (patch.fillOn !== undefined) {
         if (!patch.fillOn) {
-          // Save current then set to none.  Don't clobber a saved value
-          // if we're already off (idempotent).
           const cur = n.getAttribute("fill");
           if (cur && cur !== "none" && !n.hasAttribute("data-saved-fill")) {
             n.setAttribute("data-saved-fill", cur);
           }
           n.setAttribute("fill", "none");
+          n.style.fill = "none";
         } else if (patch.fill === undefined) {
-          // Turning back on: restore saved value if present, else default.
           const saved = n.getAttribute("data-saved-fill");
-          n.setAttribute("fill", saved || "#7A5CFF");
+          const c = saved || "#7A5CFF";
+          n.setAttribute("fill", c);
+          n.style.fill = c;
           n.removeAttribute("data-saved-fill");
         }
       }
       if (patch.stroke !== undefined) {
         n.setAttribute("stroke", patch.stroke);
+        n.style.stroke = patch.stroke;
         n.removeAttribute("data-saved-stroke");
       }
       if (patch.strokeOn !== undefined) {
@@ -1652,24 +1679,28 @@
             n.setAttribute("data-saved-stroke", cur);
           }
           n.setAttribute("stroke", "none");
+          n.style.stroke = "none";
         } else if (patch.stroke === undefined) {
           const saved = n.getAttribute("data-saved-stroke");
-          n.setAttribute("stroke", saved || "#FFFFFF");
+          const c = saved || "#FFFFFF";
+          n.setAttribute("stroke", c);
+          n.style.stroke = c;
           n.removeAttribute("data-saved-stroke");
         }
       }
       if (patch.strokeWidth !== undefined) {
         n.setAttribute("stroke-width", String(patch.strokeWidth));
+        n.style.strokeWidth = String(patch.strokeWidth) + "px";
       }
       // v19.22: opacity attributes.  Setting to 1 removes the attribute
       // to keep the SVG string clean.
       if (patch.fillOpacity !== undefined) {
-        if (patch.fillOpacity >= 1) n.removeAttribute("fill-opacity");
-        else n.setAttribute("fill-opacity", String(patch.fillOpacity));
+        if (patch.fillOpacity >= 1) { n.removeAttribute("fill-opacity"); n.style.fillOpacity = ""; }
+        else { n.setAttribute("fill-opacity", String(patch.fillOpacity)); n.style.fillOpacity = String(patch.fillOpacity); }
       }
       if (patch.strokeOpacity !== undefined) {
-        if (patch.strokeOpacity >= 1) n.removeAttribute("stroke-opacity");
-        else n.setAttribute("stroke-opacity", String(patch.strokeOpacity));
+        if (patch.strokeOpacity >= 1) { n.removeAttribute("stroke-opacity"); n.style.strokeOpacity = ""; }
+        else { n.setAttribute("stroke-opacity", String(patch.strokeOpacity)); n.style.strokeOpacity = String(patch.strokeOpacity); }
       }
       count++;
     });
@@ -5266,6 +5297,50 @@
     }
     return out;
   }
+  // v19.24: bbox center of a point sequence.  Used to normalize source
+  // and target into a shared coordinate space before interpolation, so
+  // shapes with different local origins morph while staying centered
+  // instead of drifting toward one side.
+  function bboxCenter(points) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i < points.length; i++) {
+      const p = points[i];
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+    return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+  }
+  // v19.24: return a translated copy so the sequence's bbox center is
+  // at the origin.  Original array untouched.
+  function centerPoints(points, center) {
+    const out = new Array(points.length);
+    for (let i = 0; i < points.length; i++) {
+      out[i] = { x: points[i].x - center.x, y: points[i].y - center.y };
+    }
+    return out;
+  }
+  // v19.24: centered interpolation — the morph output stays anchored
+  // at the SOURCE's original bbox center regardless of where the
+  // target primitive lives in its own SVG coord space.  Behavior:
+  //   - At t=0: exactly matches source's original geometry (identity)
+  //   - At t=1: target's SHAPE, positioned at source's center
+  //   - Between: continuous centered interpolation
+  // Called from applyMorph.
+  function interpolatePointsCentered(source, target, srcCenter, t) {
+    const srcC = centerPoints(source, srcCenter);
+    const tgtCenter = bboxCenter(target);
+    const tgtC = centerPoints(target, tgtCenter);
+    const interpC = interpolatePoints(srcC, tgtC, t);
+    // Translate back to source's original center so the shape stays anchored.
+    const N = interpC.length;
+    const out = new Array(N);
+    for (let i = 0; i < N; i++) {
+      out[i] = { x: interpC[i].x + srcCenter.x, y: interpC[i].y + srcCenter.y };
+    }
+    return out;
+  }
 
   function analyzeMorph(sourceLayer, targetLayer, targetIndex) {
     if (!sourceLayer) return { ok: false, reason: "No source layer" };
@@ -5283,29 +5358,37 @@
     if (!tgtNodes.length) return { ok: false, reason: "Target has no drawable primitives" };
     const tgtNode = tgtNodes[Math.min(targetIndex || 0, tgtNodes.length - 1)];
     // v19.23: resample both primitives to N points along arc length.
-    // Works uniformly on any command types (M/L/C/Q/A/S/T/Z) via the
-    // browser's native SVGGeometryElement API.  No pre-conversion.
+    // v19.24: normalize both to their bbox center BEFORE alignment
+    // and interpolation.  Vertex alignment cost is computed in
+    // centered space so shapes with different local origins produce
+    // the correct cyclic shift.  applyMorph then translates the
+    // interpolated result back to the source's original center, so
+    // the morph stays visually anchored where the source was.
     const srcSample = resamplePrimitiveToPoints(srcNode, MORPH_SAMPLES);
     const tgtSample = resamplePrimitiveToPoints(tgtNode, MORPH_SAMPLES);
     if (!srcSample) return { ok: false, reason: `Source <${srcNode.tagName.toLowerCase()}> has zero geometry (empty path?)` };
     if (!tgtSample) return { ok: false, reason: `Target <${tgtNode.tagName.toLowerCase()}> has zero geometry (empty path?)` };
-    // Vertex alignment for closed shapes.  Open shapes have a
-    // defined start/end and shouldn't be cyclically shifted.
-    let alignedTarget = tgtSample.points;
+    const srcCenter = bboxCenter(srcSample.points);
+    const tgtCenter = bboxCenter(tgtSample.points);
+    const srcCentered = centerPoints(srcSample.points, srcCenter);
+    let tgtCentered  = centerPoints(tgtSample.points, tgtCenter);
+    // Vertex alignment for closed shapes — done in centered space so
+    // the alignment measures shape similarity, not positional offset.
     if (srcSample.closed && tgtSample.closed) {
-      alignedTarget = alignPointSequence(srcSample.points, tgtSample.points);
+      tgtCentered = alignPointSequence(srcCentered, tgtCentered);
     }
     return {
       ok: true,
       sourceCmds: MORPH_SAMPLES,
       targetCmds: MORPH_SAMPLES,
-      sourcePoints: srcSample.points,
-      targetPoints: alignedTarget,
+      sourcePointsCentered: srcCentered,
+      targetPointsCentered: tgtCentered,
+      sourceCenter: srcCenter,
       closed: srcSample.closed || tgtSample.closed,
       srcNode, tgtNode,
       // Legacy compat fields for callers that read these:
       sourceForm: { d: pointsToPathD(srcSample.points, srcSample.closed) },
-      targetForm: { d: pointsToPathD(alignedTarget, tgtSample.closed) },
+      targetForm: { d: pointsToPathD(tgtSample.points, tgtSample.closed) },
     };
   }
 
@@ -5323,9 +5406,17 @@
       sourceCmds: analysis.sourceCmds, targetCmds: analysis.targetCmds };
     if (!analysis.ok) return;
     const t = Math.max(0, Math.min(1, morph.progress || 0));
-    // v19.23: point-by-point interpolation, then serialize to a
-    // polygonal path.  Simple, robust, uniform behavior.
-    const interp = interpolatePoints(analysis.sourcePoints, analysis.targetPoints, t);
+    // v19.24: interpolate in centered space, then translate back to
+    // the source's original bbox center so the morph output stays
+    // visually anchored.  Prevents "drift toward upper-left" seen
+    // when source and target live in different coord frames.
+    const interpC = interpolatePoints(analysis.sourcePointsCentered, analysis.targetPointsCentered, t);
+    const N = interpC.length;
+    const interp = new Array(N);
+    const sc = analysis.sourceCenter;
+    for (let i = 0; i < N; i++) {
+      interp[i] = { x: interpC[i].x + sc.x, y: interpC[i].y + sc.y };
+    }
     const dInterp = pointsToPathD(interp, analysis.closed);
     if (!dInterp) { layer._morphDiag = { ok: false, reason: "Interpolation failed (unexpected)" }; return; }
     // Locate or create the morph <path> node.  If the source primitive
