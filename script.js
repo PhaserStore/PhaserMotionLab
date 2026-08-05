@@ -515,6 +515,10 @@
   /* ---------------- ASSETS + LAYERS ---------------- */
   const assets = [];
   const layers = [];   // index 0 = back
+  // v19.17: forward references to group helpers (defined inside setup()).
+  // Allows module-scope functions like duplicateLayer to invoke them.
+  let _groupSelectedLayers = null;
+  let _ungroupSelectedLayer = null;
   let selectedLayer = null, idSeq = 0;
   /* v19.4 multi-selection.  selectedLayer stays as "primary" (drives
      inspector, transform display, primary highlight); selectedLayers
@@ -1822,6 +1826,39 @@
       dup = createShapeLayerAt(layer.shapeType, { x: 0, y: 0, w: layer.natW, h: layer.natH });
       dup.shapeStyle = JSON.parse(JSON.stringify(layer.shapeStyle));
       buildShapeLayerSVG(dup);
+    } else if (layer.kind === "GROUP") {
+      // v19.17: duplicating a group produces a NEW independent group
+      // with fresh member copies.  Sequence:
+      //   1. Duplicate each member as an independent layer.
+      //   2. Multi-select the new duplicates.
+      //   3. Call _groupSelectedLayers() (forward reference) to form
+      //      the new group.
+      //   4. Copy the source group's transform onto the new group so
+      //      it lands at the same position/scale/rotation.
+      //   5. Copy the source group's clips.
+      if (!_groupSelectedLayers) { toast("Group duplication not yet ready"); return; }
+      const beforeIds = new Set(layers.map((L) => L.id));
+      layer._members.forEach((m) => duplicateLayer(m));
+      const memberDups = layers.filter((L) => !beforeIds.has(L.id));
+      selectedLayers = memberDups.slice();
+      selectedLayer = memberDups[memberDups.length - 1] || null;
+      _groupSelectedLayers();
+      dup = selectedLayer;   // the newly-created group
+      if (dup && dup.kind === "GROUP") {
+        // Copy source group's transform + clips onto the duplicate so
+        // it visually matches (position, scale, rotation, animation).
+        Object.assign(dup.transform, layer.transform);
+        dup._identityTransform = { ...layer._identityTransform };
+        dup._groupNatWpct = layer._groupNatWpct;
+        dup._groupNatHpct = layer._groupNatHpct;
+        dup.name = layer.name + " copy";
+        dup.clips = layer.clips.map((c) => ({
+          ...c,
+          id: ++idSeq,
+          params: c.params ? JSON.parse(JSON.stringify(c.params)) : {},
+        }));
+      }
+      return;
     } else {
       const asset = assets.find((a) => a.id === layer.assetId);
       if (!asset) { toast("Original asset not in library"); return; }
@@ -4346,6 +4383,28 @@
 
     // artboard-space placement: size in %, center offset in %
     const A = STATE.format;
+    // v19.17: GROUP transform uses natural-size wrap + CSS scale so
+    // member wraps inside (which are absolutely positioned in group-
+    // local canvas px) scale together as one visual unit.  Regular
+    // layers keep the original width/height-based scaling.
+    if (layer.kind === "GROUP") {
+      const natWpx = ((layer._groupNatWpct || T.wPct) / 100) * A.w;
+      const natHpx = ((layer._groupNatHpct || T.hPct) / 100) * A.h;
+      const scaleX = (T.wPct / (layer._groupNatWpct || T.wPct)) * extraScale;
+      const scaleY = (T.hPct / (layer._groupNatHpct || T.hPct)) * extraScale;
+      const gCxPx = (T.cx / 100) * A.w + (allowT ? (tx / 100) * A.w : 0) + (expansionTx / 100) * A.w;
+      const gCyPx = (T.cy / 100) * A.h + (allowT ? (ty / 100) * A.h : 0) + (expansionTy / 100) * A.h;
+      layer.wrap.style.width = natWpx + "px";
+      layer.wrap.style.height = natHpx + "px";
+      layer.wrap.style.left = (A.w / 2 + gCxPx - natWpx / 2) + "px";
+      layer.wrap.style.top  = (A.h / 2 + gCyPx - natHpx / 2) + "px";
+      layer.wrap.style.transformOrigin = "center center";
+      layer.wrap.style.transform = `perspective(1000px) scale(${scaleX.toFixed(4)}, ${scaleY.toFixed(4)}) rotate(${(T.rot + rot).toFixed(2)}deg) rotateX(${rotX.toFixed(2)}deg) rotateY(${rotY.toFixed(2)}deg) skewX(${skew.toFixed(2)}deg)`;
+      layer.wrap.style.opacity = clamp01(opacity).toFixed(2);
+      layer.wrap.style.filter = `blur(${blur.toFixed(2)}px) ` + (rgb ? `drop-shadow(${rgb.toFixed(1)}px 0 0 rgba(255,60,80,0.5)) drop-shadow(${(-rgb).toFixed(1)}px 0 0 rgba(60,180,255,0.5)) ` : "") + (glow ? `drop-shadow(0 0 ${glow.toFixed(1)}px rgba(122,92,255,0.6))` : "");
+      updatePixelSweepPreview(layer, sceneTime);
+      return { hud, hudFlicker, flash, flashA, scanBoost, breakup, radarBar };
+    }
     const wPx = (T.wPct / 100) * A.w * extraScale, hPx = (T.hPct / 100) * A.h * extraScale;
     const cxPx = (T.cx / 100) * A.w + (allowT ? (tx / 100) * A.w : 0) + (expansionTx / 100) * A.w;
     const cyPx = (T.cy / 100) * A.h + (allowT ? (ty / 100) * A.h : 0) + (expansionTy / 100) * A.h;
@@ -4424,6 +4483,34 @@
   function placeLayerStatic(layer) {
     if (!layer.wrap) return;
     const T = layer.transform, A = STATE.format;
+    // v19.17: GROUP layers use natural-size wrap + CSS scale so
+    // member wraps inside scale together.  Mirrors composeLayer's
+    // GROUP branch so preview stays consistent regardless of which
+    // rendering path (animated vs static) runs.
+    if (layer.kind === "GROUP") {
+      const natWpx = ((layer._groupNatWpct || T.wPct) / 100) * A.w;
+      const natHpx = ((layer._groupNatHpct || T.hPct) / 100) * A.h;
+      const scaleX = T.wPct / (layer._groupNatWpct || T.wPct);
+      const scaleY = T.hPct / (layer._groupNatHpct || T.hPct);
+      const gCxPx = (T.cx / 100) * A.w;
+      const gCyPx = (T.cy / 100) * A.h;
+      layer.wrap.style.width = natWpx + "px";
+      layer.wrap.style.height = natHpx + "px";
+      layer.wrap.style.left = (A.w / 2 + gCxPx - natWpx / 2) + "px";
+      layer.wrap.style.top  = (A.h / 2 + gCyPx - natHpx / 2) + "px";
+      layer.wrap.style.transformOrigin = "center center";
+      layer.wrap.style.transform = `perspective(1000px) scale(${scaleX.toFixed(4)}, ${scaleY.toFixed(4)}) rotate(${T.rot.toFixed(2)}deg)`;
+      layer.wrap.style.opacity = clamp01(T.opacity / 100).toFixed(2);
+      layer.wrap.style.filter = "none";
+      layer.wrap.style.clipPath = ""; layer._clipApplied = false;
+      // Clear any active vector-animation deltas that member primitives may hold.
+      if (layer._dashApplied) clearPathDash(layer);
+      if (layer._shapeStyleApplied) clearShapeStyleDelta(layer);
+      if (layer._morphApplied) clearMorph(layer);
+      if (layer._fillRevealApplied) clearFillReveal(layer);
+      if (layer._segmentRevealApplied) clearSegmentReveal(layer);
+      return;
+    }
     const wPx = (T.wPct / 100) * A.w, hPx = (T.hPct / 100) * A.h;
     const cxPx = (T.cx / 100) * A.w, cyPx = (T.cy / 100) * A.h;
     layer.wrap.style.width = wPx + "px"; layer.wrap.style.height = hPx + "px";
@@ -8746,6 +8833,21 @@
         if (e.shiftKey) ungroupSelectedLayer();
         else            groupSelectedLayers();
       }
+      // v19.17: Cmd/Ctrl+A selects every layer on the canvas.
+      //  - Skips locked layers (they can't be interacted with anyway)
+      //  - Includes GROUP, SHAPE, SVG, IMG, TEXT, VIDEO uniformly
+      //  - Matches Illustrator / Figma / Photoshop convention
+      //  - Enables the "Ctrl+A then Ctrl+G" workflow for grouping
+      //    every layer at once.
+      if ((e.key === "a" || e.key === "A") && (e.metaKey || e.ctrlKey) && !typing) {
+        e.preventDefault();
+        const targets = layers.filter((L) => !L.locked);
+        if (!targets.length) return;
+        selectedLayers = targets.slice();
+        selectedLayer = targets[targets.length - 1];
+        renderLayers(); renderInspector(); renderTimeline(); updateSelectionBox();
+        if (el.readoutSel) el.readoutSel.textContent = targets.length === 1 ? targets[0].name : `${targets.length} layers selected`;
+      }
     });
     // v19.4 multi-layer operation helpers.
     function deleteSelectedLayers() {
@@ -8891,6 +8993,13 @@
       });
       // Create group layer.  Uses SHAPE-like transform structure so
       // composeLayer's existing transform math works unchanged.
+      const groupTransform = {
+        cx: ((groupCxPx - A.w / 2) / A.w) * 100,
+        cy: ((groupCyPx - A.h / 2) / A.h) * 100,
+        wPct: (groupWPx / A.w) * 100,
+        hPct: (groupHPx / A.h) * 100,
+        rot: 0, opacity: 100,
+      };
       const groupLayer = {
         id: ++idSeq,
         name: `Group (${members.length})`,
@@ -8903,15 +9012,20 @@
         // reads them for rasterization scale) has sensible defaults
         // for groups.  Preview doesn't use natW/natH for GROUPs.
         natW: groupWPx, natH: groupHPx,
+        // v19.17: natural size in canvas percent, frozen at group time.
+        // composeLayer uses these to derive a CSS scale factor from
+        // the current transform.wPct/hPct, so scaling a group actually
+        // scales its member wraps together.
+        _groupNatWpct: groupTransform.wPct,
+        _groupNatHpct: groupTransform.hPct,
+        // v19.17: identity transform snapshot for ungroup-time baking.
+        // Deltas between transform and this get applied to each member
+        // when ungrouping, so the visual state is preserved through
+        // group → move/scale/rotate → ungroup.
+        _identityTransform: { ...groupTransform },
         visible: true,
         locked: false,
-        transform: {
-          cx: ((groupCxPx - A.w / 2) / A.w) * 100,
-          cy: ((groupCyPx - A.h / 2) / A.h) * 100,
-          wPct: (groupWPx / A.w) * 100,
-          hPct: (groupHPx / A.h) * 100,
-          rot: 0, opacity: 100,
-        },
+        transform: groupTransform,
         start: 0, duration: STATE.duration,
         allowTransform: false,
         clips: [],
@@ -8943,21 +9057,57 @@
       groups.forEach((G) => {
         if (!G._members || !G._members.length) return;
         totalMembers += G._members.length;
-        // Restore each member: reparent wrap back to layerHost,
-        // restore its transform + wrap styles, put back in layers[].
+        /* v19.17: BAKE the group's cumulative transform into every
+           member so the visual state is preserved through group →
+           move/scale/rotate → ungroup.  Deltas computed relative to
+           the group's identity transform (snapshot at creation).
+
+           For each member, we apply in order:
+             1. Scale the member's OFFSET from group's original center
+                by the group's scale factors (scaleX / scaleY).
+             2. Rotate that scaled offset by the group's rotation delta
+                around origin.
+             3. Anchor to the group's CURRENT center (not original).
+             4. Multiply member's own size by the scale factors.
+             5. Add the group's rotation to the member's own rotation.
+
+           Uniform-scale groups (scaleX ≈ scaleY) give perfect results.
+           Non-uniform scale distorts rotated members slightly — that's
+           a fundamental limitation of "bake into affine transform"
+           without a full matrix stack.  Documented, not silently
+           wrong. */
+        const idT = G._identityTransform;
+        const scaleX = G.transform.wPct / idT.wPct;
+        const scaleY = G.transform.hPct / idT.hPct;
+        const dRot   = G.transform.rot - idT.rot;
+        const gCxNow = G.transform.cx, gCyNow = G.transform.cy;
+        const gCxOrig = idT.cx, gCyOrig = idT.cy;
+        const cosR = Math.cos(dRot * Math.PI / 180);
+        const sinR = Math.sin(dRot * Math.PI / 180);
         G._members.forEach((L, i) => {
-          const origWrap = G._originalWrapStyles[i];
           const origT    = G._originalTransforms[i];
-          // Move wrap back to layerHost with restored positioning.
+          const origWrap = G._originalWrapStyles[i];
+          // Position: offset from original group center → scaled → rotated
+          // → offset from current group center.
+          const relX = origT.cx - gCxOrig;
+          const relY = origT.cy - gCyOrig;
+          const scaledX = relX * scaleX, scaledY = relY * scaleY;
+          const rotatedX = scaledX * cosR - scaledY * sinR;
+          const rotatedY = scaledX * sinR + scaledY * cosR;
+          L.transform.cx = gCxNow + rotatedX;
+          L.transform.cy = gCyNow + rotatedY;
+          L.transform.wPct = origT.wPct * scaleX;
+          L.transform.hPct = origT.hPct * scaleY;
+          L.transform.rot  = (origT.rot || 0) + dRot;
+          L.transform.opacity = origT.opacity;
+          // Move wrap back to layerHost.  composeLayer will re-position
+          // it from the new transform on the next paint.
           if (origWrap.parentNode) origWrap.parentNode.appendChild(L.wrap);
-          L.wrap.style.left = origWrap.left;
-          L.wrap.style.top  = origWrap.top;
-          L.wrap.style.width = origWrap.width;
-          L.wrap.style.height = origWrap.height;
-          L.wrap.style.transform = origWrap.transform;
-          L.wrap.style.opacity = origWrap.opacity;
-          L.wrap.style.filter = origWrap.filter;
-          Object.assign(L.transform, origT);
+          // Clear the local styles that were set at group time — the
+          // wrap needs to be positioned by composeLayer from scratch.
+          L.wrap.style.transform = "";
+          L.wrap.style.opacity = "";
+          L.wrap.style.filter = "";
           restored.push(L);
         });
         // Remove the group layer + its wrap.
@@ -8973,6 +9123,10 @@
       renderLayers(); renderInspector(); renderTimeline(); updateSelectionBox(); paintIfPaused();
       toast(`Ungrouped ${groups.length} group${groups.length===1?"":"s"} (${totalMembers} layers restored)`);
     }
+    // v19.17: expose to module-scope forward references so duplicateLayer
+    // (and any other outer-scope caller) can reach them.
+    _groupSelectedLayers  = groupSelectedLayers;
+    _ungroupSelectedLayer = ungroupSelectedLayer;
 
     // AI
     el.aiRun.addEventListener("click", runAI);
