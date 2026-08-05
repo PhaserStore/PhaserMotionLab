@@ -1493,6 +1493,131 @@
     line:     { w: 240, h: 0   },
     polygon:  { w: 200, h: 200 },
   };
+  /* ============================================================
+     v19.21 UNIFIED FILL & STROKE for imported SVG layers.
+
+     Design: destructive DOM mutation matching Illustrator behavior.
+     Every drawable primitive in the SVG has its fill/stroke/stroke-
+     width attributes rewritten in place, and the change persists in
+     the exported artwork.  Undo is supported via the same
+     `_svgSnapshot` pattern used by v19.11 SVG Repair — before the
+     first mutation on a given layer, the original SVG innerHTML is
+     snapshotted so undo can restore.
+
+     Read-side (for populating the inspector when an SVG is selected):
+     `readSvgFillStroke` extracts the "representative" fill/stroke
+     from the first drawable primitive.  If different primitives
+     have different colors, this is a lossy readout — the picker
+     shows the first primitive's value.  When the user then edits it
+     and re-writes, the write applies uniformly to ALL primitives.
+     ============================================================ */
+  function ensureSvgSnapshot(layer) {
+    if (!layer || layer.kind !== "SVG" || !layer.node) return;
+    if (!layer._svgSnapshot) layer._svgSnapshot = layer.node.innerHTML;
+  }
+  function readSvgFillStroke(layer) {
+    if (!layer || layer.kind !== "SVG" || !layer.node) return null;
+    const prims = layer.node.querySelectorAll("path, rect, circle, ellipse, line, polygon, polyline");
+    if (!prims.length) return null;
+    // Sample the first primitive as the representative.
+    const first = prims[0];
+    const cs = window.getComputedStyle(first);
+    const rawFill = first.getAttribute("fill");
+    const rawStroke = first.getAttribute("stroke");
+    const fillEff = rawFill !== null ? rawFill : cs.fill;
+    const strokeEff = rawStroke !== null ? rawStroke : cs.stroke;
+    const sw = parseFloat(first.getAttribute("stroke-width")) || parseFloat(cs.strokeWidth) || 0;
+    return {
+      fill: normalizeSvgColor(fillEff) || "#7A5CFF",
+      fillOn: fillEff !== "none" && fillEff !== "transparent",
+      stroke: normalizeSvgColor(strokeEff) || "#FFFFFF",
+      strokeOn: strokeEff !== "none" && strokeEff !== "transparent" && sw > 0,
+      strokeWidth: sw,
+    };
+  }
+  // Convert an SVG color string (rgb(...), #hex, named) to a #RRGGBB
+  // form the <input type="color"> can display.  Non-representable
+  // colors (gradients, patterns, currentColor) return null so the
+  // caller can fall back to a default.
+  function normalizeSvgColor(v) {
+    if (!v) return null;
+    v = v.trim();
+    if (v === "none" || v === "transparent" || v.startsWith("url(") || v === "currentColor") return null;
+    if (/^#[0-9a-fA-F]{6}$/.test(v)) return v.toUpperCase();
+    if (/^#[0-9a-fA-F]{3}$/.test(v)) {
+      return ("#" + v[1] + v[1] + v[2] + v[2] + v[3] + v[3]).toUpperCase();
+    }
+    const rgbMatch = v.match(/^rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    if (rgbMatch) {
+      const r = (+rgbMatch[1]).toString(16).padStart(2, "0");
+      const g = (+rgbMatch[2]).toString(16).padStart(2, "0");
+      const b = (+rgbMatch[3]).toString(16).padStart(2, "0");
+      return ("#" + r + g + b).toUpperCase();
+    }
+    return null;
+  }
+  // Apply a partial patch to every drawable primitive in the SVG.
+  // patch: { fill?, fillOn?, stroke?, strokeOn?, strokeWidth? }
+  // Undefined fields are left untouched — a "Fill On" toggle
+  // doesn't touch stroke and vice versa.
+  //
+  // Toggle-off preserves the previous color in a data-* attribute so
+  // toggle-on restores it — a user who disables and re-enables Fill
+  // shouldn't lose the artwork's original colors.
+  function applySvgFillStroke(layer, patch) {
+    if (!layer || layer.kind !== "SVG" || !layer.node) return 0;
+    ensureSvgSnapshot(layer);
+    const prims = layer.node.querySelectorAll("path, rect, circle, ellipse, line, polygon, polyline");
+    let count = 0;
+    prims.forEach((n) => {
+      if (patch.fill !== undefined) {
+        n.setAttribute("fill", patch.fill);
+        n.removeAttribute("data-saved-fill");   // fresh color supersedes any saved
+      }
+      if (patch.fillOn !== undefined) {
+        if (!patch.fillOn) {
+          // Save current then set to none.  Don't clobber a saved value
+          // if we're already off (idempotent).
+          const cur = n.getAttribute("fill");
+          if (cur && cur !== "none" && !n.hasAttribute("data-saved-fill")) {
+            n.setAttribute("data-saved-fill", cur);
+          }
+          n.setAttribute("fill", "none");
+        } else if (patch.fill === undefined) {
+          // Turning back on: restore saved value if present, else default.
+          const saved = n.getAttribute("data-saved-fill");
+          n.setAttribute("fill", saved || "#7A5CFF");
+          n.removeAttribute("data-saved-fill");
+        }
+      }
+      if (patch.stroke !== undefined) {
+        n.setAttribute("stroke", patch.stroke);
+        n.removeAttribute("data-saved-stroke");
+      }
+      if (patch.strokeOn !== undefined) {
+        if (!patch.strokeOn) {
+          const cur = n.getAttribute("stroke");
+          if (cur && cur !== "none" && !n.hasAttribute("data-saved-stroke")) {
+            n.setAttribute("data-saved-stroke", cur);
+          }
+          n.setAttribute("stroke", "none");
+        } else if (patch.stroke === undefined) {
+          const saved = n.getAttribute("data-saved-stroke");
+          n.setAttribute("stroke", saved || "#FFFFFF");
+          n.removeAttribute("data-saved-stroke");
+        }
+      }
+      if (patch.strokeWidth !== undefined) {
+        n.setAttribute("stroke-width", String(patch.strokeWidth));
+      }
+      count++;
+    });
+    // Invalidate primitive caches so effects re-read the new attributes.
+    layer._primitives = null; layer._strokes = null;
+    layer._segmentPrims = null; layer._segmentOrder = null;
+    return count;
+  }
+
   function defaultShapeStyle() {
     return {
       fill: "#7A5CFF",
@@ -2181,9 +2306,15 @@
     }
     // v19.2 Shape panel — visible only for SHAPE layers.
     if (el.shapeGroup) {
-      el.shapeGroup.hidden = !isShape;
+      // v19.21: Fill & Stroke panel is now shown for SVG imports too,
+      // not just native SHAPE layers.  Both layer kinds route through
+      // the same inspector controls; the write path branches based on
+      // kind (SHAPE → updateShapeLayer; SVG → applySvgFillStroke).
+      const isSvgKind = selectedLayer && selectedLayer.kind === "SVG";
+      const showPanel = isShape || isSvgKind;
+      el.shapeGroup.hidden = !showPanel;
       const rightScroll2 = el.shapeGroup.closest(".panel-scroll");
-      if (rightScroll2) rightScroll2.classList.toggle("shape-layer-selected", isShape);
+      if (rightScroll2) rightScroll2.classList.toggle("shape-layer-selected", showPanel);
       if (isShape) {
         const s = selectedLayer.shapeStyle;
         const type = selectedLayer.shapeType;
@@ -2204,6 +2335,25 @@
         // Type-specific control visibility
         if (el.shapeCornerRow) el.shapeCornerRow.style.display = (type === "rect") ? "" : "none";
         if (el.shapeSidesRow)  el.shapeSidesRow.style.display  = (type === "polygon") ? "" : "none";
+      } else if (isSvgKind) {
+        // v19.21: read fill/stroke from the SVG's first drawable
+        // primitive.  When the user edits, the write applies to ALL
+        // primitives in the SVG.  Shape-specific controls (corner
+        // radius, sides) are hidden — they're meaningless for SVG.
+        const s = readSvgFillStroke(selectedLayer) || {};
+        const setIf = (elm, val) => { if (elm && document.activeElement !== elm && val !== undefined) elm.value = val; };
+        if (el.shapeTypeBadge) el.shapeTypeBadge.textContent = "SVG";
+        setIf(el.shapeFill, s.fill);
+        if (el.shapeFillHex)  el.shapeFillHex.textContent = (s.fill || "").toUpperCase();
+        setIf(el.shapeStroke, s.stroke);
+        if (el.shapeStrokeHex) el.shapeStrokeHex.textContent = (s.stroke || "").toUpperCase();
+        if (el.shapeFillOn && document.activeElement !== el.shapeFillOn)     el.shapeFillOn.checked   = !!s.fillOn;
+        if (el.shapeStrokeOn && document.activeElement !== el.shapeStrokeOn) el.shapeStrokeOn.checked = !!s.strokeOn;
+        setIf(el.shapeStrokeW, s.strokeWidth || 0);
+        setIf(el.shapeStrokeWRange, Math.min(60, s.strokeWidth || 0));
+        // Hide shape-only rows for SVG.
+        if (el.shapeCornerRow) el.shapeCornerRow.style.display = "none";
+        if (el.shapeSidesRow)  el.shapeSidesRow.style.display  = "none";
       }
     }
     // Video panel: only visible for VIDEO layers.
@@ -5610,7 +5760,7 @@
         html += `<button class="mini-btn repair-btn repair-unavailable" disabled title="${op.tooltip}">${op.label} <span class="repair-count">—</span></button>`;
       });
       if (layer._svgSnapshot) {
-        html += `<button class="mini-btn repair-undo" data-repair="undo" title="Restore the SVG to how it looked at import.">Undo repairs</button>`;
+        html += `<button class="mini-btn repair-undo" data-repair="undo" title="Restore the SVG to its state at import — reverts all in-place edits including Fill/Stroke and Repairs.">Restore original SVG</button>`;
       }
       html += `</div></div>`;
     }
@@ -8783,9 +8933,22 @@
     function wireShapeInput(elmt, patchFn) {
       if (!elmt) return;
       const h = () => {
-        if (!selectedLayer || selectedLayer.kind !== "SHAPE") return;
+        if (!selectedLayer) return;
         const patch = patchFn(elmt);
-        if (patch) updateShapeLayer(selectedLayer, patch);
+        if (!patch) return;
+        // v19.21: fan out to every selected layer, dispatching to the
+        // right mutation path per layer kind.  SHAPE routes through
+        // updateShapeLayer (rebuilds SVG); SVG uses direct DOM
+        // mutation via applySvgFillStroke (snapshotted for Undo).
+        // Non-matching kinds are silently skipped so a mixed
+        // selection (e.g. IMG + SHAPE) doesn't error.
+        const targets = selectedLayers.length > 1 ? selectedLayers : [selectedLayer];
+        targets.forEach((L) => {
+          if (L.kind === "SHAPE") updateShapeLayer(L, patch);
+          else if (L.kind === "SVG") applySvgFillStroke(L, patch);
+        });
+        // Ensure preview reflects SVG mutations even when no clip is active.
+        paintIfPaused();
       };
       elmt.addEventListener("input", h);
       elmt.addEventListener("change", h);
