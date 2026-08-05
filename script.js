@@ -435,11 +435,13 @@
     // video (Phase 2)
     videoGroup: $("#videoGroup"), videoDurLabel: $("#videoDurLabel"),
     vFitTrim: $("#vFitTrim"), vResetTrim: $("#vResetTrim"),
-    // color
-    colorEmpty: $("#colorEmpty"), colorBody: $("#colorBody"), colorNote: $("#colorNote"),
-    fillColor: $("#fillColor"), fillHex: $("#fillHex"), strokeColor: $("#strokeColor"), strokeHex: $("#strokeHex"),
-    colApplyFill: $("#colApplyFill"), colApplyStroke: $("#colApplyStroke"), colApplyAll: $("#colApplyAll"),
-    colRestore: $("#colRestore"), colMono: $("#colMono"), colInvert: $("#colInvert"),
+    // v19.22: unified Fill & Stroke — new opacity + utility refs.
+    // The legacy `colorGroup` / fillColor / strokeColor / colApply*
+    // controls have been removed in favor of the unified panel.
+    shapeFillOpacity: $("#shapeFillOpacity"), shapeFillOpacityRange: $("#shapeFillOpacityRange"),
+    shapeStrokeOpacity: $("#shapeStrokeOpacity"), shapeStrokeOpacityRange: $("#shapeStrokeOpacityRange"),
+    shapeSvgUtilsRow: $("#shapeSvgUtilsRow"),
+    shapeMonoBtn: $("#shapeMonoBtn"), shapeInvertBtn: $("#shapeInvertBtn"),
     // fx
     fxEmpty: $("#fxEmpty"), fxBody: $("#fxBody"), fxToggleGrid: $("#fxToggleGrid"), fxEventGrid: $("#fxEventGrid"), allowTransform: $("#allowTransform"),
     attachSfx: $("#attachSfx"), attachSfxSel: $("#attachSfxSel"),
@@ -1527,13 +1529,61 @@
     const fillEff = rawFill !== null ? rawFill : cs.fill;
     const strokeEff = rawStroke !== null ? rawStroke : cs.stroke;
     const sw = parseFloat(first.getAttribute("stroke-width")) || parseFloat(cs.strokeWidth) || 0;
+    const fo = parseFloat(first.getAttribute("fill-opacity"));
+    const so = parseFloat(first.getAttribute("stroke-opacity"));
     return {
       fill: normalizeSvgColor(fillEff) || "#7A5CFF",
       fillOn: fillEff !== "none" && fillEff !== "transparent",
       stroke: normalizeSvgColor(strokeEff) || "#FFFFFF",
       strokeOn: strokeEff !== "none" && strokeEff !== "transparent" && sw > 0,
       strokeWidth: sw,
+      fillOpacity: Number.isFinite(fo) ? fo : 1,
+      strokeOpacity: Number.isFinite(so) ? so : 1,
     };
+  }
+  // v19.22: SVG-only utility — set fill and stroke to a single color
+  // on every drawable primitive.  Used by the "Monochrome" button.
+  // The button in the unified panel takes the current Fill color.
+  function applySvgMonochrome(layer, color) {
+    if (!layer || layer.kind !== "SVG" || !layer.node) return 0;
+    ensureSvgSnapshot(layer);
+    const prims = layer.node.querySelectorAll("path, rect, circle, ellipse, line, polygon, polyline");
+    let count = 0;
+    prims.forEach((n) => {
+      const f = n.getAttribute("fill"); const s = n.getAttribute("stroke");
+      if (f && f !== "none") n.setAttribute("fill", color);
+      if (s && s !== "none") n.setAttribute("stroke", color);
+      n.removeAttribute("data-saved-fill"); n.removeAttribute("data-saved-stroke");
+      count++;
+    });
+    layer._primitives = null; layer._strokes = null;
+    layer._segmentPrims = null; layer._segmentOrder = null;
+    return count;
+  }
+  // v19.22: SVG-only utility — invert every fill/stroke color.
+  function applySvgInvert(layer) {
+    if (!layer || layer.kind !== "SVG" || !layer.node) return 0;
+    ensureSvgSnapshot(layer);
+    const prims = layer.node.querySelectorAll("path, rect, circle, ellipse, line, polygon, polyline");
+    const inv = (v) => {
+      if (!v || v === "none" || v.startsWith("url(") || v === "currentColor") return null;
+      const norm = normalizeSvgColor(v);
+      if (!norm) return null;
+      const r = 255 - parseInt(norm.slice(1, 3), 16);
+      const g = 255 - parseInt(norm.slice(3, 5), 16);
+      const b = 255 - parseInt(norm.slice(5, 7), 16);
+      return "#" + [r, g, b].map((c) => c.toString(16).padStart(2, "0")).join("").toUpperCase();
+    };
+    let count = 0;
+    prims.forEach((n) => {
+      ["fill", "stroke"].forEach((attr) => {
+        const v = n.getAttribute(attr); const iv = inv(v);
+        if (iv) n.setAttribute(attr, iv);
+      });
+      count++;
+    });
+    layer._primitives = null; layer._strokes = null;
+    return count;
   }
   // Convert an SVG color string (rgb(...), #hex, named) to a #RRGGBB
   // form the <input type="color"> can display.  Non-representable
@@ -1610,6 +1660,16 @@
       if (patch.strokeWidth !== undefined) {
         n.setAttribute("stroke-width", String(patch.strokeWidth));
       }
+      // v19.22: opacity attributes.  Setting to 1 removes the attribute
+      // to keep the SVG string clean.
+      if (patch.fillOpacity !== undefined) {
+        if (patch.fillOpacity >= 1) n.removeAttribute("fill-opacity");
+        else n.setAttribute("fill-opacity", String(patch.fillOpacity));
+      }
+      if (patch.strokeOpacity !== undefined) {
+        if (patch.strokeOpacity >= 1) n.removeAttribute("stroke-opacity");
+        else n.setAttribute("stroke-opacity", String(patch.strokeOpacity));
+      }
       count++;
     });
     // Invalidate primitive caches so effects re-read the new attributes.
@@ -1625,6 +1685,8 @@
       stroke: "#FFFFFF",
       strokeOn: false,
       strokeWidth: 2,
+      fillOpacity: 1,       // v19.22 unified fill/stroke opacity
+      strokeOpacity: 1,
       cornerRadius: 0,   // rect only
       sides: 6,          // polygon only
     };
@@ -1722,6 +1784,13 @@
       const effectiveStroke = (t === "line" && !s.strokeOn) ? s.stroke : strokeAttr;
       prim.setAttribute("stroke", effectiveStroke);
       prim.setAttribute("stroke-width", String(s.strokeWidth || 0));
+      // v19.22: opacity attributes.  Omit when 1 to keep the SVG clean.
+      if (s.fillOpacity !== undefined && s.fillOpacity < 1) {
+        prim.setAttribute("fill-opacity", String(s.fillOpacity));
+      }
+      if (s.strokeOpacity !== undefined && s.strokeOpacity < 1) {
+        prim.setAttribute("stroke-opacity", String(s.strokeOpacity));
+      }
       layer.node.appendChild(prim);
     }
     return { W: vbW, H: vbH };
@@ -2275,7 +2344,7 @@
     const isVideo = has && selectedLayer.kind === "VIDEO";
     const isText = has && selectedLayer.kind === "TEXT";
     const isShape = has && selectedLayer.kind === "SHAPE";
-    el.colorEmpty.hidden = isSvg; el.colorBody.hidden = !isSvg;
+    // v19.22: legacy colorEmpty/colorBody removed with the panel.
     // v19.0: Text panel — visible only for TEXT layers.
     if (el.textGroup) {
       el.textGroup.hidden = !isText;
@@ -2328,6 +2397,11 @@
         if (el.shapeStrokeOn && document.activeElement !== el.shapeStrokeOn) el.shapeStrokeOn.checked = !!s.strokeOn;
         setIf(el.shapeStrokeW, s.strokeWidth);
         setIf(el.shapeStrokeWRange, Math.min(60, s.strokeWidth));
+        // v19.22: opacity fields (0-100 in UI).
+        const fo = Math.round((s.fillOpacity !== undefined ? s.fillOpacity : 1) * 100);
+        const so = Math.round((s.strokeOpacity !== undefined ? s.strokeOpacity : 1) * 100);
+        setIf(el.shapeFillOpacity, fo);      setIf(el.shapeFillOpacityRange, fo);
+        setIf(el.shapeStrokeOpacity, so);    setIf(el.shapeStrokeOpacityRange, so);
         setIf(el.shapeCornerR, s.cornerRadius || 0);
         setIf(el.shapeCornerRRange, Math.min(200, s.cornerRadius || 0));
         setIf(el.shapeSides, s.sides || 6);
@@ -2335,6 +2409,8 @@
         // Type-specific control visibility
         if (el.shapeCornerRow) el.shapeCornerRow.style.display = (type === "rect") ? "" : "none";
         if (el.shapeSidesRow)  el.shapeSidesRow.style.display  = (type === "polygon") ? "" : "none";
+        // Hide SVG-only utility row for shapes.
+        if (el.shapeSvgUtilsRow) el.shapeSvgUtilsRow.hidden = true;
       } else if (isSvgKind) {
         // v19.21: read fill/stroke from the SVG's first drawable
         // primitive.  When the user edits, the write applies to ALL
@@ -2351,9 +2427,16 @@
         if (el.shapeStrokeOn && document.activeElement !== el.shapeStrokeOn) el.shapeStrokeOn.checked = !!s.strokeOn;
         setIf(el.shapeStrokeW, s.strokeWidth || 0);
         setIf(el.shapeStrokeWRange, Math.min(60, s.strokeWidth || 0));
+        // v19.22: opacity fields for SVG (read from first primitive).
+        const fo = Math.round((s.fillOpacity !== undefined ? s.fillOpacity : 1) * 100);
+        const so = Math.round((s.strokeOpacity !== undefined ? s.strokeOpacity : 1) * 100);
+        setIf(el.shapeFillOpacity, fo);      setIf(el.shapeFillOpacityRange, fo);
+        setIf(el.shapeStrokeOpacity, so);    setIf(el.shapeStrokeOpacityRange, so);
         // Hide shape-only rows for SVG.
         if (el.shapeCornerRow) el.shapeCornerRow.style.display = "none";
         if (el.shapeSidesRow)  el.shapeSidesRow.style.display  = "none";
+        // Show SVG utilities.
+        if (el.shapeSvgUtilsRow) el.shapeSvgUtilsRow.hidden = false;
       }
     }
     // Video panel: only visible for VIDEO layers.
@@ -2433,7 +2516,6 @@
     }
     // Update visual state to reflect existing clips on the selected layer
     renderEventButtons();
-    if (isSvg) { el.colorNote.hidden = !selectedLayer.complex; }
   }
 
   /* Reflects each Event Clip button's state against the selected layer:
@@ -2579,16 +2661,15 @@
       layer.originalColors.push({ n, fill: n.getAttribute("fill"), stroke: n.getAttribute("stroke"), sw: n.getAttribute("stroke-width"), styleFill: n.style.fill, styleStroke: n.style.stroke });
     });
   }
-  function applyFill(color) { if (!selSvg()) return; selectedLayer.node.querySelectorAll(COLOR_TARGET).forEach((n) => { const f = n.getAttribute("fill"); if (f !== "none") { n.setAttribute("fill", color); n.style.fill = color; } }); }
-  function applyStroke(color) { if (!selSvg()) return; selectedLayer.node.querySelectorAll(COLOR_TARGET).forEach((n) => { const s = n.getAttribute("stroke"); if (s && s !== "none") { n.setAttribute("stroke", color); n.style.stroke = color; } }); }
-  function applyAllPaths(color) { if (!selSvg()) return; selectedLayer.node.querySelectorAll(COLOR_TARGET).forEach((n) => { n.setAttribute("fill", color); n.style.fill = color; }); }
-  function applyStrokeWidth(mult) { if (!selSvg()) return; selectedLayer.originalColors.forEach((o) => { if (o.sw != null) { const base = parseFloat(o.sw) || 1; o.n.setAttribute("stroke-width", (base * mult).toFixed(2)); } }); }
-  function restoreColors() { if (!selSvg()) return; selectedLayer.originalColors.forEach((o) => { setOrRemove(o.n, "fill", o.fill); setOrRemove(o.n, "stroke", o.stroke); setOrRemove(o.n, "stroke-width", o.sw); o.n.style.fill = o.styleFill || ""; o.n.style.stroke = o.styleStroke || ""; }); toast("Original colors restored"); }
-  function monochrome() { if (!selSvg()) return; const c = el.fillColor.value; selectedLayer.node.querySelectorAll(COLOR_TARGET).forEach((n) => { const f = n.getAttribute("fill"); const s = n.getAttribute("stroke"); if (f && f !== "none") { n.setAttribute("fill", c); n.style.fill = c; } if (s && s !== "none") { n.setAttribute("stroke", c); n.style.stroke = c; } }); toast("Monochrome applied"); }
-  function invertColors() { if (!selSvg()) return; selectedLayer.node.querySelectorAll(COLOR_TARGET).forEach((n) => { ["fill", "stroke"].forEach((attr) => { const v = n.getAttribute(attr); const inv = invertHex(v); if (inv) { n.setAttribute(attr, inv); n.style[attr] = inv; } }); }); toast("Colors inverted"); }
+  // v19.22: legacy applyFill / applyStroke / applyAllPaths /
+  // applyStrokeWidth / restoreColors / monochrome / invertColors
+  // removed with the old Color panel.  Their functionality is now
+  // in the unified Fill & Stroke panel (via applySvgFillStroke) plus
+  // dedicated applySvgMonochrome / applySvgInvert helpers.  The
+  // `originalColors` snapshot above is kept for compatibility with
+  // any older code paths and for potential future use.
   function selSvg() { return selectedLayer && selectedLayer.kind === "SVG"; }
   function setOrRemove(n, attr, val) { if (val == null) n.removeAttribute(attr); else n.setAttribute(attr, val); }
-  function invertHex(v) { if (!v || v === "none") return null; const m = v.match(/^#?([0-9a-f]{6})$/i); if (!m) return null; const num = parseInt(m[1], 16); const inv = (0xFFFFFF - num).toString(16).padStart(6, "0"); return "#" + inv; }
 
   /* ---------------- SELECTION BOX ---------------- */
   // Positions the dashed selection box over the selected layer's current
@@ -8987,6 +9068,44 @@
       if (el.shapeSides) el.shapeSides.value = v;
       return { sides: v };
     });
+    // v19.22: Fill / Stroke opacity — UI 0-100, model 0-1.  Both
+    // number input and range slider stay in sync.
+    wireShapeInput(el.shapeFillOpacity, (n) => {
+      const v = clamp(+n.value, 0, 100);
+      if (el.shapeFillOpacityRange) el.shapeFillOpacityRange.value = v;
+      return { fillOpacity: v / 100 };
+    });
+    wireShapeInput(el.shapeFillOpacityRange, (n) => {
+      const v = +n.value;
+      if (el.shapeFillOpacity) el.shapeFillOpacity.value = v;
+      return { fillOpacity: v / 100 };
+    });
+    wireShapeInput(el.shapeStrokeOpacity, (n) => {
+      const v = clamp(+n.value, 0, 100);
+      if (el.shapeStrokeOpacityRange) el.shapeStrokeOpacityRange.value = v;
+      return { strokeOpacity: v / 100 };
+    });
+    wireShapeInput(el.shapeStrokeOpacityRange, (n) => {
+      const v = +n.value;
+      if (el.shapeStrokeOpacity) el.shapeStrokeOpacity.value = v;
+      return { strokeOpacity: v / 100 };
+    });
+    // v19.22: SVG-only utilities.  Guarded on layer kind so if the
+    // user clicks with a SHAPE selected (button hidden but defensive),
+    // nothing happens.
+    if (el.shapeMonoBtn) el.shapeMonoBtn.addEventListener("click", () => {
+      if (!selectedLayer || selectedLayer.kind !== "SVG") return;
+      const targetColor = (el.shapeFill && el.shapeFill.value) || "#7A5CFF";
+      const n = applySvgMonochrome(selectedLayer, targetColor);
+      toast(`Monochrome applied · ${n} primitive${n===1?"":"s"}`);
+      paintIfPaused(); renderInspector();
+    });
+    if (el.shapeInvertBtn) el.shapeInvertBtn.addEventListener("click", () => {
+      if (!selectedLayer || selectedLayer.kind !== "SVG") return;
+      const n = applySvgInvert(selectedLayer);
+      toast(`Colors inverted · ${n} primitive${n===1?"":"s"}`);
+      paintIfPaused(); renderInspector();
+    });
 
     /* Text inspector bindings — write back to the selected text layer. */
     function wireTextInput(elmt, patchFn) {
@@ -9515,17 +9634,9 @@
       renderInspector(); paintIfPaused();
     });
 
-    // color
-    el.fillColor.addEventListener("input", (e) => { el.fillHex.textContent = e.target.value.toUpperCase(); });
-    el.strokeColor.addEventListener("input", (e) => { el.strokeHex.textContent = e.target.value.toUpperCase(); });
-    el.colApplyFill.addEventListener("click", () => { applyFill(el.fillColor.value); toast("Fill applied"); });
-    el.colApplyStroke.addEventListener("click", () => { applyStroke(el.strokeColor.value); toast("Stroke applied"); });
-    el.colApplyAll.addEventListener("click", () => { applyAllPaths(el.fillColor.value); toast("Applied to all paths"); });
-    el.colRestore.addEventListener("click", restoreColors);
-    el.colMono.addEventListener("click", monochrome);
-    el.colInvert.addEventListener("click", invertColors);
-    const sw = document.getElementById("ctl-sw");
-    if (sw) sw.addEventListener("input", (e) => { setSlider("sw", +e.target.value); applyStrokeWidth(+e.target.value / 100); });
+    // v19.22: legacy Color panel listeners removed with the panel.
+    // The old ctl-sw stroke-width multiplier slider is gone — direct-value
+    // stroke width lives in the unified Fill & Stroke panel now.
 
     // background
     el.bgColor.addEventListener("input", (e) => setBackground("custom", e.target.value));
