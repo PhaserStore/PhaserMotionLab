@@ -441,6 +441,7 @@
     shapeFillOpacity: $("#shapeFillOpacity"), shapeFillOpacityRange: $("#shapeFillOpacityRange"),
     shapeStrokeOpacity: $("#shapeStrokeOpacity"), shapeStrokeOpacityRange: $("#shapeStrokeOpacityRange"),
     shapeSvgUtilsRow: $("#shapeSvgUtilsRow"),
+    shapeSvgUtilsHead: $("#shapeSvgUtilsHead"),
     shapeMonoBtn: $("#shapeMonoBtn"), shapeInvertBtn: $("#shapeInvertBtn"),
     // fx
     fxEmpty: $("#fxEmpty"), fxBody: $("#fxBody"), fxToggleGrid: $("#fxToggleGrid"), fxEventGrid: $("#fxEventGrid"), allowTransform: $("#allowTransform"),
@@ -2411,6 +2412,7 @@
         if (el.shapeSidesRow)  el.shapeSidesRow.style.display  = (type === "polygon") ? "" : "none";
         // Hide SVG-only utility row for shapes.
         if (el.shapeSvgUtilsRow) el.shapeSvgUtilsRow.hidden = true;
+        if (el.shapeSvgUtilsHead) el.shapeSvgUtilsHead.hidden = true;
       } else if (isSvgKind) {
         // v19.21: read fill/stroke from the SVG's first drawable
         // primitive.  When the user edits, the write applies to ALL
@@ -2437,6 +2439,7 @@
         if (el.shapeSidesRow)  el.shapeSidesRow.style.display  = "none";
         // Show SVG utilities.
         if (el.shapeSvgUtilsRow) el.shapeSvgUtilsRow.hidden = false;
+        if (el.shapeSvgUtilsHead) el.shapeSvgUtilsHead.hidden = false;
       }
     }
     // Video panel: only visible for VIDEO layers.
@@ -5153,6 +5156,117 @@
 
   /* Compatibility analysis for a morph.  Returns { ok, reason?, sourceCmds?, targetCmds? }.
      Called on every morph frame to keep the diagnostic live. */
+  /* ============================================================
+     v19.23 MORPHING 2.0 — resampling-based morph.
+
+     The old morph required source and target primitives to have
+     IDENTICAL command sequences (M L L L Z matches M L L L Z, but
+     M Q L Z rejected against M C C Z).  Real-world imported SVGs
+     rarely satisfy this.
+
+     New approach: sample both primitives to N points along their
+     arc length using SVGGeometryElement.getTotalLength() +
+     getPointAtLength().  These work uniformly on path/rect/circle/
+     ellipse/line/polygon/polyline regardless of internal command
+     types (Q/A/S/T all handled natively by the browser).
+
+     Interpolation is per-point linear.  The output is always a
+     "M x0,y0 L x1,y1 L x2,y2 ... Z" polygon-style path with N
+     segments.  At N=128 the approximation is visually smooth.
+
+     Vertex alignment: for closed shapes, cyclic-shift target's
+     sample sequence to minimize sum-of-squared distances from
+     source.  Without this, rect→circle "twists" as the starting
+     points of each path don't line up.
+
+     Known limitations kept honest for v1:
+       - Compound paths (multiple M commands): only the first
+         subpath is resampled.  Complex multi-subpath geometry
+         approximates the outer sub-shape.
+       - Stroke-only shapes morph based on their center-line, not
+         the stroked outline.  Full stroke-to-outline expansion
+         needs a geometry library (deferred).
+       - Non-uniform scale during morph animation preserved
+         because interpolation is point-by-point.
+     ============================================================ */
+  const MORPH_SAMPLES = 128;   // per-path sample count; balance smoothness vs cost
+
+  // Resample any SVGGeometryElement to N equally-spaced points along
+  // arc length.  Returns null if the element doesn't support the
+  // required API or has zero length.
+  function resamplePrimitiveToPoints(node, N) {
+    if (!node || typeof node.getTotalLength !== "function") return null;
+    let totalLen;
+    try { totalLen = node.getTotalLength(); } catch (e) { return null; }
+    if (!(totalLen > 0)) return null;
+    // Detect closed shape: rect/circle/ellipse/polygon/polyline are
+    // implicitly closed except polyline (open); path detection via
+    // last command being Z.
+    const tag = node.tagName.toLowerCase();
+    let closed;
+    if (tag === "path") {
+      const d = node.getAttribute("d") || "";
+      closed = /[zZ]\s*$/.test(d.trim());
+    } else {
+      closed = tag !== "line" && tag !== "polyline";
+    }
+    const points = new Array(N);
+    for (let i = 0; i < N; i++) {
+      // Closed shape: sample [0, totalLen) so the last sample
+      // doesn't duplicate the first.  Open: sample [0, totalLen].
+      const distance = closed ? (i / N) * totalLen : (i / (N - 1)) * totalLen;
+      const p = node.getPointAtLength(distance);
+      points[i] = { x: p.x, y: p.y };
+    }
+    return { points, closed };
+  }
+  // Convert a series of points into an SVG path d string.  For closed
+  // shapes appends 'Z'.
+  function pointsToPathD(points, closed) {
+    if (!points || !points.length) return "";
+    const parts = [`M${points[0].x.toFixed(3)},${points[0].y.toFixed(3)}`];
+    for (let i = 1; i < points.length; i++) {
+      parts.push(`L${points[i].x.toFixed(3)},${points[i].y.toFixed(3)}`);
+    }
+    if (closed) parts.push("Z");
+    return parts.join(" ");
+  }
+  // Find optimal cyclic shift of `target` points so that the
+  // interpolation with `source` minimizes total squared distance.
+  // O(N²) in point count — at N=128 this is 16k comparisons per
+  // analyze() call, which happens once per clip creation, not
+  // per-frame.  Only applied to closed shapes (cyclic sequences).
+  function alignPointSequence(source, target) {
+    if (!source || !target || source.length !== target.length) return target;
+    const N = source.length;
+    let bestShift = 0;
+    let bestCost = Infinity;
+    for (let s = 0; s < N; s++) {
+      let cost = 0;
+      for (let i = 0; i < N; i++) {
+        const t = target[(i + s) % N];
+        const dx = t.x - source[i].x, dy = t.y - source[i].y;
+        cost += dx * dx + dy * dy;
+        if (cost >= bestCost) break;   // early exit
+      }
+      if (cost < bestCost) { bestCost = cost; bestShift = s; }
+    }
+    if (bestShift === 0) return target;
+    const shifted = new Array(N);
+    for (let i = 0; i < N; i++) shifted[i] = target[(i + bestShift) % N];
+    return shifted;
+  }
+  // Linear per-point interpolation between two aligned sequences.
+  function interpolatePoints(source, target, t) {
+    const N = source.length;
+    const out = new Array(N);
+    for (let i = 0; i < N; i++) {
+      const a = source[i], b = target[i];
+      out[i] = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+    }
+    return out;
+  }
+
   function analyzeMorph(sourceLayer, targetLayer, targetIndex) {
     if (!sourceLayer) return { ok: false, reason: "No source layer" };
     if (!targetLayer) return { ok: false, reason: "No target layer selected" };
@@ -5160,7 +5274,6 @@
     if (targetLayer.kind === "TEXT" || sourceLayer.kind === "TEXT") {
       return { ok: false, reason: "TEXT layers not supported — convert to outlines first (future)" };
     }
-    // v19.16: morph on GROUP isn't meaningful without vertex remapping.
     if (targetLayer.kind === "GROUP" || sourceLayer.kind === "GROUP") {
       return { ok: false, reason: "GROUP layers not supported as morph source/target (deferred)" };
     }
@@ -5169,34 +5282,36 @@
     if (!srcNode) return { ok: false, reason: "Source has no drawable primitive" };
     if (!tgtNodes.length) return { ok: false, reason: "Target has no drawable primitives" };
     const tgtNode = tgtNodes[Math.min(targetIndex || 0, tgtNodes.length - 1)];
-    // Try both "cubic" and "straight" forms for rectangles to find a match.
-    // Circles/ellipses always want cubic; other primitives have one form.
-    const srcTag = srcNode.tagName.toLowerCase();
-    const tgtTag = tgtNode.tagName.toLowerCase();
-    const wantsCubic = (t) => t === "circle" || t === "ellipse";
-    const useCubic = wantsCubic(srcTag) || wantsCubic(tgtTag);
-    const src = primitiveToCanonicalPath(srcNode, useCubic ? "cubic" : "straight");
-    const tgt = primitiveToCanonicalPath(tgtNode, useCubic ? "cubic" : "straight");
-    if (!src) return { ok: false, reason: `Source <${srcTag}> not convertible` };
-    if (!tgt) return { ok: false, reason: `Target <${tgtTag}> not convertible` };
-    if (src.cmds.length !== tgt.cmds.length) {
-      return { ok: false, sourceCmds: src.cmds.length, targetCmds: tgt.cmds.length,
-        reason: `Command count mismatch (${src.cmds.length} vs ${tgt.cmds.length}) — polygons need equal sides, paths need matching structure` };
+    // v19.23: resample both primitives to N points along arc length.
+    // Works uniformly on any command types (M/L/C/Q/A/S/T/Z) via the
+    // browser's native SVGGeometryElement API.  No pre-conversion.
+    const srcSample = resamplePrimitiveToPoints(srcNode, MORPH_SAMPLES);
+    const tgtSample = resamplePrimitiveToPoints(tgtNode, MORPH_SAMPLES);
+    if (!srcSample) return { ok: false, reason: `Source <${srcNode.tagName.toLowerCase()}> has zero geometry (empty path?)` };
+    if (!tgtSample) return { ok: false, reason: `Target <${tgtNode.tagName.toLowerCase()}> has zero geometry (empty path?)` };
+    // Vertex alignment for closed shapes.  Open shapes have a
+    // defined start/end and shouldn't be cyclically shifted.
+    let alignedTarget = tgtSample.points;
+    if (srcSample.closed && tgtSample.closed) {
+      alignedTarget = alignPointSequence(srcSample.points, tgtSample.points);
     }
-    // Sanity check: commands must match position-by-position too.
-    for (let i = 0; i < src.cmds.length; i++) {
-      if (src.cmds[i] !== tgt.cmds[i]) {
-        return { ok: false, reason: `Command sequence differs at position ${i} (${src.cmds[i]} vs ${tgt.cmds[i]})` };
-      }
-    }
-    return { ok: true, sourceCmds: src.cmds.length, targetCmds: tgt.cmds.length,
-      sourceForm: src, targetForm: tgt, srcNode, tgtNode, useCubic };
+    return {
+      ok: true,
+      sourceCmds: MORPH_SAMPLES,
+      targetCmds: MORPH_SAMPLES,
+      sourcePoints: srcSample.points,
+      targetPoints: alignedTarget,
+      closed: srcSample.closed || tgtSample.closed,
+      srcNode, tgtNode,
+      // Legacy compat fields for callers that read these:
+      sourceForm: { d: pointsToPathD(srcSample.points, srcSample.closed) },
+      targetForm: { d: pointsToPathD(alignedTarget, tgtSample.closed) },
+    };
   }
 
-  /* Apply a morph contribution to the source layer.  Writes the
-     interpolated `d` to the source primitive (replacing it with a
-     `<path>` if it's a native shape primitive).  Updates
-     layer._morphDiag for the inspector to display. */
+  /* Apply a morph contribution.  Writes an interpolated d attribute
+     to the source primitive (swapping in a <path> when the source
+     is a native shape primitive that gets restored on clear). */
   function applyMorph(layer, morph) {
     if (!morph || !morph.targetLayerId) {
       layer._morphDiag = { ok: false, reason: "No target selected" };
@@ -5208,9 +5323,10 @@
       sourceCmds: analysis.sourceCmds, targetCmds: analysis.targetCmds };
     if (!analysis.ok) return;
     const t = Math.max(0, Math.min(1, morph.progress || 0));
-    const A = parseCanonicalPath(analysis.sourceForm.d);
-    const B = parseCanonicalPath(analysis.targetForm.d);
-    const dInterp = interpolateCanonicalPaths(A, B, t);
+    // v19.23: point-by-point interpolation, then serialize to a
+    // polygonal path.  Simple, robust, uniform behavior.
+    const interp = interpolatePoints(analysis.sourcePoints, analysis.targetPoints, t);
+    const dInterp = pointsToPathD(interp, analysis.closed);
     if (!dInterp) { layer._morphDiag = { ok: false, reason: "Interpolation failed (unexpected)" }; return; }
     // Locate or create the morph <path> node.  If the source primitive
     // isn't a <path>, we swap in a <path> on first morph and restore
