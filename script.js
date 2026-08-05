@@ -1856,6 +1856,13 @@
     if (layer.videoSource) { try { layer.videoSource.close(); } catch (e) {} layer.videoSource = null; }
     // S2: drop the export-resolution canvas reference so GC can reclaim.
     if (layer._exportCanvas) layer._exportCanvas = null;
+    // v19.16: deleting a GROUP also disposes its members — their DOM
+    // is inside the group wrap and would leak otherwise.  User can
+    // ungroup first if they want the members back.
+    if (layer.kind === "GROUP" && layer._members) {
+      layer._members.forEach((m) => { if (m.wrap && m.wrap.parentNode) m.wrap.parentNode.removeChild(m.wrap); });
+      layer._members = null;
+    }
     if (layer.wrap && layer.wrap.parentNode) layer.wrap.parentNode.removeChild(layer.wrap);
     layers.splice(i, 1);
     // v19.4: also remove from selectedLayers so multi-select stays coherent.
@@ -1886,11 +1893,23 @@
         + (layer.visible ? "" : " hidden-layer")
         + (layer.locked ? " locked-layer" : "");
       li.draggable = true; li.dataset.id = layer.id;
-      const thumb = layer.kind === "IMG" ? `<img src="${layer.node.src}" alt="">` : svgThumb(layer.node);
+      // v19.16: groups show a distinct thumb + subtitle indicating
+      // member count, so users can visually distinguish them from
+      // regular layers.  Clicking a group selects it as one entity;
+      // there's no "click into" behavior in v1 (must ungroup to
+      // access individual members).
+      let thumb;
+      if (layer.kind === "GROUP") {
+        thumb = `<div class="group-thumb"><svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="2" y="2" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="10" y="10" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="10" y="2" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></div>`;
+      } else {
+        thumb = layer.kind === "IMG" ? `<img src="${layer.node.src}" alt="">` : svgThumb(layer.node);
+      }
+      const memberSuffix = layer.kind === "GROUP" && layer._members ? ` \u00b7 ${layer._members.length} items` : "";
+      const partsSuffix  = layer.subLayers && layer.subLayers.length ? " \u00b7 " + layer.subLayers.length + " parts" : "";
       li.innerHTML =
         `<span class="layer-drag" title="Drag to reorder"><svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="4" cy="3" r="1" fill="currentColor"/><circle cx="8" cy="3" r="1" fill="currentColor"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="8" cy="6" r="1" fill="currentColor"/><circle cx="4" cy="9" r="1" fill="currentColor"/><circle cx="8" cy="9" r="1" fill="currentColor"/></svg></span>` +
         `<span class="layer-thumb">${thumb}</span>` +
-        `<span class="layer-meta"><span class="layer-title">${layer.name}</span><span class="layer-sub">${layer.kind}${layer.subLayers && layer.subLayers.length ? " \u00b7 " + layer.subLayers.length + " parts" : ""}</span></span>` +
+        `<span class="layer-meta"><span class="layer-title">${layer.name}</span><span class="layer-sub">${layer.kind}${memberSuffix}${partsSuffix}</span></span>` +
         `<button class="layer-eye" title="Hide / show">${layer.visible ? eyeOpen() : eyeClosed()}</button>`;
       li.addEventListener("click", (e) => {
         if (e.target.closest(".layer-eye")) { toggleLayerVisible(layer); e.stopPropagation(); return; }
@@ -4276,7 +4295,7 @@
     // widening.  TEXT layers are excluded — <text> doesn't support
     // getTotalLength() and stroke-dash on text glyphs doesn't produce
     // the "hand-drawn" reveal effect users expect.
-    const pathAnimatable = layer.kind === "SVG" || layer.kind === "SHAPE";
+    const pathAnimatable = layer.kind === "SVG" || layer.kind === "SHAPE" || layer.kind === "GROUP";
     if (pathAnimatable && (pathDraw !== null || pathTrim !== null)) applyPathDash(layer, pathDraw, pathTrim);
     else if (pathAnimatable && layer._dashApplied) clearPathDash(layer);
     // v19.8 shapeStyle delta application.  Same layer-kind gate as
@@ -4299,7 +4318,7 @@
     if (fillRevealContrib) applyFillReveal(layer, fillRevealContrib);
     else if (layer._fillRevealApplied) clearFillReveal(layer);
     // v19.14 Segment Reveal — per-primitive opacity animation.
-    // Works on any layer whose SVG contains primitives (SHAPE + SVG).
+    // Works on any layer whose SVG contains primitives (SHAPE + SVG + GROUP).
     if (segmentRevealContrib) applySegmentReveal(layer, segmentRevealContrib);
     else if (layer._segmentRevealApplied) clearSegmentReveal(layer);
     // v19.14 Expansion Build — fold scale/opacity/rot deltas into the
@@ -4420,7 +4439,7 @@
     // v19.8: clear any active vector-animation deltas so the shape
     // returns to its baseline appearance when no clip is contributing.
     // Extended to SHAPE (was SVG-only in v19.7).
-    const _va = layer.kind === "SVG" || layer.kind === "SHAPE";
+    const _va = layer.kind === "SVG" || layer.kind === "SHAPE" || layer.kind === "GROUP";
     if (_va && layer._dashApplied) clearPathDash(layer);
     if (_va && layer._shapeStyleApplied) clearShapeStyleDelta(layer);
     if (_va && layer._morphApplied) clearMorph(layer);
@@ -4493,7 +4512,7 @@
   // Line Draw / Trim Paths: animate stroke-dasharray/offset on SVG strokes.
   function pathStrokes(layer) {
     if (!layer._strokes) {
-      layer._strokes = Array.from(layer.node.querySelectorAll("path, line, polyline, polygon, circle, ellipse, rect")).map((n) => {
+      layer._strokes = getLayerPrimitiveNodes(layer).map((n) => {
         let len = 0; try { len = typeof n.getTotalLength === "function" ? n.getTotalLength() : 0; } catch (e) { len = 0; }
         if (!len) { const bb = n.getBBox ? safeBBox(n) : null; len = bb ? (bb.width + bb.height) * 2 : 100; }
         return { n, len };
@@ -4512,6 +4531,31 @@
     layer._dashApplied = true;
   }
   function clearPathDash(layer) { if (layer._strokes) layer._strokes.forEach(({ n }) => { n.style.strokeDasharray = ""; n.style.strokeDashoffset = ""; }); layer._dashApplied = false; }
+
+  /* v19.16 GROUP-aware primitive discovery.
+     Every path/shape effect that iterates SVG primitives (Segment
+     Reveal, Line Draw, Trim Paths, Path Energize, Stroke Width Pulse,
+     Fill Color Flash) uses this helper so the same code path works
+     for SVG imports, native SHAPE layers, and wrapper-based GROUP
+     layers.  For a GROUP, iterates member layers and concatenates
+     their primitives — from the effect's perspective the group is
+     "one layer with N primitives" spanning members' artwork. */
+  const _PRIM_SELECTOR = "path, line, polyline, polygon, circle, ellipse, rect";
+  function getLayerPrimitiveNodes(layer) {
+    if (!layer) return [];
+    if (layer.kind === "GROUP") {
+      const out = [];
+      const members = layer._members || [];
+      for (const m of members) {
+        if (m && m.node) {
+          m.node.querySelectorAll(_PRIM_SELECTOR).forEach((p) => out.push(p));
+        }
+      }
+      return out;
+    }
+    if (layer.node) return Array.from(layer.node.querySelectorAll(_PRIM_SELECTOR));
+    return [];
+  }
 
   /* ---------------- v19.8 UNIFIED shapeStyle DELTA CHANNEL ----------------
      Applies stroke / fill animation deltas to every drawable primitive
@@ -4534,7 +4578,7 @@
      shape SVG is rebuilt (buildShapeLayerSVG clears `_primitives`). */
   function shapePrimitives(layer) {
     if (!layer._primitives) {
-      layer._primitives = Array.from(layer.node.querySelectorAll("path, line, polyline, polygon, circle, ellipse, rect")).map((n) => {
+      layer._primitives = getLayerPrimitiveNodes(layer).map((n) => {
         // Snapshot the baseline.  Prefer computed style so CSS-rules
         // (external stylesheets in imported SVGs) are captured.
         const cs = window.getComputedStyle(n);
@@ -4741,6 +4785,10 @@
     if (sourceLayer === targetLayer) return { ok: false, reason: "Source and target must differ" };
     if (targetLayer.kind === "TEXT" || sourceLayer.kind === "TEXT") {
       return { ok: false, reason: "TEXT layers not supported — convert to outlines first (future)" };
+    }
+    // v19.16: morph on GROUP isn't meaningful without vertex remapping.
+    if (targetLayer.kind === "GROUP" || sourceLayer.kind === "GROUP") {
+      return { ok: false, reason: "GROUP layers not supported as morph source/target (deferred)" };
     }
     const srcNode = sourceLayer.node && sourceLayer.node.querySelector("path,rect,circle,ellipse,line,polygon,polyline");
     const tgtNodes = targetLayer.node ? targetLayer.node.querySelectorAll("path,rect,circle,ellipse,line,polygon,polyline") : [];
@@ -4968,12 +5016,17 @@
     return prims.map((_, i) => i);
   }
   function applySegmentReveal(layer, r) {
-    if (!layer || !layer.node) return;
+    if (!layer) return;
+    // v19.16: GROUP layers legitimately have layer.node === null;
+    // primitives live inside member nodes.  We can proceed as long as
+    // getLayerPrimitiveNodes can find something — which it does for
+    // GROUP via member iteration, and requires layer.node otherwise.
+    if (!layer.node && layer.kind !== "GROUP") return;
     // Cache the primitive list + sort order.  Invalidates on rebuild
     // (buildShapeLayerSVG / SVG import) and on mode change.
     const modeSig = `${r.mode}|${r.seed}`;
     if (!layer._segmentPrims || layer._segmentSig !== modeSig) {
-      const prims = Array.from(layer.node.querySelectorAll("path, rect, circle, ellipse, line, polygon, polyline"));
+      const prims = getLayerPrimitiveNodes(layer);
       const order = orderPrimitivesForReveal(prims, r.mode, r.seed);
       layer._segmentPrims = prims;
       layer._segmentOrder = order;
@@ -5113,12 +5166,12 @@
     return active.some(({ c }) => {
       if (!VECTOR_FX_KEYS.has(c.fxKey)) return false;
       if (c.fxKey === "fillReveal" || c.fxKey === "segmentReveal") return true;
-      return layer.kind === "SVG" || layer.kind === "SHAPE";
+      return layer.kind === "SVG" || layer.kind === "SHAPE" || layer.kind === "GROUP";
     });
   }
   function applyVectorEffectsAtTime(layer, t) {
     const active = activeEventClipsAt(layer, t);
-    const pathKind = layer.kind === "SVG" || layer.kind === "SHAPE";
+    const pathKind = layer.kind === "SVG" || layer.kind === "SHAPE" || layer.kind === "GROUP";
     if (!active.length) {
       if (pathKind && layer._dashApplied)       clearPathDash(layer);
       if (pathKind && layer._shapeStyleApplied) clearShapeStyleDelta(layer);
@@ -6562,25 +6615,50 @@
       // both seek the video before drawing, so both sample the same
       // frame at the same timeline t.
       if (layer.kind === "IMG" || layer.kind === "VIDEO") { resolve(layer.node); return; }
-      // ---- SVG rasterization ----
-      // v18.3 SHARPNESS FIX: previously we returned an
-      // HTMLImageElement from a Blob URL.  For SVGs with only a
-      // viewBox (no explicit width/height attributes), the browser
-      // defaults naturalWidth to 150 — so drawImage(img@150, ..., dw)
-      // at export destinations like 1080 or 2160 becomes a 7×-14×
-      // BITMAP upscale.  Thin wireframe strokes vanish.
-      //
-      // Now we rasterize into a canvas at the LARGER of:
-      //   - the target export dimensions (typically artboard size)
-      //   - 2× the SVG's declared natW/natH (so preview also gets
-      //     high-quality rasterization when no target is passed)
-      // capped at 4096 to avoid GPU/VRAM limits on extreme resolutions.
-      // Preserves aspect ratio.  The resulting canvas is a proper
-      // bitmap CanvasImageSource; downstream drawImage calls will
-      // downsample crisply instead of upsampling from a low-res
-      // browser-default bitmap.
-      const natW = layer.natW || 400;
-      const natH = layer.natH || 400;
+      // v19.16 GROUP export: build a synthetic SVG on demand that
+      // contains each member's node content wrapped in a nested <svg>
+      // positioned at the member's local coordinates within the group
+      // wrap.  Effect mutations on member primitives (opacity, stroke-
+      // dasharray, fill overrides) are captured because deep-cloning
+      // includes inline style attributes.  Nested SVGs preserve each
+      // member's own viewBox scaling.  Not cached — rebuilt each call
+      // so the raster reflects the current DOM state.
+      if (layer.kind === "GROUP") {
+        const groupW = parseFloat(layer.wrap.style.width) || 1;
+        const groupH = parseFloat(layer.wrap.style.height) || 1;
+        const svgNS = "http://www.w3.org/2000/svg";
+        const outer = document.createElementNS(svgNS, "svg");
+        outer.setAttribute("xmlns", svgNS);
+        outer.setAttribute("viewBox", `0 0 ${groupW} ${groupH}`);
+        outer.setAttribute("width", groupW);
+        outer.setAttribute("height", groupH);
+        (layer._members || []).forEach((m) => {
+          if (!m || !m.node || !m.wrap) return;
+          const mLeft = parseFloat(m.wrap.style.left) || 0;
+          const mTop  = parseFloat(m.wrap.style.top)  || 0;
+          const mW    = parseFloat(m.wrap.style.width)  || 0;
+          const mH    = parseFloat(m.wrap.style.height) || 0;
+          if (mW <= 0 || mH <= 0) return;
+          // Nested SVG preserves member's own viewBox.  Copy the
+          // deep-cloned node — inline style attributes come along, so
+          // any active effect mutations render into the export.
+          const inner = m.node.cloneNode(true);
+          inner.setAttribute("x", mLeft);
+          inner.setAttribute("y", mTop);
+          inner.setAttribute("width", mW);
+          inner.setAttribute("height", mH);
+          outer.appendChild(inner);
+        });
+        // Use the built SVG as if it were layer.node for the rest of
+        // the rasterization pipeline.  natW / natH for scaling come
+        // from the group dimensions.
+        layer._groupSyntheticNode = outer;
+        layer._groupNatW = groupW;
+        layer._groupNatH = groupH;
+      }
+      const nodeToSerialize = layer.kind === "GROUP" ? layer._groupSyntheticNode : layer.node;
+      const natW = (layer.kind === "GROUP" ? layer._groupNatW : layer.natW) || 400;
+      const natH = (layer.kind === "GROUP" ? layer._groupNatH : layer.natH) || 400;
       const cap = 4096;
       const aspect = natW / natH;
       // Target scale: rasterize at 2× the export destination so the
@@ -6601,7 +6679,7 @@
       const rasterW = Math.max(1, Math.round(natW * scale));
       const rasterH = Math.max(1, Math.round(natH * scale));
 
-      const svgStr = new XMLSerializer().serializeToString(layer.node);
+      const svgStr = new XMLSerializer().serializeToString(nodeToSerialize);
       const url = URL.createObjectURL(new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" }));
       const svgImg = new Image();
       svgImg.onload = () => {
@@ -8662,6 +8740,12 @@
         e.preventDefault();
         duplicateSelectedLayers();
       }
+      // v19.16: Cmd/Ctrl+G groups; Cmd/Ctrl+Shift+G ungroups.
+      if ((e.key === "g" || e.key === "G") && (e.metaKey || e.ctrlKey) && !typing) {
+        e.preventDefault();
+        if (e.shiftKey) ungroupSelectedLayer();
+        else            groupSelectedLayers();
+      }
     });
     // v19.4 multi-layer operation helpers.
     function deleteSelectedLayers() {
@@ -8711,6 +8795,183 @@
       selectedAudioClip = null;
       renderTimeline(); renderClipInspector(); paintIfPaused();
       toast("Audio clip deleted");
+    }
+
+    /* v19.16 GROUPING (wrapper-based).
+       Combines multiple selected layers into a single GROUP layer
+       that behaves like one animation target.  Effects applied to
+       the group reach every member's primitives via
+       getLayerPrimitiveNodes.  The group's own wrap becomes the
+       parent DOM element for all members, so a single CSS transform
+       moves / scales / rotates the composite as a unit.
+
+       V1 constraints (per user agreement):
+         - Members can't be edited while grouped (they're locked
+           inside the group; ungroup to edit them individually).
+         - Ungroup restores members to their ORIGINAL positions from
+           before grouping.  Any group-level movement/scale/rotation
+           is discarded on ungroup.  (Preserving cumulative group
+           edits requires a proper transform-bake pass that's real
+           work; deferred to v2.)
+         - Nested groups aren't supported v1 — grouping a group
+           flattens it back into individual layers first.
+         - Morph on a group targets the FIRST primitive of the first
+           member (existing behavior); "group morph" isn't meaningful
+           without vertex remapping.
+
+       Data model:
+         group = {
+           kind: "GROUP", id, name, visible, locked,
+           wrap: <div>,     — container for member wraps
+           transform: { cx, cy, wPct, hPct, rot },
+           start, duration, allowTransform, clips: [],
+           _members: [snapshot of member layers],
+           _memberInsertIndex: original position in layers[],
+           _originalTransforms: [snapshot of each member.transform],
+           _originalWrapStyles: [snapshot of each wrap's positioning],
+         }
+    */
+    function groupSelectedLayers() {
+      if (selectedLayers.length < 2) { toast("Select 2 or more layers to group"); return; }
+      // Filter out any GROUP that was itself selected — v1 doesn't
+      // support nested groups; flatten it first.
+      const members = selectedLayers.filter((L) => L.kind !== "GROUP");
+      if (members.length < 2) { toast("Nested groups aren't supported yet"); return; }
+      const A = STATE.format;
+      // Compute canvas-space bounding box across all members.
+      let minL = Infinity, minT = Infinity, maxR = -Infinity, maxB = -Infinity;
+      members.forEach((L) => {
+        const T = L.transform;
+        const wPx = (T.wPct / 100) * A.w;
+        const hPx = (T.hPct / 100) * A.h;
+        const cxPx = A.w / 2 + (T.cx / 100) * A.w;
+        const cyPx = A.h / 2 + (T.cy / 100) * A.h;
+        const l = cxPx - wPx / 2, t = cyPx - hPx / 2;
+        if (l < minL) minL = l;
+        if (t < minT) minT = t;
+        if (l + wPx > maxR) maxR = l + wPx;
+        if (t + hPx > maxB) maxB = t + hPx;
+      });
+      const groupWPx = maxR - minL, groupHPx = maxB - minT;
+      const groupCxPx = minL + groupWPx / 2, groupCyPx = minT + groupHPx / 2;
+      // Snapshot each member's wrap styles + transform BEFORE we move.
+      const _originalWrapStyles = members.map((L) => ({
+        left: L.wrap.style.left, top: L.wrap.style.top,
+        width: L.wrap.style.width, height: L.wrap.style.height,
+        transform: L.wrap.style.transform, opacity: L.wrap.style.opacity,
+        filter: L.wrap.style.filter,
+        parentNode: L.wrap.parentNode,
+      }));
+      const _originalTransforms = members.map((L) => ({ ...L.transform }));
+      // Find insertion index — use the topmost (highest-index) member's slot.
+      const memberIndices = members.map((L) => layers.indexOf(L)).filter((i) => i >= 0);
+      const insertIndex = Math.max.apply(null, memberIndices);
+      // Build group wrap.  Positioned exactly at the bbox in canvas
+      // coordinates so member wraps (which are already at their own
+      // canvas positions) end up visually where they were.
+      const wrap = document.createElement("div");
+      wrap.className = "layer-el layer-group";
+      wrap.style.position = "absolute";
+      wrap.style.left = minL + "px";
+      wrap.style.top = minT + "px";
+      wrap.style.width = groupWPx + "px";
+      wrap.style.height = groupHPx + "px";
+      wrap.style.transformOrigin = "center center";
+      el.layerHost.appendChild(wrap);
+      // Reparent each member wrap into the group wrap, adjusting
+      // their left/top to be relative to the group's origin.  Their
+      // widths / heights / transforms don't need changing — those are
+      // in local coords already.
+      members.forEach((L) => {
+        const oldLeft = parseFloat(L.wrap.style.left) || 0;
+        const oldTop  = parseFloat(L.wrap.style.top)  || 0;
+        L.wrap.style.left = (oldLeft - minL) + "px";
+        L.wrap.style.top  = (oldTop  - minT) + "px";
+        wrap.appendChild(L.wrap);
+      });
+      // Create group layer.  Uses SHAPE-like transform structure so
+      // composeLayer's existing transform math works unchanged.
+      const groupLayer = {
+        id: ++idSeq,
+        name: `Group (${members.length})`,
+        kind: "GROUP",
+        assetId: null, complex: false,
+        node: null,          // no synthetic root — effects use getLayerPrimitiveNodes
+        wrap,
+        subLayers: [],
+        // natW/natH set to bbox pixel dims so the export path (which
+        // reads them for rasterization scale) has sensible defaults
+        // for groups.  Preview doesn't use natW/natH for GROUPs.
+        natW: groupWPx, natH: groupHPx,
+        visible: true,
+        locked: false,
+        transform: {
+          cx: ((groupCxPx - A.w / 2) / A.w) * 100,
+          cy: ((groupCyPx - A.h / 2) / A.h) * 100,
+          wPct: (groupWPx / A.w) * 100,
+          hPct: (groupHPx / A.h) * 100,
+          rot: 0, opacity: 100,
+        },
+        start: 0, duration: STATE.duration,
+        allowTransform: false,
+        clips: [],
+        recipe: makeRecipe((idSeq * 131) >>> 0),
+        _members: members,
+        _originalTransforms,
+        _originalWrapStyles,
+      };
+      // Remove members from layers[] and insert group at member's
+      // topmost position.  Use in-place mutation since `layers` is
+      // declared const at module scope.
+      for (let i = layers.length - 1; i >= 0; i--) {
+        if (members.includes(layers[i])) layers.splice(i, 1);
+      }
+      const newIdx = Math.min(insertIndex, layers.length);
+      layers.splice(newIdx, 0, groupLayer);
+      // Clear multi-select — group becomes the sole selection.
+      selectedLayers = [groupLayer];
+      selectedLayer = groupLayer;
+      renderLayers(); renderInspector(); renderTimeline(); updateSelectionBox(); paintIfPaused();
+      toast(`Grouped ${members.length} layers`);
+    }
+    function ungroupSelectedLayer() {
+      // Ungroup every selected GROUP.
+      const groups = selectedLayers.filter((L) => L.kind === "GROUP");
+      if (!groups.length) { toast("Select a group to ungroup"); return; }
+      let totalMembers = 0;
+      const restored = [];
+      groups.forEach((G) => {
+        if (!G._members || !G._members.length) return;
+        totalMembers += G._members.length;
+        // Restore each member: reparent wrap back to layerHost,
+        // restore its transform + wrap styles, put back in layers[].
+        G._members.forEach((L, i) => {
+          const origWrap = G._originalWrapStyles[i];
+          const origT    = G._originalTransforms[i];
+          // Move wrap back to layerHost with restored positioning.
+          if (origWrap.parentNode) origWrap.parentNode.appendChild(L.wrap);
+          L.wrap.style.left = origWrap.left;
+          L.wrap.style.top  = origWrap.top;
+          L.wrap.style.width = origWrap.width;
+          L.wrap.style.height = origWrap.height;
+          L.wrap.style.transform = origWrap.transform;
+          L.wrap.style.opacity = origWrap.opacity;
+          L.wrap.style.filter = origWrap.filter;
+          Object.assign(L.transform, origT);
+          restored.push(L);
+        });
+        // Remove the group layer + its wrap.
+        const gi = layers.indexOf(G);
+        if (gi >= 0) layers.splice(gi, 1);
+        if (G.wrap && G.wrap.parentNode) G.wrap.parentNode.removeChild(G.wrap);
+        // Re-insert members at the group's slot.
+        layers.splice.apply(layers, [gi, 0].concat(G._members));
+      });
+      // Restored members become the new selection.
+      selectedLayers = restored;
+      selectedLayer = restored[restored.length - 1] || null;
+      renderLayers(); renderInspector(); renderTimeline(); updateSelectionBox(); paintIfPaused();
+      toast(`Ungrouped ${groups.length} group${groups.length===1?"":"s"} (${totalMembers} layers restored)`);
     }
 
     // AI
