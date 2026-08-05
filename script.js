@@ -547,10 +547,10 @@
      Duplicate) iterate selectedLayers. */
   let selectedLayers = [];   // includes primary; empty when nothing selected
 
-  function toast(msg) {
+  function toast(msg, ms) {
     if (!el.toast) return;
     el.toast.textContent = msg; el.toast.classList.add("show");
-    clearTimeout(toast._t); toast._t = setTimeout(() => el.toast.classList.remove("show"), 2400);
+    clearTimeout(toast._t); toast._t = setTimeout(() => el.toast.classList.remove("show"), ms || 2400);
   }
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
   const clamp01 = (v) => Math.max(0, Math.min(1, v));
@@ -1849,16 +1849,31 @@
     } else if (layer.kind === "GROUP") {
       // v19.17: duplicating a group produces a NEW independent group
       // with fresh member copies.  Sequence:
-      //   1. Duplicate each member as an independent layer.
-      //   2. Multi-select the new duplicates.
-      //   3. Call _groupSelectedLayers() (forward reference) to form
-      //      the new group.
-      //   4. Copy the source group's transform onto the new group so
+      //   1. Temporarily restore each source member's suspended clips
+      //      so the SHAPE/SVG/TEXT dup paths copy them into duplicates.
+      //   2. Duplicate each member as an independent layer.
+      //   3. Re-suspend the source members' clips (they stay grouped).
+      //   4. Multi-select the new duplicates.
+      //   5. Call _groupSelectedLayers() to form the new group — this
+      //      also suspends the duplicated clips into _suspendedClips.
+      //   6. Copy the source group's transform onto the new group so
       //      it lands at the same position/scale/rotation.
-      //   5. Copy the source group's clips.
+      //   7. Copy the source group's own clips.
       if (!_groupSelectedLayers) { toast("Group duplication not yet ready"); return; }
+      // v19.20: temporarily restore source members' clips so dupes
+      // carry them; re-suspend afterwards.  Without this, dup members
+      // would have empty clips and empty _suspendedClips.
+      const wasSuspended = [];
+      layer._members.forEach((m) => {
+        wasSuspended.push(m._suspendedClips || null);
+        if (m._suspendedClips) { m.clips = m._suspendedClips; m._suspendedClips = undefined; }
+      });
       const beforeIds = new Set(layers.map((L) => L.id));
       layer._members.forEach((m) => duplicateLayer(m));
+      // Re-suspend the source members' clips.
+      layer._members.forEach((m, i) => {
+        if (wasSuspended[i]) { m._suspendedClips = m.clips; m.clips = []; }
+      });
       const memberDups = layers.filter((L) => !beforeIds.has(L.id));
       selectedLayers = memberDups.slice();
       selectedLayer = memberDups[memberDups.length - 1] || null;
@@ -4419,21 +4434,14 @@
     // local canvas px) scale together as one visual unit.  Regular
     // layers keep the original width/height-based scaling.
     if (layer.kind === "GROUP") {
-      // v19.19: run full composeLayer on each member (not just vector
-      // effects).  Members get their own transform accumulators, so
-      // any effect that produces tx/ty/rot/scaleSafe/opacity/blur/rgb
-      // deltas fires correctly.  Wrap positioning subtracts the group
-      // base offset (_groupBaseLeftPx/Px) so member wraps stay
-      // correctly nested inside the group wrap.  Members can't be
-      // groups themselves (nested groups blocked), so recursion is
-      // bounded to depth 1.
-      if (layer._members) {
-        for (const m of layer._members) {
-          if (!m || !m.wrap) continue;
-          const mLt = sceneTime - m.start + (m.recipe ? m.recipe.delay : 0);
-          composeLayer(m, mLt, sig, sceneTime);
-        }
-      }
+      // v19.20 (Option A′): member clips are SUSPENDED while grouped.
+      // Members are removed from layers[] AND their clips array is
+      // moved to _suspendedClips, so no per-member effect processing
+      // is needed here.  Ungroup restores the suspended clips.
+      // Rationale: attempting to run member clips while grouped led
+      // to preview/export divergence (v19.18/19.19 tried the various
+      // recursion approaches — each fixed one dimension while
+      // breaking another).  Suspending is the honest v1 boundary.
       const natWpx = ((layer._groupNatWpct || T.wPct) / 100) * A.w;
       const natHpx = ((layer._groupNatHpct || T.hPct) / 100) * A.h;
       const scaleX = (T.wPct / (layer._groupNatWpct || T.wPct)) * extraScale;
@@ -4454,16 +4462,7 @@
     const wPx = (T.wPct / 100) * A.w * extraScale, hPx = (T.hPct / 100) * A.h * extraScale;
     const cxPx = (T.cx / 100) * A.w + (allowT ? (tx / 100) * A.w : 0) + (expansionTx / 100) * A.w;
     const cyPx = (T.cy / 100) * A.h + (allowT ? (ty / 100) * A.h : 0) + (expansionTy / 100) * A.h;
-    let leftPx = A.w / 2 + cxPx - wPx / 2, topPx = A.h / 2 + cyPx - hPx / 2;
-    // v19.19: for group members, subtract the group's identity canvas
-    // position so wrap.style.left/top become group-local coordinates
-    // relative to the group wrap.  This lets member transform effects
-    // (jitter, shake, scale-safe, etc.) apply on top of the group's
-    // own transform without the member wrap escaping the group.
-    if (layer._isGroupMember) {
-      leftPx -= layer._groupBaseLeftPx || 0;
-      topPx  -= layer._groupBaseTopPx  || 0;
-    }
+    const leftPx = A.w / 2 + cxPx - wPx / 2, topPx = A.h / 2 + cyPx - hPx / 2;
 
     layer.wrap.style.width = wPx + "px"; layer.wrap.style.height = hPx + "px";
     layer.wrap.style.left = leftPx + "px"; layer.wrap.style.top = topPx + "px";
@@ -4568,15 +4567,9 @@
     }
     const wPx = (T.wPct / 100) * A.w, hPx = (T.hPct / 100) * A.h;
     const cxPx = (T.cx / 100) * A.w, cyPx = (T.cy / 100) * A.h;
-    let leftPx = A.w / 2 + cxPx - wPx / 2, topPx = A.h / 2 + cyPx - hPx / 2;
-    // v19.19: group members use group-local wrap coords.
-    if (layer._isGroupMember) {
-      leftPx -= layer._groupBaseLeftPx || 0;
-      topPx  -= layer._groupBaseTopPx  || 0;
-    }
     layer.wrap.style.width = wPx + "px"; layer.wrap.style.height = hPx + "px";
-    layer.wrap.style.left = leftPx + "px";
-    layer.wrap.style.top = topPx + "px";
+    layer.wrap.style.left = (A.w / 2 + cxPx - wPx / 2) + "px";
+    layer.wrap.style.top = (A.h / 2 + cyPx - hPx / 2) + "px";
     layer.wrap.style.transformOrigin = "center center";
     layer.wrap.style.transform = `rotate(${T.rot.toFixed(2)}deg)`;
     layer.wrap.style.opacity = clamp01(T.opacity / 100).toFixed(2);
@@ -4651,18 +4644,10 @@
     // If there's a layer that has an event clip active at the current
     // playhead, paint an animated frame so event params visibly affect
     // the preview. Otherwise fall back to the plain static frame.
+    // v19.20 (Option A′): only top-level layers can have active clips
+    // now — member clips are suspended when grouped.
     const t = STATE.time;
-    // v19.18: include group members in the check — a morph on member A
-    // inside a group should still trigger animated rendering even if
-    // the group itself has no clips.
-    const layerHasActive = (L) => {
-      if (activeEventClipsAt(L, t).length > 0) return true;
-      if (L.kind === "GROUP" && L._members) {
-        return L._members.some((m) => m && m.clips && activeEventClipsAt(m, t).length > 0);
-      }
-      return false;
-    };
-    const hasActiveEvent = layers.some(layerHasActive);
+    const hasActiveEvent = layers.some((L) => activeEventClipsAt(L, t).length > 0);
     if (hasActiveEvent) renderOneAnimatedFrame();
     else renderStaticFrame();
   }
@@ -5316,24 +5301,15 @@
     // up via evaluateLayerAtTime → scaleSafe/opacity/rot accumulators.
   ]);
   function hasActiveVectorClip(layer, t) {
-    if (!layer) return false;
-    // Check layer's own clips first.
-    if (layer.clips && layer.clips.length) {
-      const active = activeEventClipsAt(layer, t);
-      const own = active.some(({ c }) => {
-        if (!VECTOR_FX_KEYS.has(c.fxKey)) return false;
-        if (c.fxKey === "fillReveal" || c.fxKey === "segmentReveal") return true;
-        return layer.kind === "SVG" || layer.kind === "SHAPE" || layer.kind === "GROUP";
-      });
-      if (own) return true;
-    }
-    // v19.18: for GROUP, also check whether any member has an active
-    // vector clip.  Export needs to re-rasterize the group whenever
-    // any member's clip mutates member DOM (morph, dash, etc.).
-    if (layer.kind === "GROUP" && layer._members) {
-      return layer._members.some((m) => hasActiveVectorClip(m, t));
-    }
-    return false;
+    // v19.20 (Option A′): member clips are suspended when grouped,
+    // so only the layer's own clips need checking.
+    if (!layer || !layer.clips || !layer.clips.length) return false;
+    const active = activeEventClipsAt(layer, t);
+    return active.some(({ c }) => {
+      if (!VECTOR_FX_KEYS.has(c.fxKey)) return false;
+      if (c.fxKey === "fillReveal" || c.fxKey === "segmentReveal") return true;
+      return layer.kind === "SVG" || layer.kind === "SHAPE" || layer.kind === "GROUP";
+    });
   }
   function applyVectorEffectsAtTime(layer, t) {
     const active = activeEventClipsAt(layer, t);
@@ -5383,17 +5359,10 @@
     else if (layer._fillRevealApplied) clearFillReveal(layer);
     if (segmentRevealContrib) applySegmentReveal(layer, segmentRevealContrib);
     else if (layer._segmentRevealApplied) clearSegmentReveal(layer);
-    // v19.18: recurse into group members so per-member clips (morph,
-    // line draw, fill color flash, etc.) continue to fire after
-    // grouping.  Member layers keep their own clips array; grouping
-    // shouldn't invalidate pre-existing animation relationships.  The
-    // recursion is safe — members can't themselves be groups (nested
-    // groups are blocked at group-creation time).
-    if (layer.kind === "GROUP" && layer._members) {
-      for (const m of layer._members) {
-        if (m && m.clips && m.clips.length) applyVectorEffectsAtTime(m, t);
-      }
-    }
+    // v19.20 (Option A′): no member recursion.  Member clips are
+    // suspended into member._suspendedClips at group creation time
+    // and restored on ungroup, so their clips array is empty while
+    // grouped and there's nothing to process.
   }
 
   /* ---------------- v19.9 SVG COMPATIBILITY INSPECTOR ----------------
@@ -9107,21 +9076,38 @@
       // their left/top to be relative to the group's origin.  Their
       // widths / heights / transforms don't need changing — those are
       // in local coords already.
+      // v19.20 (Option A′): also SUSPEND each member's clips into
+      // _suspendedClips.  Any active effect DOM mutations get
+      // cleared so members enter the group in a clean baseline state.
+      // Ungroup restores the suspended clips.
+      let suspendedCount = 0;
       members.forEach((L) => {
+        // Clear any active vector-effect state so mutations don't
+        // persist into the grouped state (opacity, dasharray, morph,
+        // clip-path, etc.).  Without this, an active effect at group
+        // time would visually stick until ungroup.
+        if (L._dashApplied)          clearPathDash(L);
+        if (L._shapeStyleApplied)    clearShapeStyleDelta(L);
+        if (L._morphApplied)         clearMorph(L);
+        if (L._fillRevealApplied)    clearFillReveal(L);
+        if (L._segmentRevealApplied) clearSegmentReveal(L);
+        // Also clear filter / opacity / transform mutations that
+        // non-vector effects may have written.
+        L.wrap.style.filter = "";
+        L.wrap.style.opacity = "";
+        // Preserve transform positioning below (adjust for group).
+        // Move clips into suspension.
+        if (L.clips && L.clips.length) {
+          L._suspendedClips = L.clips;
+          L.clips = [];
+          suspendedCount += L._suspendedClips.length;
+        }
+        // Reparent + reposition wrap group-locally.
         const oldLeft = parseFloat(L.wrap.style.left) || 0;
         const oldTop  = parseFloat(L.wrap.style.top)  || 0;
         L.wrap.style.left = (oldLeft - minL) + "px";
         L.wrap.style.top  = (oldTop  - minT) + "px";
         wrap.appendChild(L.wrap);
-        // v19.19: mark as group member and store the group's identity
-        // canvas position so composeLayer (running on the member) can
-        // subtract it and produce group-local wrap coords.  This lets
-        // transform-based effects (microJitter, vectorLock, coordShift,
-        // etc.) fire on member layers while the member wrap stays
-        // correctly nested inside the group wrap.
-        L._isGroupMember = true;
-        L._groupBaseLeftPx = minL;
-        L._groupBaseTopPx = minT;
       });
       // Create group layer.  Uses SHAPE-like transform structure so
       // composeLayer's existing transform math works unchanged.
@@ -9178,7 +9164,14 @@
       selectedLayers = [groupLayer];
       selectedLayer = groupLayer;
       renderLayers(); renderInspector(); renderTimeline(); updateSelectionBox(); paintIfPaused();
-      toast(`Grouped ${members.length} layers`);
+      // v19.20 (Option A′): explicit UX signal when member clips are
+      // suspended, so users understand the v1 boundary rather than
+      // thinking the feature is broken.
+      if (suspendedCount > 0) {
+        toast(`Grouped ${members.length} layers · ${suspendedCount} member animation${suspendedCount===1?"":"s"} paused (ungroup to edit or play)`, 4500);
+      } else {
+        toast(`Grouped ${members.length} layers`);
+      }
     }
     function ungroupSelectedLayer() {
       // Ungroup every selected GROUP.
@@ -9240,12 +9233,14 @@
           L.wrap.style.transform = "";
           L.wrap.style.opacity = "";
           L.wrap.style.filter = "";
-          // v19.19: clear group-member markers.  Once restored, the
-          // member is a top-level layer again and composeLayer should
-          // treat it as such (no group-base offset subtraction).
-          L._isGroupMember = false;
-          L._groupBaseLeftPx = 0;
-          L._groupBaseTopPx = 0;
+          // v19.20 (Option A′): restore suspended clips so member
+          // animations resume playing.  The wrap positioning + baked
+          // transform above ensures visual continuity; clips fire
+          // again from the next paintIfPaused.
+          if (L._suspendedClips) {
+            L.clips = L._suspendedClips;
+            delete L._suspendedClips;
+          }
           restored.push(L);
         });
         // Remove the group layer + its wrap.
