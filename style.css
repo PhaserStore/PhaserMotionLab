@@ -646,6 +646,11 @@ body.focus-mode .selection-box { display: none !important; }
 .diag-ok { color: var(--accent-2); font-weight: 600; }
 .diag-fail { color: #ff5566; font-weight: 600; }
 .diag-warn-inline { color: #ff9944; font-weight: 600; }
+/* v19.23: SVG utilities header — small caps label + subtle separator
+   line so the Monochrome / Invert buttons don't read as loose
+   controls at the end of the Fill & Stroke panel. */
+.svg-utils-head { margin-top: 14px; padding-top: 10px; border-top: 1px dashed var(--border); }
+.svg-utils-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-3); font-weight: 600; }
 /* v19.13: effect coverage report — one horizontal bar per effect
    family, filled proportionally to the fraction of primitives in the
    SVG that satisfy the effect's requirements. */
