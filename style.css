@@ -616,6 +616,18 @@ body.focus-mode .selection-box { display: none !important; }
   border-radius: 2px;
   z-index: 300;
 }
+/* v19.16: group thumbnail in the layer list — three overlapping
+   rectangles suggest "multiple items combined into one". */
+.group-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: var(--accent);
+}
+.layer-el.layer-group { pointer-events: auto; }
+
 /* v19.6: box-selection marquee — dashed rectangle rendered in stage
    space while the user drags on the empty canvas. */
 .marquee-select {
