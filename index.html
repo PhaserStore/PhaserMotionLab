@@ -424,6 +424,18 @@
             <input type="number" min="0" max="200" step="0.5" value="2" id="shapeStrokeW" class="ctl-num" />
             <input type="range" min="0" max="60" step="0.5" value="2" id="shapeStrokeWRange" />
           </div>
+          <!-- v19.22: Fill / Stroke opacity sliders.  Work on both
+               SVG (writes fill-opacity / stroke-opacity attributes)
+               and SHAPE (writes shapeStyle then rebuilds SVG).  Values
+               are 0-100 in the UI, stored 0-1 in the model. -->
+          <div class="control"><span class="ctl-label">Fill α</span>
+            <input type="number" min="0" max="100" step="1" value="100" id="shapeFillOpacity" class="ctl-num" />
+            <input type="range" min="0" max="100" step="1" value="100" id="shapeFillOpacityRange" />
+          </div>
+          <div class="control"><span class="ctl-label">Stroke α</span>
+            <input type="number" min="0" max="100" step="1" value="100" id="shapeStrokeOpacity" class="ctl-num" />
+            <input type="range" min="0" max="100" step="1" value="100" id="shapeStrokeOpacityRange" />
+          </div>
           <!-- Rectangle-only: corner radius. Hidden for other shapes. -->
           <div class="control" id="shapeCornerRow"><span class="ctl-label">Corner R</span>
             <input type="number" min="0" max="500" step="1" value="0" id="shapeCornerR" class="ctl-num" />
@@ -433,6 +445,21 @@
           <div class="control" id="shapeSidesRow"><span class="ctl-label">Sides</span>
             <input type="number" min="3" max="24" step="1" value="6" id="shapeSides" class="ctl-num" />
             <input type="range" min="3" max="24" step="1" value="6" id="shapeSidesRange" />
+          </div>
+          <!-- v19.22: SVG-only utility buttons (Monochrome / Invert),
+               hidden for SHAPE layers.  Both use the _svgSnapshot
+               undo pattern; "Restore original SVG" in the SVG
+               Diagnostics section reverts them.
+               v19.23: labeled section so users find them.  A subtle
+               header/separator groups the buttons under a clear
+               heading rather than leaving them as loose buttons at
+               the end of the panel. -->
+          <div class="svg-utils-head" id="shapeSvgUtilsHead" hidden>
+            <span class="svg-utils-label">SVG utilities</span>
+          </div>
+          <div class="btn-grid" id="shapeSvgUtilsRow" style="margin-top:6px" hidden>
+            <button class="mini-btn" id="shapeMonoBtn" title="Set every visible fill and stroke to the current Fill color.">Monochrome</button>
+            <button class="mini-btn" id="shapeInvertBtn" title="Invert every fill and stroke color.">Invert</button>
           </div>
         </section>
 
@@ -467,32 +494,12 @@
         </section>
 
         <!-- COLOR (SVG) -->
-        <section class="prop-group" id="colorGroup">
-          <div class="group-head"><h3>Color</h3></div>
-          <div id="colorEmpty" class="group-hint">Select an SVG layer to edit its colors.</div>
-          <div id="colorBody" hidden>
-            <div class="prop-row">
-              <label class="prop-label" for="fillColor">Fill</label>
-              <div class="color-cell"><input type="color" id="fillColor" value="#7A5CFF" class="color-input"><span class="color-hex" id="fillHex">#7A5CFF</span></div>
-            </div>
-            <div class="prop-row" style="margin-top:10px">
-              <label class="prop-label" for="strokeColor">Stroke</label>
-              <div class="color-cell"><input type="color" id="strokeColor" value="#9C86FF" class="color-input"><span class="color-hex" id="strokeHex">#9C86FF</span></div>
-            </div>
-            <div class="control" style="margin-top:12px"><span class="ctl-label">Stroke width</span><span class="ctl-val" id="val-sw">100</span><input type="range" min="0" max="400" value="100" id="ctl-sw"></div>
-            <div class="btn-grid" style="margin-top:12px">
-              <button class="mini-btn" id="colApplyFill">Apply fill</button>
-              <button class="mini-btn" id="colApplyStroke">Apply stroke</button>
-              <button class="mini-btn" id="colApplyAll">All paths</button>
-              <button class="mini-btn" id="colRestore">Original</button>
-            </div>
-            <div class="btn-grid" style="margin-top:6px">
-              <button class="mini-btn" id="colMono">Monochrome</button>
-              <button class="mini-btn" id="colInvert">Invert</button>
-            </div>
-            <div class="color-note" id="colorNote" hidden>This SVG uses complex styling. Some color controls may not affect all elements.</div>
-          </div>
-        </section>
+        <!-- v19.22: legacy Color panel removed.  All fill/stroke/opacity
+             editing now lives in the unified "Fill & Stroke" section
+             above (id="shapeGroup"), which handles both SVG and SHAPE
+             layers with the same controls.  Feature parity preserved:
+             Monochrome / Invert / Restore original are now surfaced
+             inside the unified panel and via SVG Diagnostics. -->
 
         <!-- EVENT CLIPS ON LAYER -->
         <section class="prop-group" id="fxGroup">
