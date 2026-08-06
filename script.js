@@ -10462,6 +10462,13 @@
     bindTimeField("num-ce-f", "end",       true);
     bindTimeField("num-cs-f", "start",     true);
     bindTimeField("num-cd-f", "duration",  true);
+    // v19.28: previously the seconds fields for Start (num-cs) and
+    // Duration (num-cd) were rendered and populated but never wired
+    // to input handlers, so typing 3-decimal values into them had no
+    // effect.  Only the frame variants and End-seconds committed.
+    // Wire them the same way as the others.
+    bindTimeField("num-cs",   "start",     false);
+    bindTimeField("num-cd",   "duration",  false);
 
     /* v19.0 Playhead position input — always visible, editable.
        Accepts:
