@@ -2534,6 +2534,9 @@
         if (!events.length) return;
         const hd = document.createElement("div");
         hd.className = "fx-event-group-hd"; hd.textContent = grp.label;
+        // v19.29: tag group heading for keyboard-shortcut scrolling
+        // (V = vector, G = signal/glitch).  E goes to the panel top.
+        hd.dataset.groupId = grp.id;
         el.fxEventGrid.appendChild(hd);
         const wrap = document.createElement("div"); wrap.className = "fx-event-grid-inner";
         events.forEach((fx) => {
@@ -2827,13 +2830,16 @@
     clip.classList.add("dragging");
     document.addEventListener("mousemove", onClipDrag); document.addEventListener("mouseup", endClipDrag);
   }
-  // Compute the effective time delta from a mousemove.  When the Shift
-  // key is held, the delta is scaled by 10 so users get precise
+  // Compute the effective time delta from a mousemove.  When Shift OR
+  // Alt is held, the delta is scaled by 10 so users get precise
   // sub-frame nudging.  Both drag handlers use this so behavior is
   // consistent across layer clips, event clips, and audio clips.
+  //   v19.29: Alt joined Shift as a precision modifier — Figma-style
+  //   muscle memory (Alt) and After-Effects-style (Shift) both work.
+  function isPrecisionKey(e) { return e.shiftKey || e.altKey; }
   function tlDeltaFromEvent(e, startX) {
     const rawDx = (e.clientX - startX) / TL.pxPerSec;
-    return e.shiftKey ? rawDx / 10 : rawDx;
+    return isPrecisionKey(e) ? rawDx / 10 : rawDx;
   }
 
   function onClipDrag(e) {
@@ -2850,7 +2856,7 @@
     else if (TL.mode === "trim-right") layer.duration = clamp(o.duration + dx, 0.2, D - layer.start);
     // Snap ALL editable edges on each mousemove.  Shift-drag suppresses
     // snap so users can nudge sub-frame during precise adjustments.
-    if (!e.shiftKey) {
+    if (!isPrecisionKey(e)) {
       // v18.8 magnetic snap.  Layer times are absolute; excludeClip
       // is the layer itself so we don't self-snap its opposite edge.
       if (TL.mode === "move" || TL.mode === "trim-left") {
@@ -2887,7 +2893,7 @@
     if (D.mode === "move") D.ec.start = clamp(D.orig.start + dx, 0, Math.max(0, layerDur - D.ec.duration));
     else if (D.mode === "trim-left") { const ns = clamp(D.orig.start + dx, 0, D.orig.start + D.orig.duration - 0.02); D.ec.duration = D.orig.duration - (ns - D.orig.start); D.ec.start = ns; }
     else if (D.mode === "trim-right") D.ec.duration = clamp(D.orig.duration + dx, 0.02, layerDur - D.ec.start);
-    if (!e.shiftKey) {
+    if (!isPrecisionKey(e)) {
       // v18.8: magnetic snap to playhead + other clip edges.  Runs in
       // absolute scene time; event clip times are stored layer-local.
       if (D.mode === "move" || D.mode === "trim-left") {
@@ -2927,7 +2933,7 @@
     if (D.mode === "move") D.ac.start = clamp(D.orig.start + dx, 0, Math.max(0, dur - D.ac.duration));
     else if (D.mode === "trim-left") { const ns = clamp(D.orig.start + dx, 0, D.orig.start + D.orig.duration - 0.05); D.ac.duration = D.orig.duration - (ns - D.orig.start); D.ac.start = ns; }
     else if (D.mode === "trim-right") D.ac.duration = clamp(D.orig.duration + dx, 0.05, dur - D.ac.start);
-    if (!e.shiftKey) {
+    if (!isPrecisionKey(e)) {
       // v18.8: magnetic snap.  Audio clip times are absolute.
       if (D.mode === "move" || D.mode === "trim-left") {
         const snapped = applyMagneticSnap(D.ac.start, D.ac);
@@ -2976,6 +2982,12 @@
     const hasAny = hasEvt || hasAud;
     if (!el.clipEmpty || !el.clipBody) return;
     el.clipEmpty.hidden = hasAny; el.clipBody.hidden = !hasAny;
+    // v19.29: toolbar Start/End inputs — disabled + cleared when no
+    // clip is selected, active + populated when one is.
+    const tlS = document.getElementById("tlClipStart");
+    const tlE = document.getElementById("tlClipEnd");
+    if (tlS) { tlS.disabled = !hasAny; if (!hasAny && document.activeElement !== tlS) tlS.value = ""; }
+    if (tlE) { tlE.disabled = !hasAny; if (!hasAny && document.activeElement !== tlE) tlE.value = ""; }
     // Params rows visibility
     const paramsHost = document.getElementById("clipParams");
     if (paramsHost) paramsHost.innerHTML = "";
@@ -3401,6 +3413,9 @@
     setNumIf("num-ce-f", Math.round((startAbs + dur) * fps));
     setNumIf("num-cd", (+dur).toFixed(3));
     setNumIf("num-cd-f", Math.round(dur * fps));
+    // v19.29: also update toolbar Start/End inputs on selection change.
+    setNumIf("tlClipStart", (+startAbs).toFixed(3));
+    setNumIf("tlClipEnd",   (+(startAbs + dur)).toFixed(3));
   }
 
   /* Param slider — `step` is optional; when < 1 the label formats with 2
@@ -9225,6 +9240,30 @@
       if (k === "t") { e.preventDefault(); scrollInspectorTo("transformGroup"); return; }
       if (k === "e") { e.preventDefault(); scrollInspectorTo("fxGroup"); return; }
       if (k === "c") { e.preventDefault(); scrollInspectorTo("colorGroup"); return; }
+      // v19.29 category shortcuts.  E stays as top-of-events (above).
+      // V and G scroll to specific group headings within fxGroup so
+      // the user lands right on the relevant effects.  A is reserved
+      // for Align — the feature doesn't exist yet, so we show an
+      // honest toast rather than silently doing nothing.
+      const scrollToEventGroup = (groupId) => {
+        scrollInspectorTo("fxGroup");
+        // Defer to next frame so the fxGroup layout settles first.
+        requestAnimationFrame(() => {
+          const hd = document.querySelector(`.fx-event-group-hd[data-group-id="${groupId}"]`);
+          if (hd && hd.scrollIntoView) hd.scrollIntoView({ behavior: "smooth", block: "start" });
+          if (hd) {
+            hd.classList.add("group-hd-flash");
+            setTimeout(() => hd.classList.remove("group-hd-flash"), 1200);
+          }
+        });
+      };
+      if (k === "v") { e.preventDefault(); scrollToEventGroup("vector"); return; }
+      if (k === "g") { e.preventDefault(); scrollToEventGroup("signal"); return; }
+      if (k === "a") {
+        e.preventDefault();
+        toast("Align tools not yet available in v19 — coming soon");
+        return;
+      }
       if (k === "b") {
         // Background lives in the RIGHT panel's last "Background" group.
         // Look for a heading matching "Background" to be robust to id changes.
@@ -10469,6 +10508,12 @@
     // Wire them the same way as the others.
     bindTimeField("num-cs",   "start",     false);
     bindTimeField("num-cd",   "duration",  false);
+    // v19.29: toolbar-hosted Start/End editors — share the same
+    // commitClipTime pipeline as the inspector fields.  Both surfaces
+    // edit the same clip state; renderClipInspector keeps both in
+    // sync via setNumIf.
+    bindTimeField("tlClipStart", "start", false);
+    bindTimeField("tlClipEnd",   "end",   false);
 
     /* v19.0 Playhead position input — always visible, editable.
        Accepts:
