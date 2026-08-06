@@ -5264,30 +5264,38 @@
   }
   // v19.26 Corner-Aware Smoothing.
   //
-  // The baseline morph output is a 128-segment polygon (straight lines
-  // between sample points).  This produces visible faceting on curved
-  // regions of intermediate morph frames.  Catmull-Rom → cubic Bezier
-  // smoothing gives smooth curves everywhere — but destructively:
-  // sharp corners on source/target endpoints get rounded off.
+  // v19.27 update — CONTINUOUS corner strength.
   //
-  // Corner-aware smoothing detects vertices where direction change
-  // exceeds a threshold (default 40°) and preserves those as line
-  // joins, only smoothing the gentle-curve regions.  Result: sharp
-  // features preserved at endpoints AND at intermediate frames where
-  // the corner still exists, smoother curves between them.  This is
-  // what Illustrator/Figma implicitly do via anchor classification.
+  // The v19.26 detector was binary: a vertex was either a "corner"
+  // (emit L segments across it) or "smooth" (emit C segments).  As
+  // interpolation progressed, vertices crossed the binary threshold at
+  // slightly different t values, causing L/C topology snaps visible
+  // as small geometric jumps.
   //
-  // Isolated in a POC (morph-poc/morph-poc-v2.html) — this ships the
-  // same math into the main pipeline.  ~50 lines, no library.
-  const CORNER_ANGLE_DEG = 40;
-  function detectCornerIndices(pts, closed, thresholdDeg) {
+  // v19.27 computes a per-vertex corner STRENGTH (0-1) instead:
+  //   - Angle change > sharpThreshold (default 40°)  → strength = 1
+  //   - Angle change < smoothThreshold (default 15°) → strength = 0
+  //   - Between → linear ramp
+  //
+  // Source and target strengths are computed independently in
+  // analyzeMorph.  applyMorph blends by t to get per-vertex
+  // strength at the current frame, then emits ALL cubic Bezier
+  // segments (no L/C topology change).  The Bezier control handles
+  // pull toward the endpoint proportionally to strength: full
+  // strength → handles at endpoints → visually straight ("sharp"
+  // corner in cubic syntax); zero strength → full Catmull-Rom
+  // handles → smooth curve.  Continuous transition, no snap.
+  const CORNER_SHARP_DEG  = 40;
+  const CORNER_SMOOTH_DEG = 15;
+  function computeCornerStrengths(pts, closed, sharpDeg, smoothDeg) {
     const n = pts.length;
-    const corners = new Set();
-    // Angle between two edge vectors θ satisfies cos(θ) = dot/(|v1||v2|).
-    // We flag a corner when the direction changes by more than
-    // `thresholdDeg` — i.e., when cos(θ) < cos(thresholdDeg).
-    // Straight edge → cos(θ)=1, 90° corner → cos(θ)=0, reversal → -1.
-    const thresh = Math.cos(thresholdDeg * Math.PI / 180);
+    const strengths = new Array(n).fill(0);
+    // Angle-to-dot: cos(θ) is monotonically decreasing in θ over [0, 180°].
+    // Fully smooth (angle < smoothDeg): dot > cosSmooth → strength 0
+    // Fully sharp (angle > sharpDeg):   dot < cosSharp  → strength 1
+    // In between: linear ramp on dot values.
+    const cosSharp  = Math.cos(sharpDeg  * Math.PI / 180);
+    const cosSmooth = Math.cos(smoothDeg * Math.PI / 180);
     const get = (i) => pts[((i % n) + n) % n];
     for (let i = 0; i < n; i++) {
       if (!closed && (i === 0 || i === n - 1)) continue;
@@ -5297,38 +5305,50 @@
       const l1 = Math.hypot(v1x, v1y), l2 = Math.hypot(v2x, v2y);
       if (l1 < 0.001 || l2 < 0.001) continue;
       const dot = (v1x * v2x + v1y * v2y) / (l1 * l2);
-      if (dot < thresh) corners.add(i);
+      let s;
+      if (dot <= cosSharp)      s = 1;
+      else if (dot >= cosSmooth) s = 0;
+      else s = (cosSmooth - dot) / (cosSmooth - cosSharp);
+      strengths[i] = s;
     }
-    return corners;
+    return strengths;
   }
-  // Emit a corner-aware smoothed d string.  Line segments across
-  // corner vertices, cubic Bezier (Catmull-Rom to cubic conversion,
-  // tension = 0.5) across smooth regions.
-  function pointsToCornerAwarePathD(pts, closed, thresholdDeg) {
+  // Emit d string as cubic Bezier segments where each segment's
+  // control handles are interpolated between "sharp" (collapsed to
+  // endpoints) and "smooth" (full Catmull-Rom).  Blend factor comes
+  // from per-vertex strengths — sharp handles when the endpoint's
+  // strength is high, smooth handles when low.  Always emits C
+  // segments, never L — so segment count stays constant across the
+  // entire morph, eliminating topology snaps.
+  function pointsToBlendedBezierPathD(pts, closed, strengths) {
     if (!pts || pts.length < 2) return "";
-    const corners = detectCornerIndices(pts, closed, thresholdDeg || CORNER_ANGLE_DEG);
     const n = pts.length;
     const get = (i) => {
       if (closed) return pts[((i % n) + n) % n];
       return pts[Math.max(0, Math.min(n - 1, i))];
     };
+    const getS = (i) => {
+      if (closed) return strengths[((i % n) + n) % n] || 0;
+      return strengths[Math.max(0, Math.min(n - 1, i))] || 0;
+    };
     const parts = [`M${pts[0].x.toFixed(3)},${pts[0].y.toFixed(3)}`];
     const last = closed ? n : n - 1;
     for (let i = 0; i < last; i++) {
-      const p1 = get(i), p2 = get(i + 1);
-      // If either endpoint of this segment is a corner, keep it as a
-      // line — preserves the sharpness.
-      if (corners.has(i % n) || corners.has((i + 1) % n)) {
-        parts.push(`L${p2.x.toFixed(3)},${p2.y.toFixed(3)}`);
-      } else {
-        const p0 = get(i - 1), p3 = get(i + 2);
-        // Catmull-Rom to cubic Bezier (tension = 0.5)
-        const c1x = p1.x + (p2.x - p0.x) / 6;
-        const c1y = p1.y + (p2.y - p0.y) / 6;
-        const c2x = p2.x - (p3.x - p1.x) / 6;
-        const c2y = p2.y - (p3.y - p1.y) / 6;
-        parts.push(`C${c1x.toFixed(3)},${c1y.toFixed(3)} ${c2x.toFixed(3)},${c2y.toFixed(3)} ${p2.x.toFixed(3)},${p2.y.toFixed(3)}`);
-      }
+      const p0 = get(i - 1), p1 = get(i), p2 = get(i + 1), p3 = get(i + 2);
+      const s1 = getS(i);
+      const s2 = getS((i + 1) % n);
+      // Full-smooth Catmull-Rom handles (tension = 0.5)
+      const smoothC1x = p1.x + (p2.x - p0.x) / 6;
+      const smoothC1y = p1.y + (p2.y - p0.y) / 6;
+      const smoothC2x = p2.x - (p3.x - p1.x) / 6;
+      const smoothC2y = p2.y - (p3.y - p1.y) / 6;
+      // Blend toward endpoint by strength.  s=1 → handle at endpoint
+      // (visually linear segment).  s=0 → full Catmull-Rom (smooth).
+      const c1x = smoothC1x + (p1.x - smoothC1x) * s1;
+      const c1y = smoothC1y + (p1.y - smoothC1y) * s1;
+      const c2x = smoothC2x + (p2.x - smoothC2x) * s2;
+      const c2y = smoothC2y + (p2.y - smoothC2y) * s2;
+      parts.push(`C${c1x.toFixed(3)},${c1y.toFixed(3)} ${c2x.toFixed(3)},${c2y.toFixed(3)} ${p2.x.toFixed(3)},${p2.y.toFixed(3)}`);
     }
     if (closed) parts.push("Z");
     return parts.join(" ");
@@ -5484,6 +5504,11 @@
     if (srcSample.closed && tgtSample.closed) {
       tgtCentered = alignPointSequence(srcCentered, tgtCentered);
     }
+    // v19.27: compute per-vertex corner strengths for source and
+    // target.  These get blended by t in applyMorph so the sharp/
+    // smooth transition happens continuously (no L/C topology snap).
+    const srcStrengths = computeCornerStrengths(srcCentered, srcSample.closed || tgtSample.closed, CORNER_SHARP_DEG, CORNER_SMOOTH_DEG);
+    const tgtStrengths = computeCornerStrengths(tgtCentered, srcSample.closed || tgtSample.closed, CORNER_SHARP_DEG, CORNER_SMOOTH_DEG);
     return {
       ok: true,
       sourceCmds: MORPH_SAMPLES,
@@ -5491,6 +5516,8 @@
       sourcePointsCentered: srcCentered,
       targetPointsCentered: tgtCentered,
       sourceCenter: srcCenter,
+      srcStrengths,
+      tgtStrengths,
       closed: srcSample.closed || tgtSample.closed,
       srcNode, tgtNode,
       // Legacy compat fields for callers that read these:
@@ -5524,12 +5551,16 @@
     for (let i = 0; i < N; i++) {
       interp[i] = { x: interpC[i].x + sc.x, y: interpC[i].y + sc.y };
     }
-    // v19.26: emit corner-aware smoothed d instead of pure polygon.
-    // Sharp features on source/target are preserved at endpoints;
-    // gentle-curve regions are smoothed into cubic Beziers producing
-    // visually richer intermediate frames.  Falls back to the polygon
-    // emitter if the corner-aware path produces zero output (safety).
-    let dInterp = pointsToCornerAwarePathD(interp, analysis.closed, CORNER_ANGLE_DEG);
+    // v19.27: blend per-vertex strengths by t, emit continuous cubic
+    // Bezier segments with control handles interpolated between sharp
+    // (collapsed to endpoints) and smooth (Catmull-Rom).  No L/C
+    // topology change across the animation — eliminates the snap.
+    const nS = analysis.srcStrengths.length;
+    const strengths = new Array(nS);
+    for (let i = 0; i < nS; i++) {
+      strengths[i] = analysis.srcStrengths[i] * (1 - t) + analysis.tgtStrengths[i] * t;
+    }
+    let dInterp = pointsToBlendedBezierPathD(interp, analysis.closed, strengths);
     if (!dInterp) dInterp = pointsToPathD(interp, analysis.closed);
     if (!dInterp) { layer._morphDiag = { ok: false, reason: "Interpolation failed (unexpected)" }; return; }
     // Locate or create the morph <path> node.  If the source primitive
