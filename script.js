@@ -5262,6 +5262,77 @@
     if (closed) parts.push("Z");
     return parts.join(" ");
   }
+  // v19.26 Corner-Aware Smoothing.
+  //
+  // The baseline morph output is a 128-segment polygon (straight lines
+  // between sample points).  This produces visible faceting on curved
+  // regions of intermediate morph frames.  Catmull-Rom → cubic Bezier
+  // smoothing gives smooth curves everywhere — but destructively:
+  // sharp corners on source/target endpoints get rounded off.
+  //
+  // Corner-aware smoothing detects vertices where direction change
+  // exceeds a threshold (default 40°) and preserves those as line
+  // joins, only smoothing the gentle-curve regions.  Result: sharp
+  // features preserved at endpoints AND at intermediate frames where
+  // the corner still exists, smoother curves between them.  This is
+  // what Illustrator/Figma implicitly do via anchor classification.
+  //
+  // Isolated in a POC (morph-poc/morph-poc-v2.html) — this ships the
+  // same math into the main pipeline.  ~50 lines, no library.
+  const CORNER_ANGLE_DEG = 40;
+  function detectCornerIndices(pts, closed, thresholdDeg) {
+    const n = pts.length;
+    const corners = new Set();
+    // Angle between two edge vectors θ satisfies cos(θ) = dot/(|v1||v2|).
+    // We flag a corner when the direction changes by more than
+    // `thresholdDeg` — i.e., when cos(θ) < cos(thresholdDeg).
+    // Straight edge → cos(θ)=1, 90° corner → cos(θ)=0, reversal → -1.
+    const thresh = Math.cos(thresholdDeg * Math.PI / 180);
+    const get = (i) => pts[((i % n) + n) % n];
+    for (let i = 0; i < n; i++) {
+      if (!closed && (i === 0 || i === n - 1)) continue;
+      const a = get(i - 1), b = get(i), c = get(i + 1);
+      const v1x = b.x - a.x, v1y = b.y - a.y;
+      const v2x = c.x - b.x, v2y = c.y - b.y;
+      const l1 = Math.hypot(v1x, v1y), l2 = Math.hypot(v2x, v2y);
+      if (l1 < 0.001 || l2 < 0.001) continue;
+      const dot = (v1x * v2x + v1y * v2y) / (l1 * l2);
+      if (dot < thresh) corners.add(i);
+    }
+    return corners;
+  }
+  // Emit a corner-aware smoothed d string.  Line segments across
+  // corner vertices, cubic Bezier (Catmull-Rom to cubic conversion,
+  // tension = 0.5) across smooth regions.
+  function pointsToCornerAwarePathD(pts, closed, thresholdDeg) {
+    if (!pts || pts.length < 2) return "";
+    const corners = detectCornerIndices(pts, closed, thresholdDeg || CORNER_ANGLE_DEG);
+    const n = pts.length;
+    const get = (i) => {
+      if (closed) return pts[((i % n) + n) % n];
+      return pts[Math.max(0, Math.min(n - 1, i))];
+    };
+    const parts = [`M${pts[0].x.toFixed(3)},${pts[0].y.toFixed(3)}`];
+    const last = closed ? n : n - 1;
+    for (let i = 0; i < last; i++) {
+      const p1 = get(i), p2 = get(i + 1);
+      // If either endpoint of this segment is a corner, keep it as a
+      // line — preserves the sharpness.
+      if (corners.has(i % n) || corners.has((i + 1) % n)) {
+        parts.push(`L${p2.x.toFixed(3)},${p2.y.toFixed(3)}`);
+      } else {
+        const p0 = get(i - 1), p3 = get(i + 2);
+        // Catmull-Rom to cubic Bezier (tension = 0.5)
+        const c1x = p1.x + (p2.x - p0.x) / 6;
+        const c1y = p1.y + (p2.y - p0.y) / 6;
+        const c2x = p2.x - (p3.x - p1.x) / 6;
+        const c2y = p2.y - (p3.y - p1.y) / 6;
+        parts.push(`C${c1x.toFixed(3)},${c1y.toFixed(3)} ${c2x.toFixed(3)},${c2y.toFixed(3)} ${p2.x.toFixed(3)},${p2.y.toFixed(3)}`);
+      }
+    }
+    if (closed) parts.push("Z");
+    return parts.join(" ");
+  }
   // Find optimal cyclic shift of `target` points so that the
   // interpolation with `source` minimizes total squared distance.
   // O(N²) in point count — at N=128 this is 16k comparisons per
@@ -5453,7 +5524,13 @@
     for (let i = 0; i < N; i++) {
       interp[i] = { x: interpC[i].x + sc.x, y: interpC[i].y + sc.y };
     }
-    const dInterp = pointsToPathD(interp, analysis.closed);
+    // v19.26: emit corner-aware smoothed d instead of pure polygon.
+    // Sharp features on source/target are preserved at endpoints;
+    // gentle-curve regions are smoothed into cubic Beziers producing
+    // visually richer intermediate frames.  Falls back to the polygon
+    // emitter if the corner-aware path produces zero output (safety).
+    let dInterp = pointsToCornerAwarePathD(interp, analysis.closed, CORNER_ANGLE_DEG);
+    if (!dInterp) dInterp = pointsToPathD(interp, analysis.closed);
     if (!dInterp) { layer._morphDiag = { ok: false, reason: "Interpolation failed (unexpected)" }; return; }
     // Locate or create the morph <path> node.  If the source primitive
     // isn't a <path>, we swap in a <path> on first morph and restore
