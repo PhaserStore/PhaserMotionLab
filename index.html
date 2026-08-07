@@ -501,6 +501,52 @@
              Monochrome / Invert / Restore original are now surfaced
              inside the unified panel and via SVG Diagnostics. -->
 
+        <!-- v19.31 ALIGN — position operations for the selected layer(s).
+             With 1 layer selected: align to canvas edges/center.
+             With 2+ selected: align to selection bbox (Figma-style).
+             Distribute requires 3+ selected. -->
+        <section class="prop-group" id="alignGroup">
+          <div class="group-head"><h3>Align</h3></div>
+          <div id="alignEmpty" class="group-hint">Select a layer to align. Multi-select two or more for selection-relative alignment; three or more for distribute.</div>
+          <div id="alignBody" hidden>
+            <p class="group-hint" id="alignRef">Reference: canvas</p>
+            <div class="align-grid">
+              <button class="mini-btn" id="alignL"  title="Align left edges">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 2v12" stroke="currentColor" stroke-width="1.4"/><rect x="4" y="4" width="6" height="3" stroke="currentColor" stroke-width="1.2" fill="none"/><rect x="4" y="9" width="9" height="3" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+                Left
+              </button>
+              <button class="mini-btn" id="alignCH" title="Align horizontal centers">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2v12" stroke="currentColor" stroke-width="1.4"/><rect x="5" y="4" width="6" height="3" stroke="currentColor" stroke-width="1.2" fill="none"/><rect x="3" y="9" width="10" height="3" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+                Center H
+              </button>
+              <button class="mini-btn" id="alignR"  title="Align right edges">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M14 2v12" stroke="currentColor" stroke-width="1.4"/><rect x="6" y="4" width="6" height="3" stroke="currentColor" stroke-width="1.2" fill="none"/><rect x="3" y="9" width="9" height="3" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+                Right
+              </button>
+              <button class="mini-btn" id="alignT"  title="Align top edges">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 2h12" stroke="currentColor" stroke-width="1.4"/><rect x="4" y="4" width="3" height="6" stroke="currentColor" stroke-width="1.2" fill="none"/><rect x="9" y="4" width="3" height="9" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+                Top
+              </button>
+              <button class="mini-btn" id="alignCV" title="Align vertical centers">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 8h12" stroke="currentColor" stroke-width="1.4"/><rect x="4" y="5" width="3" height="6" stroke="currentColor" stroke-width="1.2" fill="none"/><rect x="9" y="3" width="3" height="10" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+                Middle
+              </button>
+              <button class="mini-btn" id="alignB"  title="Align bottom edges">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 14h12" stroke="currentColor" stroke-width="1.4"/><rect x="4" y="6" width="3" height="6" stroke="currentColor" stroke-width="1.2" fill="none"/><rect x="9" y="3" width="3" height="9" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+                Bottom
+              </button>
+              <button class="mini-btn" id="distH" title="Distribute horizontally (needs 3+)">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="5" width="3" height="6" stroke="currentColor" stroke-width="1.2" fill="none"/><rect x="6" y="5" width="3" height="6" stroke="currentColor" stroke-width="1.2" fill="none"/><rect x="12" y="5" width="3" height="6" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+                Dist H
+              </button>
+              <button class="mini-btn" id="distV" title="Distribute vertically (needs 3+)">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="5" y="1" width="6" height="3" stroke="currentColor" stroke-width="1.2" fill="none"/><rect x="5" y="6" width="6" height="3" stroke="currentColor" stroke-width="1.2" fill="none"/><rect x="5" y="12" width="6" height="3" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+                Dist V
+              </button>
+            </div>
+          </div>
+        </section>
+
         <!-- EVENT CLIPS ON LAYER -->
         <section class="prop-group" id="fxGroup">
           <div class="group-head"><h3>Event clips</h3></div>
@@ -703,6 +749,11 @@
       <button class="t-btn t-btn-toggle is-on" id="snapClipsBtn" title="Snap clip edges to other clip edges (magnetic timeline, default on).">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="6" width="5" height="4" stroke="currentColor" stroke-width="1.2"/><rect x="9" y="6" width="5" height="4" stroke="currentColor" stroke-width="1.2"/></svg>
         <span class="t-btn-label">Edges</span>
+      </button>
+      <!-- v19.31: Snap-to-marker toggle -->
+      <button class="t-btn t-btn-toggle" id="snapMarkerBtn" title="Snap clip edges + playhead to marker positions (off by default).">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 2v11l4-3 4 3V2" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M4 2h8" stroke="currentColor" stroke-width="1.2"/></svg>
+        <span class="t-btn-label">Markers</span>
       </button>
       <!-- v18.8: Fit-all + Zoom-to-selection -->
       <button class="t-btn" id="zoomFitAllBtn" title="Fit entire composition to timeline width (Shift+F)">
