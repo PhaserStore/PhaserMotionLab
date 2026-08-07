@@ -82,8 +82,11 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; }
 /* ============ BODY ============ */
 /* v19.1: body grid now has 4 columns.  The first (44px) is the
    dedicated creation-tools strip; the next three keep the previous
-   proportions for left panel, stage, and right panel. */
-.body { display: grid; grid-template-columns: 44px minmax(240px, 17%) 1fr minmax(258px, 18%); min-height: 0; }
+   proportions for left panel, stage, and right panel.
+   v19.35: right panel narrower (min 258 → 244) so it doesn't crowd
+   the right edge as tightly.  Prop-group padding also reduced below
+   so controls inside the right panel don't touch the panel edge. */
+.body { display: grid; grid-template-columns: 44px minmax(240px, 17%) 1fr minmax(244px, 17%); min-height: 0; }
 .panel-left, .panel-right { background: var(--panel); min-height: 0; display: flex; }
 .panel-left { border-right: 1px solid var(--border); }
 .panel-right { border-left: 1px solid var(--border); flex-direction: column; }
@@ -369,7 +372,7 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; }
 .fx-flash { z-index: 16; opacity: 0; transition: opacity 0.04s linear; }
 
 /* ============ RIGHT PANEL ============ */
-.prop-group { padding: 18px 16px; border-bottom: 1px solid var(--border); }
+.prop-group { padding: 16px 14px; border-bottom: 1px solid var(--border); }
 .group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 13px; }
 .group-head h3 { font-size: 13px; }
 .badge { font-size: 10px; font-weight: 600; color: var(--accent-2); background: var(--accent-soft); padding: 2px 8px; border-radius: 20px; border: 1px solid rgba(122,92,255,0.25); }
@@ -553,22 +556,35 @@ body.focus-mode .selection-box { display: none !important; }
   backdrop-filter: blur(8px);
 }
 .tl-controls {
-  display: flex; align-items: center; gap: 8px;
-  padding: 9px 16px;
+  display: flex; align-items: center; gap: 5px;
+  padding: 7px 12px;
   border-bottom: 1px solid var(--border);
-  /* v19.33: never wrap; if the viewport is too narrow the last
-     elements can be scrolled horizontally rather than pushing Zoom
-     to a second row.  Keeps the Zoom slider always visible on the
-     right at typical widths (1400px+). */
+  /* v19.35: overflow HIDDEN — the horizontal scrollbar produced by
+     auto in v19.33 rendered as a "large white line above the timeline"
+     because it sits right above the tracks region.  Combined with the
+     tighter spacing below, controls now fit at typical widths without
+     needing a scrollbar; if the viewport is truly too narrow the last
+     elements are clipped rather than showing a scrollbar. */
   flex-wrap: nowrap;
-  overflow-x: auto;
+  overflow-x: hidden;
   overflow-y: hidden;
-  scrollbar-width: thin;
 }
 .tl-controls > * { flex-shrink: 0; }
-/* Push the zoom cluster to the right — the auto-margin sticks it to
-   the right edge of the toolbar regardless of what's before it. */
+/* Push zoom cluster to the right regardless of what's before it. */
 .tl-controls .tl-zoom { margin-left: auto; }
+/* v19.35: tighter zoom slider — 90px instead of native 130px+. */
+.tl-controls .tl-zoom input[type="range"] { width: 88px; }
+/* v19.35: toggle buttons use shorter labels + tighter padding to
+   claw back horizontal space. */
+.tl-controls .t-btn { padding: 4px 7px; font-size: 11px; gap: 4px; }
+/* v19.35: icon-only toggle buttons on the timeline toolbar — the
+   tooltips still explain what each does, but hiding text saves
+   ~120px total across Frame/Playhead/Edges/Markers. */
+.tl-controls .t-btn-toggle .t-btn-label { display: none; }
+.tl-controls .t-btn-label { font-size: 11px; }
+.tl-controls .divider-v.small { margin: 0 2px; }
+/* v19.35: shorten the Duration label — visual only, saves ~30px. */
+.tl-controls .tl-label { font-size: 10px; letter-spacing: 0.04em; }
 .t-btn { width: 34px; height: 34px; border-radius: var(--r-sm); display: flex; align-items: center; justify-content: center; color: var(--text-2); transition: all var(--fast); }
 /* Item 2 — toolbar toggle button used by the frame-snap indicator.
    Wider than a regular icon-only .t-btn so the "Frame" label fits. */
@@ -1014,21 +1030,20 @@ body.focus-mode .status-bar { display: none !important; }
 }
 .ctx-menu-item:hover:not(.disabled) { background: var(--accent); color: white; }
 .ctx-menu-item.disabled { color: var(--text-3); cursor: not-allowed; }
-/* v19.32: transient snap-guide line rendered when magnetic snap fires.
-   Position is scene-time × pxPerSec (JS updates left).  Colored by
-   the target kind (playhead, marker, clip edge) so users can tell WHAT
-   the clip snapped to. */
+/* v19.32 → v19.35: transient snap-guide line.  Made much subtler:
+   1px width, ~50% max opacity, no glow, faster fade (180ms) so it
+   supports the workflow rather than dominating the timeline. */
 .tl-snap-guide {
   position: absolute; top: 0; bottom: 0;
-  width: 2px; margin-left: -1px;
+  width: 1px; margin-left: 0;
   opacity: 0; pointer-events: none;
   z-index: 4;
-  transition: opacity 220ms ease-out;
+  transition: opacity 160ms ease-out;
 }
-.tl-snap-guide.is-visible { opacity: 1; }
-.tl-snap-guide[data-kind="playhead"] { background: var(--accent-2); box-shadow: 0 0 8px var(--accent-2); }
-.tl-snap-guide[data-kind="marker"]   { background: #ffc85c; box-shadow: 0 0 8px #ffc85c; }
-.tl-snap-guide[data-kind="edge"]     { background: #ffffff; box-shadow: 0 0 8px rgba(255,255,255,0.5); }
+.tl-snap-guide.is-visible { opacity: 0.55; }
+.tl-snap-guide[data-kind="playhead"] { background: var(--accent-2); }
+.tl-snap-guide[data-kind="marker"]   { background: #ffc85c; }
+.tl-snap-guide[data-kind="edge"]     { background: rgba(255,255,255,0.7); }
 
 /* v19.32 Marker Grid Generator popover — dropdown from the toolbar
    button showing regular + progressive distribution options. */
