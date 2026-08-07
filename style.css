@@ -349,7 +349,13 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; }
 .fx { position: absolute; inset: 0; pointer-events: none; }
 .fx-scanlines { z-index: 10; background-image: repeating-linear-gradient(0deg, rgba(0,0,0,0.5) 0 1px, transparent 1px 3px); opacity: var(--scanline-op, 0); mix-blend-mode: multiply; }
 .fx-noise { z-index: 11; opacity: var(--noise-op, 0); mix-blend-mode: screen; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E"); }
-.fx-vignette { z-index: 12; box-shadow: inset 0 0 120px 20px rgba(0,0,0,0.5); }
+/* v19.32: fx-vignette permanently darkened the corners of the
+   artboard (inset shadow, 120px blur, 20px spread, 50% opacity).  It
+   had no dynamic control — nothing turned it off — and users were
+   seeing an unwanted "soft blur/vignette around image corners" in
+   every preview.  Made transparent by default; a future effect can
+   re-enable via --vignette-op CSS var if needed. */
+.fx-vignette { z-index: 12; box-shadow: inset 0 0 120px 20px rgba(0,0,0,var(--vignette-op, 0)); }
 
 .fx-hud { z-index: 15; font-family: ui-monospace, "SF Mono", monospace; }
 .hud-c { position: absolute; font-size: 10px; letter-spacing: 0.1em; color: rgba(255,255,255,0.7); text-shadow: 0 0 6px rgba(122,92,255,0.5); }
@@ -546,7 +552,23 @@ body.focus-mode .selection-box { display: none !important; }
   z-index: 100; pointer-events: none;
   backdrop-filter: blur(8px);
 }
-.tl-controls { display: flex; align-items: center; gap: 9px; padding: 9px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.tl-controls {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--border);
+  /* v19.33: never wrap; if the viewport is too narrow the last
+     elements can be scrolled horizontally rather than pushing Zoom
+     to a second row.  Keeps the Zoom slider always visible on the
+     right at typical widths (1400px+). */
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+.tl-controls > * { flex-shrink: 0; }
+/* Push the zoom cluster to the right — the auto-margin sticks it to
+   the right edge of the toolbar regardless of what's before it. */
+.tl-controls .tl-zoom { margin-left: auto; }
 .t-btn { width: 34px; height: 34px; border-radius: var(--r-sm); display: flex; align-items: center; justify-content: center; color: var(--text-2); transition: all var(--fast); }
 /* Item 2 — toolbar toggle button used by the frame-snap indicator.
    Wider than a regular icon-only .t-btn so the "Frame" label fits. */
@@ -629,6 +651,16 @@ body.focus-mode .selection-box { display: none !important; }
 }
 .tl-clip-time-input::placeholder { color: var(--text-3); opacity: 0.7; }
 .tl-clip-time-sep { color: var(--text-3); font-size: 12px; }
+/* v19.32: green flash confirms a commit landed — addresses the "field
+   effectively inactive" complaint. */
+.tl-clip-time-input.commit-flash,
+.timecode-input.commit-flash {
+  animation: commitFlash 500ms ease-out;
+}
+@keyframes commitFlash {
+  0%   { background: rgba(110, 231, 168, 0.35); border-color: rgba(110, 231, 168, 0.9); }
+  100% { background: var(--panel-2); }
+}
 
 /* v19.0 Tool button — used for Text (and future shape tools). */
 .tool-row { display: flex; gap: 6px; margin-bottom: 12px; padding: 6px; background: var(--panel-2); border-radius: var(--r-sm); border: 1px solid var(--border); }
@@ -832,6 +864,10 @@ body.focus-mode .status-bar { display: none !important; }
 .tl-marker.peak { background: rgba(255,180,84,0.55); }
 .tl-marker.manual { background: rgba(110,231,168,0.75); }
 .tl-marker.manual::before { content: ""; position: absolute; top: 0; left: -3px; width: 7px; height: 7px; background: var(--good); border-radius: 50%; }
+/* v19.32 grid-generated markers — amber, slightly translucent so they
+   don't compete with manual markers visually but remain scannable. */
+.tl-marker.grid { background: rgba(255, 200, 92, 0.55); }
+.tl-marker.grid::before { content: ""; position: absolute; top: 0; left: -2px; width: 5px; height: 5px; background: #ffc85c; border-radius: 50%; opacity: 0.85; }
 .tl-tracks-wrap { position: relative; }
 .tl-section-label { position: sticky; left: 0; padding: 6px 12px 4px; font-size: 9px; font-weight: 700; letter-spacing: 0.1em; color: var(--text-3); background: rgba(0,0,0,0.28); border-bottom: 1px solid var(--border); }
 .tl-tracks { position: relative; }
@@ -978,6 +1014,50 @@ body.focus-mode .status-bar { display: none !important; }
 }
 .ctx-menu-item:hover:not(.disabled) { background: var(--accent); color: white; }
 .ctx-menu-item.disabled { color: var(--text-3); cursor: not-allowed; }
+/* v19.32: transient snap-guide line rendered when magnetic snap fires.
+   Position is scene-time × pxPerSec (JS updates left).  Colored by
+   the target kind (playhead, marker, clip edge) so users can tell WHAT
+   the clip snapped to. */
+.tl-snap-guide {
+  position: absolute; top: 0; bottom: 0;
+  width: 2px; margin-left: -1px;
+  opacity: 0; pointer-events: none;
+  z-index: 4;
+  transition: opacity 220ms ease-out;
+}
+.tl-snap-guide.is-visible { opacity: 1; }
+.tl-snap-guide[data-kind="playhead"] { background: var(--accent-2); box-shadow: 0 0 8px var(--accent-2); }
+.tl-snap-guide[data-kind="marker"]   { background: #ffc85c; box-shadow: 0 0 8px #ffc85c; }
+.tl-snap-guide[data-kind="edge"]     { background: #ffffff; box-shadow: 0 0 8px rgba(255,255,255,0.5); }
+
+/* v19.32 Marker Grid Generator popover — dropdown from the toolbar
+   button showing regular + progressive distribution options. */
+.grid-popover {
+  position: fixed;
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  padding: 6px;
+  min-width: 220px;
+  z-index: 10000;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+  font-size: 12px;
+}
+.grid-pop-hd { font-size: 10px; font-weight: 700; color: var(--text-3); letter-spacing: 0.08em; text-transform: uppercase; padding: 4px 8px 8px; }
+.grid-pop-section { font-size: 9px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.1em; padding: 8px 8px 3px; border-top: 1px solid var(--border); margin-top: 3px; }
+.grid-pop-section:first-of-type { border-top: none; margin-top: 0; }
+.grid-pop-row {
+  padding: 6px 10px;
+  color: var(--text-1);
+  cursor: pointer;
+  border-radius: var(--r-xs);
+  display: flex; align-items: center; gap: 6px;
+}
+.grid-pop-row:hover { background: var(--accent); color: white; }
+.grid-pop-custom { cursor: default; }
+.grid-pop-custom:hover { background: transparent; color: var(--text-1); }
+.grid-pop-clear { color: var(--text-3); }
+.grid-pop-clear:hover { background: rgba(255, 100, 100, 0.2); color: white; }
 .fx-event { display: flex; align-items: center; gap: 6px; padding: 7px 9px; border-radius: var(--r-xs); border: 1px dashed rgba(156,134,255,0.4); background: rgba(122,92,255,0.06); color: var(--text-2); font-size: 11px; font-weight: 500; transition: all var(--fast); text-align: left; position: relative; }
 /* v19.3: multi-instance count badge — appears when a layer has ≥2
    clips of this effect.  Compact ×N pill on the button's right edge. */
