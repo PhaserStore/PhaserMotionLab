@@ -584,11 +584,27 @@ body.focus-mode .selection-box { display: none !important; }
 }
 
 /* v19.29: toolbar Start/End inputs.  Match timecode-input styling +
-   greyed appearance when no clip is selected. */
-.tl-clip-time { display: inline-flex; align-items: center; gap: 4px; }
+   greyed appearance when no clip is selected.
+   v19.30: added Clip name label + Duration + labeled D/S/E hints. */
+.tl-clip-time { display: inline-flex; align-items: center; gap: 3px; }
+.tl-clip-name {
+  font-size: 11px; color: var(--text-2);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  max-width: 96px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 0 6px;
+  border-right: 1px solid var(--border);
+  margin-right: 3px;
+  min-width: 20px;
+}
+.tl-clip-time-hint {
+  font-size: 9px; color: var(--text-3); text-transform: uppercase;
+  letter-spacing: 0.06em; padding: 0 1px 0 3px;
+  font-weight: 600;
+}
 .tl-clip-time-input {
-  min-width: 58px; width: 62px;
-  padding: 3px 6px;
+  min-width: 54px; width: 58px;
+  padding: 3px 5px;
   border-radius: var(--r-xs);
   border: 1px solid var(--border);
   background: var(--panel-2);
@@ -779,11 +795,38 @@ body.focus-mode .status-bar { display: none !important; }
 .audio-name { font-size: 12px; color: var(--text-3); max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .tl-body { position: relative; flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 0; }
-.tl-ruler { position: sticky; top: 0; height: 22px; background: rgba(0,0,0,0.3); border-bottom: 1px solid var(--border); z-index: 2; }
-.tl-tick { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--border); padding-left: 4px; display: flex; align-items: center; font-size: 9px; color: var(--text-3); font-variant-numeric: tabular-nums; }
-/* Minor ticks: half-seconds when zoomed in, frames when zoomed way in. */
-.tl-tick-minor { position: absolute; top: 8px; bottom: 6px; border-left: 1px solid rgba(255, 255, 255, 0.08); pointer-events: none; }
-.tl-tick-frame { position: absolute; top: 14px; bottom: 10px; border-left: 1px solid rgba(255, 255, 255, 0.045); pointer-events: none; }
+/* v19.30 ruler upgrade — bigger, brighter, more legible.
+   - Height 22 → 28px so labels breathe
+   - Slightly darker background contrasts against tracks
+   - Border-bottom accent so the ruler feels like a distinct band
+   - Major-second ticks: full-height + brighter border + white label
+   - 5-second labels get emphasis so users can scan long timelines
+   - Half-second ticks and frame ticks stay subtle to avoid clutter */
+.tl-ruler {
+  position: sticky; top: 0; height: 28px;
+  background: linear-gradient(180deg, rgba(0,0,0,0.55), rgba(0,0,0,0.35));
+  border-bottom: 1px solid var(--border-strong);
+  z-index: 2;
+}
+.tl-tick {
+  position: absolute; top: 0; bottom: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.22);
+  padding-left: 5px;
+  display: flex; align-items: center;
+  font-size: 10px; color: var(--text-2);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+/* Every 5-second tick gets extra prominence for easy scanning. */
+.tl-tick.major-5 {
+  border-left-color: rgba(255, 255, 255, 0.45);
+  color: var(--text);
+  font-weight: 600;
+}
+.tl-tick-minor { position: absolute; top: 12px; bottom: 4px; border-left: 1px solid rgba(255, 255, 255, 0.12); pointer-events: none; }
+.tl-tick-frame { position: absolute; top: 18px; bottom: 6px; border-left: 1px solid rgba(255, 255, 255, 0.06); pointer-events: none; }
 .tl-marker { position: absolute; top: 0; bottom: 0; width: 1px; pointer-events: none; z-index: 1; }
 .tl-marker.beat { background: rgba(122,92,255,0.35); }
 .tl-marker.peak { background: rgba(255,180,84,0.55); }
@@ -843,7 +886,23 @@ body.focus-mode .status-bar { display: none !important; }
 .tl-clip.audio.voice { background: linear-gradient(180deg, rgba(110,231,168,0.55), rgba(60,180,120,0.32)); border-color: var(--good); }
 .tl-clip.audio.muted { opacity: 0.35; filter: grayscale(0.4); }
 
-.tl-playhead { position: absolute; top: 22px; bottom: 0; width: 1.5px; background: var(--accent-2); box-shadow: 0 0 10px var(--accent-glow); left: 0; z-index: 3; pointer-events: none; }
+.tl-playhead { position: absolute; top: 28px; bottom: 0; width: 1.5px; background: var(--accent-2); box-shadow: 0 0 10px var(--accent-glow); left: 0; z-index: 3; pointer-events: none; }
+/* v19.30: floating time badge on the playhead — shows current
+   playhead position at all times so users have precision feedback
+   without looking at the toolbar timecode input. */
+.tl-playhead-time {
+  position: absolute; top: -26px; left: 50%; transform: translateX(-50%);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 10px; font-weight: 600;
+  color: var(--text);
+  background: var(--accent-2);
+  padding: 2px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
 /* Playhead handle at the top — the grabbable disc.  Enlarged hit
    area so it's easy to catch the pointer at any zoom level.  The
    pseudo-element itself gets pointer-events auto because the parent
