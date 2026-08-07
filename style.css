@@ -937,6 +937,47 @@ body.focus-mode .status-bar { display: none !important; }
 .fx-event-grid-inner { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 4px; }
 .fx-event-group-hd { font-size: 9px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-3); margin: 10px 0 4px; padding-left: 2px; opacity: 0.75; transition: color 200ms ease, background 200ms ease; border-radius: 3px; }
 .fx-event-group-hd.group-hd-flash { color: var(--accent); background: rgba(122, 92, 255, 0.15); opacity: 1; }
+/* v19.31 Align grid — 4x2 buttons of consistent size with icon + label. */
+.align-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  margin-top: 8px;
+}
+.align-grid .mini-btn {
+  display: flex; align-items: center; gap: 4px;
+  justify-content: flex-start;
+  font-size: 11px;
+  padding: 4px 6px;
+}
+.align-grid .mini-btn svg { flex-shrink: 0; }
+.align-grid .mini-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* v19.31 right-click context menu.  Small popover styled to match
+   the toolbar palette; used for per-layer actions (Replace Asset,
+   future: Duplicate, Isolate, Lock). */
+.ctx-menu {
+  position: fixed;
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-xs);
+  padding: 4px;
+  min-width: 160px;
+  z-index: 10000;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+.ctx-menu-item {
+  display: block; width: 100%;
+  background: transparent; border: none;
+  color: var(--text-1);
+  font-size: 12px;
+  text-align: left;
+  padding: 6px 10px;
+  cursor: pointer;
+  border-radius: var(--r-xs);
+}
+.ctx-menu-item:hover:not(.disabled) { background: var(--accent); color: white; }
+.ctx-menu-item.disabled { color: var(--text-3); cursor: not-allowed; }
 .fx-event { display: flex; align-items: center; gap: 6px; padding: 7px 9px; border-radius: var(--r-xs); border: 1px dashed rgba(156,134,255,0.4); background: rgba(122,92,255,0.06); color: var(--text-2); font-size: 11px; font-weight: 500; transition: all var(--fast); text-align: left; position: relative; }
 /* v19.3: multi-instance count badge — appears when a layer has ≥2
    clips of this effect.  Compact ×N pill on the button's right edge. */
