@@ -151,17 +151,17 @@
     { key: "rgbSpike",        label: "RGB Spike",        defDur: 0.12, group: "core" },
     { key: "hardCutEvent",    label: "Hard Cut",         defDur: 0.08, group: "core" },
     { key: "radarSweep",      label: "Radar Sweep",      defDur: 1.50, group: "core" },
-    { key: "scanRevealEvent", label: "Scan Reveal",      defDur: 0.90, group: "core", placement: "layerStart" },
+    { key: "scanRevealEvent", label: "Scan Reveal",      defDur: 0.90, group: "core", placement: "layerStart", persistEnd: true },
     { key: "coordBlinkEvt",   label: "Coordinate Blink", defDur: 0.30, group: "core" },
     { key: "dataBreakEvent",  label: "Data Break",       defDur: 0.18, group: "core" },
     { key: "pathEnergize",    label: "Path Energize",    defDur: 1.20, group: "core" },
-    { key: "layerSwap",       label: "Layer Swap",       defDur: 0.10, group: "core" },
-    { key: "textReplace",     label: "Text Replace",     defDur: 0.30, group: "core" },
+    { key: "layerSwap",       label: "Layer Swap",         defDur: 0.10, group: "core",    persistEnd: true },
+    { key: "textReplace",     label: "Text Replace",       defDur: 0.30, group: "core",    persistEnd: true },
     // --- REVEAL effects (migrated from FX_LIBRARY, default at layer start) ---
-    { key: "blurIn",       label: "Blur In",           defDur: 0.80, group: "reveal",  placement: "layerStart", sustained: true },
-    { key: "lineDraw",     label: "Line Draw",         defDur: 1.20, group: "reveal",  placement: "layerStart", sustained: true },
-    { key: "trimPaths",    label: "Trim Paths",        defDur: 1.00, group: "reveal",  placement: "layerStart", sustained: true },
-    { key: "symbolTrans",  label: "Symbol Transition", defDur: 0.50, group: "reveal",  sustained: true },
+    { key: "blurIn",       label: "Blur In",           defDur: 0.80, group: "reveal",  placement: "layerStart", sustained: true, persistEnd: true },
+    { key: "lineDraw",     label: "Line Draw",         defDur: 1.20, group: "reveal",  placement: "layerStart", sustained: true, persistEnd: true },
+    { key: "trimPaths",    label: "Trim Paths",        defDur: 1.00, group: "reveal",  placement: "layerStart", sustained: true, persistEnd: true },
+    { key: "symbolTrans",  label: "Symbol Transition", defDur: 0.50, group: "reveal",  sustained: true, persistEnd: true },
     // --- SUSTAINED effects (migrated from FX_LIBRARY, cover full layer by default) ---
     { key: "pulseGlow",    label: "Pulse Glow",   defDur: "layer", group: "sustained", placement: "layerStart", sustained: true },
     { key: "hudOverlay",   label: "HUD Overlay",  defDur: "layer", group: "sustained", placement: "layerStart", sustained: true },
@@ -200,21 +200,21 @@
     // only), this works on any filled artwork — imports, native
     // shapes, text — because it clips at the layer wrap level and
     // never mutates fills / gradients / colors.
-    { key: "fillReveal",       label: "Fill Reveal",        defDur: 1.20, group: "vector", placement: "layerStart" },
+    { key: "fillReveal",       label: "Fill Reveal",        defDur: 1.20, group: "vector", placement: "layerStart", persistEnd: true },
     // v19.14 SEGMENT REVEAL — reveals individual primitives inside an
     // SVG sequentially rather than wiping the composite.  Modes:
     // sequential, sequential-reverse, random (seeded), center-out,
     // edges-in.  Falls back to a single-primitive reveal on native
     // SHAPE layers.  Uses per-primitive opacity — preserves fills,
     // gradients, and stroke/fill colors exactly.
-    { key: "segmentReveal",    label: "Segment Reveal",     defDur: 1.60, group: "vector", placement: "layerStart" },
+    { key: "segmentReveal",    label: "Segment Reveal",     defDur: 1.60, group: "vector", placement: "layerStart", persistEnd: true },
     // v19.14 EXPANSION BUILD — transition from small centered graphic
     // to full-frame visual.  Computes the target scale automatically
     // from the canvas / layer size ratio so the layer fills the frame
     // at p=1.  Optional cross-effects: fade during expansion, rotate
     // during expansion.  This is a transform/opacity delta, not a
     // vector-DOM mutation, so it works on every layer kind.
-    { key: "expansionBuild",   label: "Expansion Build",    defDur: 1.50, group: "vector", placement: "layerStart" },
+    { key: "expansionBuild",   label: "Expansion Build",    defDur: 1.50, group: "vector", placement: "layerStart", persistEnd: true },
     // v19.9 Morphing v1 — path-to-path interpolation.  Supports:
     //   rect ↔ rect · circle ↔ circle · ellipse ↔ ellipse · line ↔ line
     //   polygon ↔ polygon (same side count)
@@ -224,7 +224,7 @@
     // mismatch, TEXT layers, multi-primitive SVG interpolation.  These
     // cases report through the clip inspector's compatibility badge
     // and skip the morph gracefully.
-    { key: "shapeMorph",       label: "Shape Morph",        defDur: 1.00, group: "vector" },
+    { key: "shapeMorph",       label: "Shape Morph",        defDur: 1.00, group: "vector", persistEnd: true },
     // --- SIGNAL / GLITCH events ---
     { key: "terminalBlink",   label: "Terminal Blink",   defDur: 0.35, group: "signal" },
     { key: "signalDrop",      label: "Signal Drop",      defDur: 0.18, group: "signal" },
@@ -4489,11 +4489,25 @@
   function activeEventClipsAt(layer, t) {
     if (!layer.clips || !layer.clips.length) return [];
     const layerStart = layer.start;
-    return layer.clips.filter((c) => {
-      if (c.enabled === false) return false; // disabled clip: still visible on timeline, no effect
+    const out = [];
+    for (const c of layer.clips) {
+      if (c.enabled === false) continue; // disabled clip: still visible on timeline, no effect
       const s = layerStart + c.start, e = s + c.duration;
-      return t >= s && t <= e;
-    }).map((c) => ({ c, p: clamp01((t - (layerStart + c.start)) / Math.max(0.001, c.duration)) }));
+      if (t >= s && t <= e) {
+        // Active — normal progress computation.
+        out.push({ c, p: clamp01((t - s) / Math.max(0.001, c.duration)) });
+      } else if (t > e) {
+        // v19.34: after a clip ends, if it's a persistEnd effect, keep
+        // it in the pipeline at p=1.0 so its final state persists.
+        // Only within the layer's own visible window — outside the
+        // layer's start+duration the layer itself is hidden anyway.
+        const def = FX_EVENT_DEF.get(c.fxKey);
+        if (def && def.persistEnd && t <= layerStart + layer.duration + 0.001) {
+          out.push({ c, p: 1 });
+        }
+      }
+    }
+    return out;
   }
 
   /* ============ VIDEO / TIMELINE SYNC (Phase 2) ================
@@ -5263,15 +5277,19 @@
   }
   function paintIfPaused() {
     if (STATE.playing) return;
-    // If there's a layer that has an event clip active at the current
-    // playhead, paint an animated frame so event params visibly affect
-    // the preview. Otherwise fall back to the plain static frame.
-    // v19.20 (Option A′): only top-level layers can have active clips
-    // now — member clips are suspended when grouped.
-    const t = STATE.time;
-    const hasActiveEvent = layers.some((L) => activeEventClipsAt(L, t).length > 0);
-    if (hasActiveEvent) renderOneAnimatedFrame();
-    else renderStaticFrame();
+    // v19.34: always take the animated path when paused.  Previously
+    // we only ran renderOneAnimatedFrame when a clip was currently
+    // within its [start, end] window; renderStaticFrame skipped
+    // composeLayer entirely, which meant:
+    //   - Scrubbing between effect clips reset the layer to base state
+    //     even for effects that should persist their end state (fill
+    //     reveal, line draw, morph, segment reveal, expansion build).
+    //   - Layer-level animation and any "just past end" persistence
+    //     couldn't be shown while paused.
+    // The animated path runs the full effect pipeline against t and
+    // uses each effect's own logic to decide what state to render —
+    // including the persist-past-end handling added below.
+    renderOneAnimatedFrame();
   }
 
   // Line Draw / Trim Paths: animate stroke-dasharray/offset on SVG strokes.
@@ -10932,25 +10950,30 @@
       if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
         e.preventDefault();
         const dir = e.key === "ArrowLeft" ? -1 : 1;
-        if (clipCtx) {
-          // Nudge or trim the selected clip.
+        // v19.34: prioritize playhead seek — matches user request for
+        // "precise frame-by-frame scrubbing".  Alt-Arrow now nudges
+        // the selected clip; Alt-Shift-Arrow trims its end.  Plain
+        // Arrow always seeks, regardless of selection state.
+        if (e.altKey && clipCtx) {
           const ec = selectedEventClip ? selectedEventClip.ec : selectedAudioClip;
           const layer = selectedEventClip ? selectedEventClip.layer : null;
           const layerDur = layer ? layer.duration : STATE.duration;
-          if (e.altKey) {
-            // Trim end (right edge): grow/shrink by ±step.
+          if (e.shiftKey) {
+            // Alt+Shift+Arrow → trim end.
             const newDur = clamp(ec.duration + dir * secStep, MIN_CLIP_DUR,
               Math.max(MIN_CLIP_DUR, layerDur - ec.start));
             ec.duration = Math.round(newDur * fps) / fps;
           } else {
-            // Move clip.
+            // Alt+Arrow → move clip.
             const maxStart = Math.max(0, layerDur - ec.duration);
             const newStart = clamp(ec.start + dir * secStep, 0, maxStart);
             ec.start = Math.round(newStart * fps) / fps;
           }
           renderTimeline(); renderClipInspector(); paintIfPaused();
         } else {
-          // No clip selected → playhead nudge.
+          // Plain Arrow (or Shift-Arrow for 10-frame jumps) → seek.
+          // paintIfPaused runs the effect pipeline so the scrubbed
+          // frame renders correctly.
           if (typeof seekTo === "function") seekTo(STATE.time + dir * secStep);
         }
       } else if (e.key === "Home") {
