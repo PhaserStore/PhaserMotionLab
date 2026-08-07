@@ -40,7 +40,7 @@
     smoothing: 60, peakThreshold: 60, motionIntensity: 65, syncTightness: 65,
     audioReactive: true, snapBeat: false, autoKeyframes: false, snapFrame: true,
     // v18.8 timeline precision — magnetic snapping for clip edges
-    snapPlayhead: true, snapClipEdges: true,
+    snapPlayhead: true, snapClipEdges: true, snapMarker: false,
     // v19.0 tool mode — "select" is the default; other tools ("text", future
     // "rect"/"ellipse"/"line") temporarily change canvas click behavior.
     tool: "select",
@@ -593,6 +593,120 @@
     img.onload = () => registerAsset(name, "IMG", img, dataUrl, { natW: img.naturalWidth || 512, natH: img.naturalHeight || 512, complex: false });
     img.onerror = () => toast(`Couldn't load ${name}`);
     img.src = dataUrl; img.alt = name;
+  }
+
+  /* v19.31 Replace Asset — swap a layer's underlying image / SVG / video
+   * source while preserving position, size, rotation, timeline timing,
+   * clips, effects, and animations.  Only the source content changes.
+   *
+   * Scope for v1:
+   *   IMG ↔ IMG, IMG ↔ SVG, SVG ↔ IMG, SVG ↔ SVG all supported.
+   *   VIDEO source replacement not yet — WebCodecs re-init is a
+   *   bigger surgery.  Attempted replace of VIDEO source shows a
+   *   "not yet" toast so the user knows why.
+   *
+   * The layer's transform (cx, cy, wPct, hPct, rot, opacity) is
+   * preserved verbatim — so the new asset shows up at the same
+   * canvas position and size as the original.  If the new asset
+   * has a different aspect ratio, that's user's call to fix. */
+  function replaceLayerAsset(layer, file) {
+    if (!layer || !file) return;
+    if (layer.kind === "VIDEO") {
+      toast("Replace on video layers not yet supported — coming soon");
+      return;
+    }
+    if (layer.kind === "TEXT" || layer.kind === "GROUP") {
+      toast(`Cannot replace asset on ${layer.kind} layers`);
+      return;
+    }
+    const name = file.name;
+    const reader = new FileReader();
+    const isSvg = file.type.includes("svg") || name.toLowerCase().endsWith(".svg");
+    const isImg = file.type.startsWith("image/");
+    if (!isSvg && !isImg) {
+      toast("Replace: only image / SVG supported in v1");
+      return;
+    }
+    reader.onload = (e) => {
+      if (isSvg) {
+        try {
+          const doc = new DOMParser().parseFromString(e.target.result, "image/svg+xml");
+          const svg = doc.querySelector("svg");
+          if (!svg || doc.querySelector("parsererror")) { toast(`Couldn't read ${name}`); return; }
+          let vb = svg.getAttribute("viewBox");
+          let w = parseFloat(svg.getAttribute("width")) || 0, h = parseFloat(svg.getAttribute("height")) || 0;
+          if (!vb) { if (!w) w = 300; if (!h) h = 300; svg.setAttribute("viewBox", `0 0 ${w} ${h}`); vb = `0 0 ${w} ${h}`; }
+          const parts = vb.split(/[\s,]+/).map(Number);
+          const natW = w || parts[2] || 300, natH = h || parts[3] || 300;
+          svg.removeAttribute("width"); svg.removeAttribute("height");
+          svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+          swapLayerNode(layer, "SVG", document.importNode(svg, true), natW, natH, name);
+        } catch (err) { toast(`Couldn't read ${name}`); }
+      } else {
+        const img = new Image();
+        img.onload = () => {
+          swapLayerNode(layer, "IMG", img, img.naturalWidth || 512, img.naturalHeight || 512, name);
+        };
+        img.onerror = () => toast(`Couldn't load ${name}`);
+        img.src = e.target.result; img.alt = name;
+      }
+    };
+    if (isSvg) reader.readAsText(file); else reader.readAsDataURL(file);
+  }
+
+  /* Perform the actual DOM swap.  layer.wrap is preserved (it holds
+     the transform / rotation / clip-path etc); only the inner .node
+     is replaced.  natW/natH update so aspect-aware effects behave
+     correctly against the new content.  layer.transform is untouched
+     — the visual size on canvas stays the same, so a landscape photo
+     replaced with a portrait one will letterbox unless the user
+     resizes deliberately. */
+  function swapLayerNode(layer, newKind, newNode, natW, natH, newName) {
+    if (!layer.wrap) return;
+    // Remove old node from the wrap.  layer.node may have sibling
+    // decorations (selection helpers, morph path) — remove only the
+    // node itself.
+    if (layer.node && layer.node.parentNode === layer.wrap) {
+      layer.wrap.removeChild(layer.node);
+    }
+    layer.node = newNode;
+    layer.kind = newKind;
+    layer.natW = natW;
+    layer.natH = natH;
+    layer.name = newName || layer.name;
+    // Clear kind-specific caches that referenced the OLD node's DOM.
+    layer._primitives = null; layer._strokes = null;
+    layer._segmentPrims = null; layer._segmentOrder = null;
+    layer._morphPath = null; layer._morphApplied = false;
+    layer.originalColors = null; layer._svgOriginalSnapshot = null;
+    // Give the new SVG node the same wrapping behavior as an imported one.
+    if (newKind === "SVG") {
+      newNode.setAttribute("width",  "100%");
+      newNode.setAttribute("height", "100%");
+      splitTextNodes(newNode);
+    } else if (newKind === "IMG") {
+      newNode.style.width = "100%"; newNode.style.height = "100%";
+      newNode.style.objectFit = "fill";   // matches how IMG layers render inside the wrap
+    }
+    layer.wrap.appendChild(newNode);
+    renderLayers(); renderInspector(); paintIfPaused();
+    toast(`Replaced with ${newName}`);
+  }
+
+  /* Public entry: prompt the user for a file and replace `layer`. */
+  function promptReplaceAsset(layer) {
+    if (!layer) return;
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*,.svg";
+    input.style.display = "none";
+    input.addEventListener("change", () => {
+      const file = input.files && input.files[0];
+      if (file) replaceLayerAsset(layer, file);
+      document.body.removeChild(input);
+    });
+    document.body.appendChild(input);
+    input.click();
   }
 
   /* =============== PATH B — WebCodecs VideoSource =====================
@@ -2235,6 +2349,49 @@
       layers.splice(Math.max(0, to), 0, dragLayer);
       renderLayers(); renderTimeline();
     });
+    // v19.31: right-click → Replace Asset context menu.
+    li.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      showLayerContextMenu(e.clientX, e.clientY, layer);
+    });
+  }
+
+  /* v19.31 lightweight context menu.  Positioned at pointer, dismissed
+     on any click outside or Escape.  Currently one action (Replace
+     Asset) — the plumbing is generic so we can add more later
+     (Duplicate, Isolate, Lock, etc.). */
+  let _ctxMenuEl = null;
+  function dismissContextMenu() {
+    if (_ctxMenuEl && _ctxMenuEl.parentNode) _ctxMenuEl.parentNode.removeChild(_ctxMenuEl);
+    _ctxMenuEl = null;
+    document.removeEventListener("click", dismissContextMenu, true);
+    document.removeEventListener("keydown", _ctxEscHandler, true);
+  }
+  function _ctxEscHandler(e) { if (e.key === "Escape") dismissContextMenu(); }
+  function showLayerContextMenu(x, y, layer) {
+    dismissContextMenu();
+    const menu = document.createElement("div");
+    menu.className = "ctx-menu";
+    menu.style.left = x + "px"; menu.style.top = y + "px";
+    const canReplace = layer && (layer.kind === "IMG" || layer.kind === "SVG");
+    const items = [
+      { label: "Replace Asset…", disabled: !canReplace, action: () => promptReplaceAsset(layer),
+        note: layer.kind === "VIDEO" ? "(video not yet)" : layer.kind === "TEXT" ? "(text not applicable)" : "" },
+    ];
+    items.forEach((it) => {
+      const btn = document.createElement("button");
+      btn.className = "ctx-menu-item" + (it.disabled ? " disabled" : "");
+      btn.textContent = it.label + (it.note ? "  " + it.note : "");
+      if (!it.disabled) btn.addEventListener("click", (ev) => { ev.stopPropagation(); it.action(); dismissContextMenu(); });
+      menu.appendChild(btn);
+    });
+    document.body.appendChild(menu);
+    _ctxMenuEl = menu;
+    // Register dismissal handlers after the current event completes.
+    setTimeout(() => {
+      document.addEventListener("click", dismissContextMenu, true);
+      document.addEventListener("keydown", _ctxEscHandler, true);
+    }, 0);
   }
   function applyZOrder() { layers.forEach((layer, i) => { if (layer.wrap) layer.wrap.style.zIndex = String(i + 1); }); }
 
@@ -2372,6 +2529,23 @@
     const has = !!selectedLayer;
     el.transformEmpty.hidden = has; el.transformBody.hidden = !has;
     el.fxEmpty.hidden = has; el.fxBody.hidden = !has;
+    // v19.31: Align panel visibility + reference label + distribute enablement.
+    const alignEmpty = document.getElementById("alignEmpty");
+    const alignBody  = document.getElementById("alignBody");
+    const alignRef   = document.getElementById("alignRef");
+    const distH      = document.getElementById("distH");
+    const distV      = document.getElementById("distV");
+    if (alignEmpty && alignBody) {
+      alignEmpty.hidden = has; alignBody.hidden = !has;
+      if (has) {
+        const nSel = (selectedLayers && selectedLayers.length) || 1;
+        if (alignRef) alignRef.textContent = nSel >= 2
+          ? `Reference: selection (${nSel} layers)`
+          : "Reference: canvas";
+        if (distH) distH.disabled = nSel < 3;
+        if (distV) distV.disabled = nSel < 3;
+      }
+    }
     const isSvg = has && selectedLayer.kind === "SVG";
     const isVideo = has && selectedLayer.kind === "VIDEO";
     const isText = has && selectedLayer.kind === "TEXT";
@@ -3818,6 +3992,11 @@
     // Collect all snap targets in scene time.
     const targets = [];
     if (STATE.snapPlayhead) targets.push(STATE.time);
+    // v19.31 Snap to Marker.  When enabled, marker times participate
+    // in the same magnetic-snap logic as playhead / clip edges.
+    if (STATE.snapMarker) {
+      for (const m of markers) targets.push(m.time);
+    }
     if (STATE.snapClipEdges) {
       // Layer boundaries + event clip edges from every layer.
       layers.forEach((l) => {
@@ -9311,8 +9490,9 @@
       if (k === "v") { e.preventDefault(); scrollToEventGroup("vector"); return; }
       if (k === "g") { e.preventDefault(); scrollToEventGroup("signal"); return; }
       if (k === "a") {
+        // v19.31: real Align shortcut — opens the Align panel.
         e.preventDefault();
-        toast("Align tools not yet available in v19 — coming soon");
+        scrollInspectorTo("alignGroup");
         return;
       }
       if (k === "b") {
@@ -9547,6 +9727,74 @@
       toast(`Colors inverted · ${n} primitive${n===1?"":"s"}`);
       paintIfPaused(); renderInspector();
     });
+
+    /* v19.31 Align tools.  Operates on selectedLayers (multi) or
+       selectedLayer (single).  Reference frame:
+         - 1 layer selected → canvas (0-100 percent bounds)
+         - 2+ layers selected → union bbox of selected layers
+       Distribute (H/V) requires 3+ selected.
+       Coordinates: cx/cy are the center of the layer in canvas percent.
+       wPct/hPct are the layer's on-canvas width/height in percent. */
+    function getAlignTargets() {
+      const sel = (selectedLayers && selectedLayers.length ? selectedLayers : (selectedLayer ? [selectedLayer] : []));
+      return sel.filter((L) => L && L.transform);
+    }
+    function alignReferenceBounds(targets) {
+      if (targets.length >= 2) {
+        // Union bbox in canvas-percent coordinates.
+        let minL = Infinity, minT = Infinity, maxR = -Infinity, maxB = -Infinity;
+        for (const L of targets) {
+          const t = L.transform;
+          const left = t.cx - t.wPct / 2, right = t.cx + t.wPct / 2;
+          const top  = t.cy - t.hPct / 2, bot   = t.cy + t.hPct / 2;
+          if (left < minL) minL = left; if (right > maxR) maxR = right;
+          if (top  < minT) minT = top;  if (bot   > maxB) maxB = bot;
+        }
+        return { left: minL, right: maxR, top: minT, bottom: maxB,
+                 cxMid: (minL + maxR) / 2, cyMid: (minT + maxB) / 2 };
+      }
+      // Single-selection: reference is the canvas (0 to 100 percent).
+      return { left: 0, right: 100, top: 0, bottom: 100, cxMid: 50, cyMid: 50 };
+    }
+    function doAlign(mode) {
+      const targets = getAlignTargets();
+      if (!targets.length) return;
+      const ref = alignReferenceBounds(targets);
+      for (const L of targets) {
+        const t = L.transform;
+        if      (mode === "L")  t.cx = ref.left  + t.wPct / 2;
+        else if (mode === "R")  t.cx = ref.right - t.wPct / 2;
+        else if (mode === "CH") t.cx = ref.cxMid;
+        else if (mode === "T")  t.cy = ref.top    + t.hPct / 2;
+        else if (mode === "B")  t.cy = ref.bottom - t.hPct / 2;
+        else if (mode === "CV") t.cy = ref.cyMid;
+      }
+      renderInspector(); paintIfPaused();
+      toast(`Aligned ${targets.length} layer${targets.length===1?"":"s"}: ${mode}`);
+    }
+    function doDistribute(axis) {
+      const targets = getAlignTargets();
+      if (targets.length < 3) { toast("Distribute needs 3+ selected layers"); return; }
+      // Sort by axis, keep extremes fixed, evenly space the middle ones.
+      const key = axis === "H" ? "cx" : "cy";
+      const sorted = targets.slice().sort((a, b) => a.transform[key] - b.transform[key]);
+      const first = sorted[0].transform[key], last = sorted[sorted.length - 1].transform[key];
+      const gap = (last - first) / (sorted.length - 1);
+      for (let i = 1; i < sorted.length - 1; i++) {
+        sorted[i].transform[key] = first + gap * i;
+      }
+      renderInspector(); paintIfPaused();
+      toast(`Distributed ${targets.length} layers ${axis === "H" ? "horizontally" : "vertically"}`);
+    }
+    const alignBtn = (id, fn) => { const b = document.getElementById(id); if (b) b.addEventListener("click", fn); };
+    alignBtn("alignL",  () => doAlign("L"));
+    alignBtn("alignR",  () => doAlign("R"));
+    alignBtn("alignCH", () => doAlign("CH"));
+    alignBtn("alignT",  () => doAlign("T"));
+    alignBtn("alignB",  () => doAlign("B"));
+    alignBtn("alignCV", () => doAlign("CV"));
+    alignBtn("distH",   () => doDistribute("H"));
+    alignBtn("distV",   () => doDistribute("V"));
 
     /* Text inspector bindings — write back to the selected text layer. */
     function wireTextInput(elmt, patchFn) {
@@ -10295,6 +10543,14 @@
       el.snapClipsBtn.classList.toggle("is-on", STATE.snapClipEdges);
       toast(STATE.snapClipEdges ? "Snap to clip edges: ON" : "Snap to clip edges: OFF");
     });
+    // v19.31 Snap-to-Marker toggle.  Off by default so it's an opt-in
+    // for timing-based workflows.
+    const snapMarkerBtn = document.getElementById("snapMarkerBtn");
+    if (snapMarkerBtn) snapMarkerBtn.addEventListener("click", () => {
+      STATE.snapMarker = !STATE.snapMarker;
+      snapMarkerBtn.classList.toggle("is-on", STATE.snapMarker);
+      toast(STATE.snapMarker ? "Snap to markers: ON" : "Snap to markers: OFF");
+    });
     // v18.8: Fit-all + zoom-to-selection buttons.
     if (el.zoomFitAllBtn) el.zoomFitAllBtn.addEventListener("click", () => zoomFitAll());
     if (el.zoomToSelBtn) el.zoomToSelBtn.addEventListener("click", () => {
@@ -10500,8 +10756,17 @@
     //   - Editing End changes Duration (keeping Start).
     //   - Editing Duration changes End (keeping Start).
     // Frame inputs convert via current fps, then use the same logic.
-    function commitClipTime(kind, secValue) {
+    // v19.31: `fromDrag` flag distinguishes mouse-drag calls (where
+    // frame snap prevents sub-pixel jitter and is genuinely useful)
+    // from typed numeric input (where the user has explicitly stated
+    // the value they want and frame snap only corrupts precision).
+    // Typing "2.750" at 30fps used to yield 2.767 because frame snap
+    // rounded to the nearest 30fps frame.  With fromDrag=false, the
+    // exact typed value is respected — matching how a Playhead
+    // Position field would behave.
+    function commitClipTime(kind, secValue, fromDrag = false) {
       const fps = STATE.fps || 30;
+      const applySnap = (v) => (fromDrag && STATE.snapFrame) ? Math.round(v * fps) / fps : v;
       if (secValue == null || isNaN(secValue)) return;
       if (selectedEventClip) {
         const L = selectedEventClip.layer, ec = selectedEventClip.ec;
@@ -10509,27 +10774,25 @@
           // secValue is ABSOLUTE scene time (matches display).  Convert to
           // layer-local and clamp so clip fits.
           const local = clamp(secValue - L.start, 0, Math.max(0, L.duration - ec.duration));
-          ec.start = STATE.snapFrame ? Math.round(local * fps) / fps : local;
+          ec.start = applySnap(local);
         } else if (kind === "end") {
           const endLocal = clamp(secValue - L.start, ec.start + MIN_CLIP_DUR, L.duration);
-          const snappedEnd = STATE.snapFrame ? Math.round(endLocal * fps) / fps : endLocal;
+          const snappedEnd = applySnap(endLocal);
           ec.duration = Math.max(MIN_CLIP_DUR, snappedEnd - ec.start);
         } else if (kind === "duration") {
           const dur = clamp(secValue, MIN_CLIP_DUR, Math.max(MIN_CLIP_DUR, L.duration - ec.start));
-          ec.duration = STATE.snapFrame ? Math.round(dur * fps) / fps : dur;
+          ec.duration = applySnap(dur);
         }
       } else if (selectedAudioClip) {
         const ac = selectedAudioClip;
         if (kind === "start") {
-          ac.start = clamp(secValue, 0, Math.max(0, STATE.duration - ac.duration));
-          if (STATE.snapFrame) ac.start = Math.round(ac.start * fps) / fps;
+          ac.start = applySnap(clamp(secValue, 0, Math.max(0, STATE.duration - ac.duration)));
         } else if (kind === "end") {
           const end = clamp(secValue, ac.start + MIN_CLIP_DUR, STATE.duration);
-          const snappedEnd = STATE.snapFrame ? Math.round(end * fps) / fps : end;
+          const snappedEnd = applySnap(end);
           ac.duration = Math.max(MIN_CLIP_DUR, snappedEnd - ac.start);
         } else if (kind === "duration") {
-          ac.duration = clamp(secValue, MIN_CLIP_DUR, Math.max(MIN_CLIP_DUR, STATE.duration - ac.start));
-          if (STATE.snapFrame) ac.duration = Math.round(ac.duration * fps) / fps;
+          ac.duration = applySnap(clamp(secValue, MIN_CLIP_DUR, Math.max(MIN_CLIP_DUR, STATE.duration - ac.start)));
         }
       }
       renderTimeline(); renderClipInspector(); renderEventButtons(); paintIfPaused();
