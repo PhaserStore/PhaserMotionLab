@@ -611,22 +611,67 @@
    * has a different aspect ratio, that's user's call to fix. */
   function replaceLayerAsset(layer, file) {
     if (!layer || !file) return;
-    if (layer.kind === "VIDEO") {
-      toast("Replace on video layers not yet supported — coming soon");
-      return;
-    }
     if (layer.kind === "TEXT" || layer.kind === "GROUP") {
       toast(`Cannot replace asset on ${layer.kind} layers`);
       return;
     }
     const name = file.name;
-    const reader = new FileReader();
-    const isSvg = file.type.includes("svg") || name.toLowerCase().endsWith(".svg");
-    const isImg = file.type.startsWith("image/");
-    if (!isSvg && !isImg) {
-      toast("Replace: only image / SVG supported in v1");
+    const isSvg   = file.type.includes("svg") || name.toLowerCase().endsWith(".svg");
+    const isImg   = file.type.startsWith("image/") && !isSvg;
+    const isVideo = file.type.startsWith("video/") || /\.(mp4|webm|mov|m4v)$/i.test(name);
+    if (!isSvg && !isImg && !isVideo) {
+      toast("Replace: unsupported file type");
       return;
     }
+    // v19.33: video replacement.  Uses the same WebCodecs VideoSource
+    // as the initial import — we build a fresh VideoSource from the
+    // new file, close the old one, and swap references.  The layer's
+    // canvas node is resized if the new video has different natural
+    // dimensions; layer.transform (cx/cy/wPct/hPct/rot) is untouched
+    // so the visual size on stage is preserved.
+    if (isVideo) {
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        const buf = e.target.result;
+        try {
+          const newSource = await VideoSource.create(buf);
+          if (layer.videoSource) { try { layer.videoSource.close(); } catch (_) {} }
+          layer.videoSource = newSource;
+          layer.natW = newSource.width;
+          layer.natH = newSource.height;
+          layer.name = name;
+          // Resize the canvas preview to the new natural size (subject
+          // to the current preview-quality cap).
+          if (layer.node && layer.node.tagName === "CANVAS") {
+            const cap = previewCanvasSizeFor(layer.natW, layer.natH);
+            layer.node.width  = cap.w;
+            layer.node.height = cap.h;
+            // Prime with frame 0 of the new video.
+            newSource.getFrameAtSourceTime(0).then((frame) => {
+              try {
+                layer.node.getContext("2d").drawImage(frame, 0, 0, layer.node.width, layer.node.height);
+              } catch (_) {}
+              paintIfPaused();
+            }).catch(() => {});
+          }
+          renderLayers(); renderInspector(); paintIfPaused();
+          toast(`Replaced with ${name}`);
+        } catch (err) {
+          console.warn("Video replace failed", err);
+          toast(`Couldn't load ${name} — ${err.message || "video decode failed"}`);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+      return;
+    }
+    // Image / SVG replacement — same pipeline as v19.31, kind can
+    // still change (IMG↔SVG).  Cross-type into video is not
+    // supported (would require rebuilding the whole layer stack).
+    if (layer.kind === "VIDEO" && !isVideo) {
+      toast("Cannot replace video layer with a non-video asset — remove and re-import");
+      return;
+    }
+    const reader = new FileReader();
     reader.onload = (e) => {
       if (isSvg) {
         try {
@@ -698,7 +743,9 @@
     if (!layer) return;
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = "image/*,.svg";
+    // v19.33: also accept video files now that replaceLayerAsset
+    // handles them via VideoSource.create.
+    input.accept = "image/*,.svg,video/*,.mp4,.webm,.mov,.m4v";
     input.style.display = "none";
     input.addEventListener("change", () => {
       const file = input.files && input.files[0];
@@ -2305,6 +2352,7 @@
         + (layer.visible ? "" : " hidden-layer")
         + (layer.locked ? " locked-layer" : "");
       li.draggable = true; li.dataset.id = layer.id;
+      li.title = "Right-click for options (Replace Asset…)";
       // v19.16: groups show a distinct thumb + subtitle indicating
       // member count, so users can visually distinguish them from
       // regular layers.  Clicking a group selects it as one entity;
@@ -2373,10 +2421,10 @@
     const menu = document.createElement("div");
     menu.className = "ctx-menu";
     menu.style.left = x + "px"; menu.style.top = y + "px";
-    const canReplace = layer && (layer.kind === "IMG" || layer.kind === "SVG");
+    const canReplace = layer && (layer.kind === "IMG" || layer.kind === "SVG" || layer.kind === "VIDEO");
     const items = [
       { label: "Replace Asset…", disabled: !canReplace, action: () => promptReplaceAsset(layer),
-        note: layer.kind === "VIDEO" ? "(video not yet)" : layer.kind === "TEXT" ? "(text not applicable)" : "" },
+        note: layer.kind === "TEXT" ? "(text not applicable)" : layer.kind === "GROUP" ? "(group)" : "" },
     ];
     items.forEach((it) => {
       const btn = document.createElement("button");
@@ -2426,6 +2474,9 @@
       selectedLayers = [layer];
     }
     renderLayers(); renderInspector(); renderTimeline(); updateSelectionBox();
+    // v19.33: also refresh the clip toolbar so D/S/E populate from
+    // the selected layer's timing when no clip is selected.
+    renderClipInspector();
     if (el.readoutSel) {
       if (!selectedLayer) el.readoutSel.textContent = "No layer selected";
       else if (selectedLayers.length > 1) el.readoutSel.textContent = `${selectedLayers.length} layers selected`;
@@ -3176,26 +3227,54 @@
   function renderClipInspector() {
     const hasEvt = !!selectedEventClip, hasAud = !!selectedAudioClip;
     const hasAny = hasEvt || hasAud;
+    // v19.33: the CLIP toolbar fields (D/S/E) previously ONLY worked
+    // when an event clip or audio clip was selected — layer selection
+    // left them disabled with a "-" placeholder, which read as "the
+    // feature is broken."  Extended so a selected LAYER (no clip)
+    // also activates the fields — they then edit layer.start /
+    // layer.duration.  The tlClipName label switches between "Clip",
+    // "Audio", "Layer" so users see which entity they're editing.
+    const hasLayerOnly = !hasAny && !!selectedLayer;
+    const anyEditable = hasAny || hasLayerOnly;
     if (!el.clipEmpty || !el.clipBody) return;
     el.clipEmpty.hidden = hasAny; el.clipBody.hidden = !hasAny;
-    // v19.29 → v19.30: toolbar controls — name label + Duration +
-    // Start + End inputs.  Disabled + cleared when nothing selected;
-    // populated + enabled on selection.  The name label uses each
-    // clip's type label (event) or layer name (audio track).
+    // v19.29 → v19.30 → v19.33: toolbar controls — name label +
+    // Duration + Start + End.  Now activate whenever an entity with
+    // start/duration is selected: event clip, audio clip, OR layer.
     const tlS = document.getElementById("tlClipStart");
     const tlE = document.getElementById("tlClipEnd");
     const tlD = document.getElementById("tlClipDur");
     const tlN = document.getElementById("tlClipName");
     const setDisabled = (n, d) => { if (n) { n.disabled = d; if (d && document.activeElement !== n) n.value = ""; } };
-    setDisabled(tlS, !hasAny);
-    setDisabled(tlE, !hasAny);
-    setDisabled(tlD, !hasAny);
-    if (tlN) tlN.textContent = hasAny ? "…" : "—";   // filled below when we know the label
+    setDisabled(tlS, !anyEditable);
+    setDisabled(tlE, !anyEditable);
+    setDisabled(tlD, !anyEditable);
+    if (tlN) {
+      if (hasEvt)         tlN.textContent = "…";   // filled below with FX label
+      else if (hasAud)    tlN.textContent = "Audio";
+      else if (hasLayerOnly) tlN.textContent = selectedLayer.name || "Layer";
+      else                tlN.textContent = "—";
+    }
     // Params rows visibility
     const paramsHost = document.getElementById("clipParams");
     if (paramsHost) paramsHost.innerHTML = "";
     // Enable-toggle button label
     const enBtn = document.getElementById("clipEnable");
+    // v19.33: for layer-only selection, populate D/S/E from layer
+    // timing and short-circuit the rest of the clip-inspector body.
+    if (!hasAny && hasLayerOnly) {
+      const layer = selectedLayer;
+      const startAbs = layer.start || 0;
+      const dur      = layer.duration || 0;
+      const setNumIf = (id, val) => {
+        const n = document.getElementById(id);
+        if (n && document.activeElement !== n) n.value = val;
+      };
+      setNumIf("tlClipStart", (+startAbs).toFixed(3));
+      setNumIf("tlClipEnd",   (+(startAbs + dur)).toFixed(3));
+      setNumIf("tlClipDur",   (+dur).toFixed(3));
+      return;
+    }
     if (!hasAny) return;
     let type = "—", track = "—", start = 0, dur = 0, vol = 100, muted = false;
     if (hasEvt) {
@@ -4034,18 +4113,54 @@
       const d = Math.abs(t - target);
       if (d < bestDist) { bestDist = d; bestTarget = target; }
     }
-    // v18.8 visual feedback: brief snap flash on the playhead when a
-    // magnetic snap actually fired.  Only shown when the snap target
-    // is the playhead itself (most common case + most useful signal).
-    if (bestTarget !== null && el.tlPlayhead && STATE.snapPlayhead
-        && Math.abs(bestTarget - STATE.time) < 0.001) {
-      el.tlPlayhead.classList.add("snap-hit");
-      clearTimeout(el.tlPlayhead._snapClear);
-      el.tlPlayhead._snapClear = setTimeout(() => {
-        el.tlPlayhead.classList.remove("snap-hit");
-      }, 120);
+    // v18.8 → v19.32 visual feedback: brief snap flash on the playhead
+    // when a magnetic snap fired.  Extended in v19.32 to also flash
+    // for marker and clip-edge snaps + a temporary vertical guide line
+    // at the exact snap target position — addresses the "cannot tell
+    // whether snap is happening" complaint.
+    if (bestTarget !== null) {
+      // Determine what KIND of target we snapped to for guide coloring.
+      let targetKind = "edge";
+      if (STATE.snapPlayhead && Math.abs(bestTarget - STATE.time) < 0.001) targetKind = "playhead";
+      else if (STATE.snapMarker) {
+        for (const m of markers) if (Math.abs(m.time - bestTarget) < 0.001) { targetKind = "marker"; break; }
+      }
+      // Playhead-badge flash for backward compatibility (playhead snap case).
+      if (targetKind === "playhead" && el.tlPlayhead) {
+        el.tlPlayhead.classList.add("snap-hit");
+        clearTimeout(el.tlPlayhead._snapClear);
+        el.tlPlayhead._snapClear = setTimeout(() => el.tlPlayhead.classList.remove("snap-hit"), 200);
+      }
+      // Guide line: a thin vertical line at the snap target's px
+      // position, colored by kind (playhead=purple, marker=amber,
+      // edge=white).  Fades out ~250ms.  One guide reused across
+      // consecutive snap events.
+      showSnapGuide(bestTarget, targetKind);
     }
     return bestTarget !== null ? bestTarget : t;
+  }
+
+  /* v19.32: transient snap guide line rendered inside the timeline
+     tracks region.  Reused across snap events to avoid DOM churn. */
+  function showSnapGuide(sceneTime, kind) {
+    if (!el.tlTracks) return;
+    let guide = document.getElementById("tlSnapGuide");
+    if (!guide) {
+      guide = document.createElement("div");
+      guide.id = "tlSnapGuide";
+      guide.className = "tl-snap-guide";
+      el.tlTracks.appendChild(guide);
+    }
+    const px = Math.round(sceneTime * TL.pxPerSec);
+    guide.style.left = px + "px";
+    guide.dataset.kind = kind;
+    // restart the CSS animation by removing + reflowing + re-adding
+    guide.classList.remove("is-visible");
+    // reflow so the animation restarts
+    void guide.offsetWidth;
+    guide.classList.add("is-visible");
+    clearTimeout(guide._clearTimer);
+    guide._clearTimer = setTimeout(() => guide.classList.remove("is-visible"), 260);
   }
 
   /* ============================================================ EFFECTS
@@ -9847,6 +9962,19 @@
         const layer = layers.find((L) => L.wrap === wrap);
         if (layer && layer.kind === "TEXT") { e.preventDefault(); e.stopPropagation(); startTextEdit(layer); }
       });
+      // v19.32: right-click on a stage layer opens the same context
+      // menu as right-click on its row in the layer panel.  Users
+      // couldn't find the Replace Asset command in v19.31 because it
+      // was only wired to layer rows; the stage is the more natural
+      // discovery point.
+      el.layerHost.addEventListener("contextmenu", (e) => {
+        const wrap = e.target.closest && e.target.closest(".layer-el");
+        if (!wrap) return;
+        const layer = layers.find((L) => L.wrap === wrap);
+        if (!layer) return;
+        e.preventDefault();
+        showLayerContextMenu(e.clientX, e.clientY, layer);
+      });
     }
     el.stage.addEventListener("dragover", (e) => e.preventDefault());
     el.stage.addEventListener("drop", (e) => { e.preventDefault(); handleFiles(e.dataTransfer.files); });
@@ -10586,13 +10714,189 @@
         scroller.scrollLeft = newPxAtCursor - mouseX;
       });
     }, { passive: false });
-    if (el.markerBtn) el.markerBtn.addEventListener("click", () => {
-      const t = STATE.time;
-      const exists = markers.find((m) => m.type === "manual" && Math.abs(m.time - t) < 0.05);
-      if (exists) { markers.splice(markers.indexOf(exists), 1); toast("Marker removed"); }
-      else { markers.push({ type: "manual", time: t }); toast(`Marker @ ${t.toFixed(2)}s`); }
-      renderTimeline();
+    if (el.markerBtn) {
+      el.markerBtn.addEventListener("click", () => {
+        const t = STATE.time;
+        const exists = markers.find((m) => m.type === "manual" && Math.abs(m.time - t) < 0.05);
+        if (exists) { markers.splice(markers.indexOf(exists), 1); toast("Marker removed"); }
+        else { markers.push({ type: "manual", time: t }); toast(`Marker @ ${t.toFixed(2)}s`); }
+        renderTimeline();
+      });
+      // v19.33: right-click on Marker button → Grid Generator popover.
+      // Consolidates the two related actions in one toolbar slot;
+      // frees a slot so the Zoom cluster stays on the right at typical
+      // viewport widths without the toolbar wrapping.
+      el.markerBtn.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        openMarkerGridPopover(el.markerBtn);
+      });
+    }
+
+    /* v19.32 Marker Grid Generator.
+     *
+     * Popover with two families of distributions:
+     *   Regular       — every N seconds (0.25, 0.5, 1.0, custom)
+     *   Progressive   — mathematical distributions:
+     *                     - Golden Ratio     (0, φ, 2φ, 3φ, ...)  ish
+     *                     - Exponential      (base^i * scale)
+     *                     - Accelerating     (quadratic-in easing)
+     *                     - Decelerating     (quadratic-out easing)
+     *
+     * All modes clear existing generated markers first (type "grid")
+     * and re-emit — so users can iterate patterns quickly.  Manual
+     * markers are preserved.  A "Clear generated" option removes
+     * only grid markers.  Generated markers use type "grid" so
+     * the code can distinguish them from manual and beat-detected.
+     */
+    const markerGridBtn = document.getElementById("markerGridBtn");
+    // v19.33: standalone button removed from the toolbar; Grid popover
+    // opens via right-click on the Marker button now.  Keep this
+    // handler defensively in case any future skin re-adds a button
+    // with this id — no harm if the element doesn't exist.
+    if (markerGridBtn) markerGridBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openMarkerGridPopover(markerGridBtn);
     });
+    function clearGeneratedMarkers() {
+      for (let i = markers.length - 1; i >= 0; i--) if (markers[i].type === "grid") markers.splice(i, 1);
+    }
+    /* Regular interval: emit markers at 0, N, 2N, ... within duration. */
+    function generateRegularGrid(intervalSec) {
+      clearGeneratedMarkers();
+      const dur = STATE.duration;
+      if (intervalSec <= 0 || !isFinite(intervalSec)) return 0;
+      let count = 0;
+      for (let t = 0; t <= dur + 0.0001; t += intervalSec) {
+        markers.push({ type: "grid", time: +t.toFixed(3) });
+        count++;
+      }
+      renderTimeline();
+      return count;
+    }
+    /* Golden-ratio progression.  Positions at φ^0, φ^1, φ^2, ...
+       scaled to fit inside the timeline.  φ = 1.618... */
+    function generateGoldenRatioGrid() {
+      clearGeneratedMarkers();
+      const phi = (1 + Math.sqrt(5)) / 2;
+      const dur = STATE.duration;
+      // Start at 1 second, then each next = prev * φ
+      const times = [];
+      let t = 1;
+      while (t < dur) { times.push(t); t *= phi; }
+      // Always include 0 as the first marker for a clear reference.
+      markers.push({ type: "grid", time: 0 });
+      for (const time of times) markers.push({ type: "grid", time: +time.toFixed(3) });
+      renderTimeline();
+      return times.length + 1;
+    }
+    /* Exponential: t_i = scale * (base^i - 1), stops within duration.
+       Default base=2, scale set so the last marker is near duration. */
+    function generateExponentialGrid(base = 2) {
+      clearGeneratedMarkers();
+      const dur = STATE.duration;
+      // Pick a scale that lands ~8-12 markers across the timeline.
+      // scale * (base^N - 1) = duration → N depends on scale.
+      const N = 8;
+      const scale = dur / (Math.pow(base, N) - 1);
+      let count = 0;
+      for (let i = 0; i <= N; i++) {
+        const t = scale * (Math.pow(base, i) - 1);
+        if (t > dur + 0.0001) break;
+        markers.push({ type: "grid", time: +t.toFixed(3) });
+        count++;
+      }
+      renderTimeline();
+      return count;
+    }
+    /* Accelerating (quadratic-in): dense at start, sparse at end.
+       t_i = duration * (i/N)^2 for i in 0..N. */
+    function generateAcceleratingGrid(N = 10) {
+      clearGeneratedMarkers();
+      const dur = STATE.duration;
+      for (let i = 0; i <= N; i++) {
+        const p = i / N;
+        markers.push({ type: "grid", time: +(dur * p * p).toFixed(3) });
+      }
+      renderTimeline();
+      return N + 1;
+    }
+    /* Decelerating (quadratic-out): sparse at start, dense at end.
+       t_i = duration * (1 - (1-i/N)^2). */
+    function generateDeceleratingGrid(N = 10) {
+      clearGeneratedMarkers();
+      const dur = STATE.duration;
+      for (let i = 0; i <= N; i++) {
+        const p = i / N;
+        markers.push({ type: "grid", time: +(dur * (1 - (1 - p) * (1 - p))).toFixed(3) });
+      }
+      renderTimeline();
+      return N + 1;
+    }
+
+    let _gridPopover = null;
+    function closeGridPopover() {
+      if (_gridPopover && _gridPopover.parentNode) _gridPopover.parentNode.removeChild(_gridPopover);
+      _gridPopover = null;
+      document.removeEventListener("click", _gridPopoverOutside, true);
+    }
+    function _gridPopoverOutside(e) {
+      if (_gridPopover && !_gridPopover.contains(e.target)) closeGridPopover();
+    }
+    function openMarkerGridPopover(anchor) {
+      closeGridPopover();
+      const rect = anchor.getBoundingClientRect();
+      const pop = document.createElement("div");
+      pop.className = "grid-popover";
+      pop.style.left = rect.left + "px";
+      pop.style.bottom = (window.innerHeight - rect.top + 6) + "px";
+      pop.innerHTML = `
+        <div class="grid-pop-hd">Generate marker grid</div>
+        <div class="grid-pop-section">Regular intervals</div>
+        <div class="grid-pop-row" data-cmd="reg-0.25">Every 0.25s</div>
+        <div class="grid-pop-row" data-cmd="reg-0.5">Every 0.5s</div>
+        <div class="grid-pop-row" data-cmd="reg-1">Every 1s</div>
+        <div class="grid-pop-row grid-pop-custom">
+          Every <input type="number" step="0.001" min="0.001" id="gridCustomInterval" value="0.5" class="tl-clip-time-input" style="width:56px"> s
+          <button class="mini-btn" id="gridCustomApply">Apply</button>
+        </div>
+        <div class="grid-pop-section">Progressive</div>
+        <div class="grid-pop-row" data-cmd="golden">Golden ratio (φ)</div>
+        <div class="grid-pop-row" data-cmd="exp">Exponential (base 2)</div>
+        <div class="grid-pop-row" data-cmd="accel">Accelerating</div>
+        <div class="grid-pop-row" data-cmd="decel">Decelerating</div>
+        <div class="grid-pop-section"></div>
+        <div class="grid-pop-row grid-pop-clear" data-cmd="clear">Clear generated markers</div>
+      `;
+      document.body.appendChild(pop);
+      _gridPopover = pop;
+      pop.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const row = e.target.closest("[data-cmd]");
+        if (!row) return;
+        const cmd = row.dataset.cmd;
+        let n = 0;
+        if (cmd === "reg-0.25") n = generateRegularGrid(0.25);
+        else if (cmd === "reg-0.5") n = generateRegularGrid(0.5);
+        else if (cmd === "reg-1")   n = generateRegularGrid(1.0);
+        else if (cmd === "golden")  n = generateGoldenRatioGrid();
+        else if (cmd === "exp")     n = generateExponentialGrid(2);
+        else if (cmd === "accel")   n = generateAcceleratingGrid(10);
+        else if (cmd === "decel")   n = generateDeceleratingGrid(10);
+        else if (cmd === "clear") { clearGeneratedMarkers(); renderTimeline(); toast("Generated markers cleared"); closeGridPopover(); return; }
+        toast(`Generated ${n} markers`);
+        closeGridPopover();
+      });
+      const applyBtn = pop.querySelector("#gridCustomApply");
+      if (applyBtn) applyBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const val = parseFloat(document.getElementById("gridCustomInterval").value);
+        if (!isFinite(val) || val <= 0) { toast("Enter a positive interval"); return; }
+        const n = generateRegularGrid(val);
+        toast(`Generated ${n} markers at ${val}s intervals`);
+        closeGridPopover();
+      });
+      setTimeout(() => document.addEventListener("click", _gridPopoverOutside, true), 0);
+    }
 
     // Keyboard 'M' for marker
     document.addEventListener("keydown", (e) => {
@@ -10794,6 +11098,20 @@
         } else if (kind === "duration") {
           ac.duration = applySnap(clamp(secValue, MIN_CLIP_DUR, Math.max(MIN_CLIP_DUR, STATE.duration - ac.start)));
         }
+      } else if (selectedLayer) {
+        // v19.33: layer-only fallback.  D/S/E edit layer.start /
+        // layer.duration directly.  Same clamps as clip editing:
+        // Start ≥ 0, End > Start + MIN, End ≤ scene duration.
+        const L = selectedLayer;
+        if (kind === "start") {
+          L.start = applySnap(clamp(secValue, 0, Math.max(0, STATE.duration - L.duration)));
+        } else if (kind === "end") {
+          const end = clamp(secValue, L.start + MIN_CLIP_DUR, STATE.duration);
+          const snappedEnd = applySnap(end);
+          L.duration = Math.max(MIN_CLIP_DUR, snappedEnd - L.start);
+        } else if (kind === "duration") {
+          L.duration = applySnap(clamp(secValue, MIN_CLIP_DUR, Math.max(MIN_CLIP_DUR, STATE.duration - L.start)));
+        }
       }
       renderTimeline(); renderClipInspector(); renderEventButtons(); paintIfPaused();
     }
@@ -10806,10 +11124,32 @@
         if (isNaN(raw)) return;
         const fps = STATE.fps || 30;
         commitClipTime(kind, isFrame ? (raw / fps) : raw);
+        // v19.32: brief accent flash on the input so users see the
+        // commit landed — addresses the "fields don't seem to work"
+        // report.  Only flashes when a clip is actually selected
+        // (i.e., the field is enabled).
+        if (!n.disabled) {
+          n.classList.add("commit-flash");
+          setTimeout(() => n.classList.remove("commit-flash"), 500);
+        }
       };
       n.addEventListener("input", handler);
       n.addEventListener("blur", handler);
       n.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); handler(); n.blur(); } });
+      // v19.32: click on disabled field shows a toast so users know
+      // WHY the field isn't editable — no more "effectively inactive"
+      // confusion.  Also applies to the disabled-hint via mousedown
+      // since disabled inputs don't fire click.
+      n.addEventListener("mousedown", (e) => {
+        if (n.disabled) {
+          // v19.33: differentiate the hint by state — user might have
+          // zero layers, zero clips on a layer, or just haven't
+          // selected anything yet.
+          if (!layers.length && !audioClips.length) toast("Add a layer or asset first");
+          else if (!selectedLayer) toast("Select a layer or clip to edit its timing");
+          else toast("Select a clip on the timeline first (or select a layer to edit its timing)");
+        }
+      });
     };
     bindTimeField("num-ce",   "end",       false);
     bindTimeField("num-ce-f", "end",       true);
