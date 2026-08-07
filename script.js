@@ -2735,8 +2735,24 @@
     computePxPerSec();
     // ruler
     el.tlRuler.innerHTML = "";
-    // Major ticks every second — always visible with the second label.
-    for (let s = 0; s <= STATE.duration; s++) { const tick = document.createElement("div"); tick.className = "tl-tick"; tick.style.left = (s * TL.pxPerSec) + "px"; tick.textContent = s + "s"; el.tlRuler.appendChild(tick); }
+    // v19.30: Major ticks every second — always visible with label.
+    // Every 5th second gets `major-5` for extra emphasis so users can
+    // scan long timelines quickly.  Labels use MM:SS for 10s+ so
+    // durations read as time not as "45s".
+    const fmt = (s) => {
+      if (STATE.duration >= 60) {
+        const m = Math.floor(s / 60), sec = s - m * 60;
+        return `${m}:${String(sec).padStart(2,"0")}`;
+      }
+      return s + "s";
+    };
+    for (let s = 0; s <= STATE.duration; s++) {
+      const tick = document.createElement("div");
+      tick.className = "tl-tick" + (s > 0 && s % 5 === 0 ? " major-5" : "");
+      tick.style.left = (s * TL.pxPerSec) + "px";
+      tick.textContent = fmt(s);
+      el.tlRuler.appendChild(tick);
+    }
     // Minor ticks: half-second marks appear when a second is wide
     // enough to fit them; frame marks appear when frames are wide
     // enough to distinguish visually.  Prevents visual clutter at
@@ -2859,15 +2875,17 @@
     if (!isPrecisionKey(e)) {
       // v18.8 magnetic snap.  Layer times are absolute; excludeClip
       // is the layer itself so we don't self-snap its opposite edge.
+      // v19.30: pass the ORIGIN (pre-drag position) so snap can be
+      // direction-aware and never pull the handle backward.
       if (TL.mode === "move" || TL.mode === "trim-left") {
-        layer.start = applyMagneticSnap(layer.start, layer);
+        layer.start = applyMagneticSnap(layer.start, layer, o.start);
         if (TL.mode === "trim-left") {
           const endHeld = o.start + o.duration;
           layer.duration = Math.max(0.2, endHeld - layer.start);
         }
       }
       if (TL.mode === "trim-right") {
-        const endSnapped = applyMagneticSnap(layer.start + layer.duration, layer);
+        const endSnapped = applyMagneticSnap(layer.start + layer.duration, layer, o.start + o.duration);
         layer.duration = Math.max(0.2, endSnapped - layer.start);
       }
     }
@@ -2896,9 +2914,11 @@
     if (!isPrecisionKey(e)) {
       // v18.8: magnetic snap to playhead + other clip edges.  Runs in
       // absolute scene time; event clip times are stored layer-local.
+      // v19.30: origin is pre-drag position in ABSOLUTE scene time.
       if (D.mode === "move" || D.mode === "trim-left") {
         const abs = D.layer.start + D.ec.start;
-        const snapped = applyMagneticSnap(abs, D.ec);
+        const origin = D.layer.start + D.orig.start;
+        const snapped = applyMagneticSnap(abs, D.ec, origin);
         D.ec.start = snapped - D.layer.start;
         if (D.mode === "trim-left") {
           const endHeld = D.orig.start + D.orig.duration;
@@ -2907,7 +2927,8 @@
       }
       if (D.mode === "trim-right") {
         const endAbs = D.layer.start + D.ec.start + D.ec.duration;
-        const snapped = applyMagneticSnap(endAbs, D.ec);
+        const origin = D.layer.start + D.orig.start + D.orig.duration;
+        const snapped = applyMagneticSnap(endAbs, D.ec, origin);
         D.ec.duration = Math.max(0.02, snapped - (D.layer.start + D.ec.start));
       }
     }
@@ -2935,8 +2956,9 @@
     else if (D.mode === "trim-right") D.ac.duration = clamp(D.orig.duration + dx, 0.05, dur - D.ac.start);
     if (!isPrecisionKey(e)) {
       // v18.8: magnetic snap.  Audio clip times are absolute.
+      // v19.30: pass origin so snap is direction-aware.
       if (D.mode === "move" || D.mode === "trim-left") {
-        const snapped = applyMagneticSnap(D.ac.start, D.ac);
+        const snapped = applyMagneticSnap(D.ac.start, D.ac, D.orig.start);
         D.ac.start = snapped;
         if (D.mode === "trim-left") {
           const endHeld = D.orig.start + D.orig.duration;
@@ -2945,7 +2967,7 @@
       }
       if (D.mode === "trim-right") {
         const endAbs = D.ac.start + D.ac.duration;
-        const snapped = applyMagneticSnap(endAbs, D.ac);
+        const snapped = applyMagneticSnap(endAbs, D.ac, D.orig.start + D.orig.duration);
         D.ac.duration = Math.max(0.05, snapped - D.ac.start);
       }
     }
@@ -2982,12 +3004,19 @@
     const hasAny = hasEvt || hasAud;
     if (!el.clipEmpty || !el.clipBody) return;
     el.clipEmpty.hidden = hasAny; el.clipBody.hidden = !hasAny;
-    // v19.29: toolbar Start/End inputs — disabled + cleared when no
-    // clip is selected, active + populated when one is.
+    // v19.29 → v19.30: toolbar controls — name label + Duration +
+    // Start + End inputs.  Disabled + cleared when nothing selected;
+    // populated + enabled on selection.  The name label uses each
+    // clip's type label (event) or layer name (audio track).
     const tlS = document.getElementById("tlClipStart");
     const tlE = document.getElementById("tlClipEnd");
-    if (tlS) { tlS.disabled = !hasAny; if (!hasAny && document.activeElement !== tlS) tlS.value = ""; }
-    if (tlE) { tlE.disabled = !hasAny; if (!hasAny && document.activeElement !== tlE) tlE.value = ""; }
+    const tlD = document.getElementById("tlClipDur");
+    const tlN = document.getElementById("tlClipName");
+    const setDisabled = (n, d) => { if (n) { n.disabled = d; if (d && document.activeElement !== n) n.value = ""; } };
+    setDisabled(tlS, !hasAny);
+    setDisabled(tlE, !hasAny);
+    setDisabled(tlD, !hasAny);
+    if (tlN) tlN.textContent = hasAny ? "…" : "—";   // filled below when we know the label
     // Params rows visibility
     const paramsHost = document.getElementById("clipParams");
     if (paramsHost) paramsHost.innerHTML = "";
@@ -3416,6 +3445,10 @@
     // v19.29: also update toolbar Start/End inputs on selection change.
     setNumIf("tlClipStart", (+startAbs).toFixed(3));
     setNumIf("tlClipEnd",   (+(startAbs + dur)).toFixed(3));
+    // v19.30: also update Duration input + name label.
+    setNumIf("tlClipDur",   (+dur).toFixed(3));
+    const tlNameEl = document.getElementById("tlClipName");
+    if (tlNameEl) tlNameEl.textContent = type;
   }
 
   /* Param slider — `step` is optional; when < 1 the label formats with 2
@@ -3776,7 +3809,7 @@
      are ignored to prevent self-snap.
   */
   const MAGNETIC_SNAP_PX = 6;
-  function applyMagneticSnap(t, excludeClip) {
+  function applyMagneticSnap(t, excludeClip, origin) {
     // Convert pixel tolerance to seconds at current zoom.
     const tol = MAGNETIC_SNAP_PX / (TL.pxPerSec || 1);
     // Frame snap first (integer pixel-grid).
@@ -3804,6 +3837,21 @@
       targets.push(0, STATE.duration);
     }
     for (const target of targets) {
+      // v19.30 direction-aware snap: reject targets that lie on the
+      // opposite side of `origin` from the current drag position.
+      // Without this, snap can pull a handle BACKWARD relative to the
+      // user's drag direction — the "I dragged right, edge moved
+      // left" complaint.  When `origin` is undefined (playhead scrub,
+      // legacy callers), fall back to old behavior.
+      if (origin !== undefined && origin !== null) {
+        const dragDelta   = t - origin;
+        const targetDelta = target - origin;
+        // Both non-zero and opposite signs → target is behind us.
+        if (Math.abs(dragDelta) > 0.0001 && Math.abs(targetDelta) > 0.0001
+            && Math.sign(dragDelta) !== Math.sign(targetDelta)) {
+          continue;
+        }
+      }
       const d = Math.abs(t - target);
       if (d < bestDist) { bestDist = d; bestTarget = target; }
     }
@@ -6406,6 +6454,9 @@
     if (el.tlPlayhead) {
       const px = Math.round(pct * (el.tlTracks.clientWidth || 0));
       el.tlPlayhead.style.left = px + "px";
+      // v19.30: floating time badge on the playhead.
+      const badge = document.getElementById("tlPlayheadTime");
+      if (badge) badge.textContent = t.toFixed(3);
     }
     if (el.timecode && document.activeElement !== el.timecode) {
       // v19.0: timecode is now an editable input.  Only overwrite when
@@ -10512,8 +10563,10 @@
     // commitClipTime pipeline as the inspector fields.  Both surfaces
     // edit the same clip state; renderClipInspector keeps both in
     // sync via setNumIf.
+    // v19.30: also Duration input.
     bindTimeField("tlClipStart", "start", false);
     bindTimeField("tlClipEnd",   "end",   false);
+    bindTimeField("tlClipDur",   "duration", false);
 
     /* v19.0 Playhead position input — always visible, editable.
        Accepts:
