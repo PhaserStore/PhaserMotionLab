@@ -557,7 +557,11 @@ body.focus-mode .selection-box { display: none !important; }
 }
 .tl-controls {
   display: flex; align-items: center; gap: 5px;
-  padding: 7px 12px;
+  /* v19.35 → v19.36: horizontal padding matches .tl-body below so the
+     toolbar aligns with ruler/tracks — user reported left edge was
+     flush against the screen while right had breathing room.  Both
+     sides now sit 24px inside the viewport. */
+  padding: 7px 24px;
   border-bottom: 1px solid var(--border);
   /* v19.35: overflow HIDDEN — the horizontal scrollbar produced by
      auto in v19.33 rendered as a "large white line above the timeline"
@@ -842,7 +846,13 @@ body.focus-mode .status-bar { display: none !important; }
 .level-fill { width: 100%; height: 0%; background: linear-gradient(0deg, var(--accent), var(--accent-2)); transition: height 0.06s linear; }
 .audio-name { font-size: 12px; color: var(--text-3); max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.tl-body { position: relative; flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 0; }
+/* v19.36: symmetric 24px horizontal gutter on the timeline body so
+   ruler labels, clip labels, and the playhead time badge don't get
+   clipped at the left edge (user report).  pxPerSec is computed from
+   tl-tracks.clientWidth which naturally shrinks by 48px to fit inside
+   the padded body — every tick and clip position stays inside the
+   visible gutter without needing a code change. */
+.tl-body { position: relative; flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 0; padding: 0 24px; }
 /* v19.30 ruler upgrade — bigger, brighter, more legible.
    - Height 22 → 28px so labels breathe
    - Slightly darker background contrasts against tracks
