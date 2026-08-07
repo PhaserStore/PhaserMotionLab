@@ -662,18 +662,25 @@
       <span class="audio-name" id="audioName">No audio</span>
       <input type="file" id="audioInput" accept="audio/*" hidden />
 
-      <!-- v19.29: Selected-clip Start/End controls, positioned on the
-           timeline toolbar for fast editing without opening the right
-           panel.  Disabled when no clip is selected (option b from
-           user).  Values populate from renderClipInspector; commits go
-           through the same commitClipTime handler as the inspector
-           fields so state stays consistent between the two surfaces. -->
+      <!-- v19.29 → v19.30: Selected-clip inline controls on the
+           timeline toolbar.  Full context in one row: name, duration,
+           start, end.  All fields disabled + greyed when nothing is
+           selected (users still see the controls exist); populated
+           and editable on selection.  Duration / Start / End all
+           commit through commitClipTime so state stays synchronized
+           with the right-panel inspector.  Zoom control stays on
+           the far right of the toolbar — this group is positioned
+           in the middle, between audio and marker/snap toggles. -->
       <div class="divider-v small"></div>
-      <div class="tl-clip-time" id="tlClipTimeGroup" title="Start / End of selected clip. Type seconds and Enter/blur to commit.">
+      <div class="tl-clip-time" id="tlClipTimeGroup" title="Selected clip. Duration / Start / End in seconds.">
         <span class="tl-label">Clip</span>
-        <input type="number" id="tlClipStart" class="tl-clip-time-input" step="0.001" min="0" placeholder="Start" disabled title="Selected clip start (seconds). Select a clip to edit.">
-        <span class="tl-clip-time-sep">–</span>
-        <input type="number" id="tlClipEnd" class="tl-clip-time-input" step="0.001" min="0" placeholder="End" disabled title="Selected clip end (seconds). Select a clip to edit.">
+        <span class="tl-clip-name" id="tlClipName" title="Selected clip name">—</span>
+        <span class="tl-clip-time-hint">D</span>
+        <input type="number" id="tlClipDur"   class="tl-clip-time-input" step="0.001" min="0.001" placeholder="—" disabled title="Duration (seconds). Editing changes duration only; Start stays fixed.">
+        <span class="tl-clip-time-hint">S</span>
+        <input type="number" id="tlClipStart" class="tl-clip-time-input" step="0.001" min="0"     placeholder="—" disabled title="Start (seconds). Editing shifts the clip; duration stays fixed.">
+        <span class="tl-clip-time-hint">E</span>
+        <input type="number" id="tlClipEnd"   class="tl-clip-time-input" step="0.001" min="0"     placeholder="—" disabled title="End (seconds). Editing changes duration, Start stays fixed.">
       </div>
 
       <button class="t-btn" id="markerBtn" title="Add marker at playhead (M)">
@@ -720,7 +727,7 @@
         <div class="tl-section-label">AUDIO</div>
         <div class="tl-tracks tl-audio-tracks" id="tlAudioTracks"></div>
       </div>
-      <div class="tl-playhead" id="tlPlayhead"></div>
+      <div class="tl-playhead" id="tlPlayhead"><div class="tl-playhead-time" id="tlPlayheadTime">0.000</div></div>
     </div>
   </footer>
 
