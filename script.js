@@ -724,6 +724,11 @@
     layer._segmentPrims = null; layer._segmentOrder = null;
     layer._morphPath = null; layer._morphApplied = false;
     layer.originalColors = null; layer._svgOriginalSnapshot = null;
+    // v19.35: also clear SHAPE-only state when converting a shape layer
+    // to an image / svg.  Prevents shape stroke/fill mutations from
+    // trying to apply to the new asset.
+    layer.shapeType = null;
+    layer.shapeStyle = null;
     // Give the new SVG node the same wrapping behavior as an imported one.
     if (newKind === "SVG") {
       newNode.setAttribute("width",  "100%");
@@ -2421,7 +2426,7 @@
     const menu = document.createElement("div");
     menu.className = "ctx-menu";
     menu.style.left = x + "px"; menu.style.top = y + "px";
-    const canReplace = layer && (layer.kind === "IMG" || layer.kind === "SVG" || layer.kind === "VIDEO");
+    const canReplace = layer && (layer.kind === "IMG" || layer.kind === "SVG" || layer.kind === "VIDEO" || layer.kind === "SHAPE");
     const items = [
       { label: "Replace Asset…", disabled: !canReplace, action: () => promptReplaceAsset(layer),
         note: layer.kind === "TEXT" ? "(text not applicable)" : layer.kind === "GROUP" ? "(group)" : "" },
@@ -2960,22 +2965,45 @@
     computePxPerSec();
     // ruler
     el.tlRuler.innerHTML = "";
-    // v19.30: Major ticks every second — always visible with label.
-    // Every 5th second gets `major-5` for extra emphasis so users can
-    // scan long timelines quickly.  Labels use MM:SS for 10s+ so
-    // durations read as time not as "45s".
-    const fmt = (s) => {
-      if (STATE.duration >= 60) {
-        const m = Math.floor(s / 60), sec = s - m * 60;
-        return `${m}:${String(sec).padStart(2,"0")}`;
+    // v19.30 → v19.35: Adaptive tick spacing.  When zoomed out, labels
+    // are every 1s (or every 5s for very long durations).  When zoomed
+    // in, sub-second labels appear at 500ms, 250ms, 100ms, or 50ms
+    // intervals so millisecond-precision editing has a visible ruler
+    // to work against — matches the D/S/E control precision.
+    // Interval is chosen so labels have at least ~55px of breathing
+    // room (prevents overlap at any zoom).
+    const pxPerSec = TL.pxPerSec;
+    // v19.35: candidates from FINE to COARSE — we walk finest first
+    // and stop at the first spacing that's readable (>=55px).  This
+    // gives sub-second labels when zoomed in, whole-second (or
+    // 5s/10s) labels when zoomed out.  Previous version iterated
+    // coarse-first and picked overly coarse steps at any zoom.
+    const candidates = [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10];
+    let step = 1;
+    for (const c of candidates) {
+      if (c * pxPerSec >= 55) { step = c; break; }
+    }
+    // Format label with precision matching the step.
+    const fmt = (t) => {
+      if (STATE.duration >= 60 && step >= 1) {
+        const m = Math.floor(t / 60), sec = t - m * 60;
+        // Whole-second minute:second when step is >= 1s.
+        return `${m}:${String(Math.round(sec)).padStart(2, "0")}`;
       }
-      return s + "s";
+      // Number of decimals from the step size.
+      if (step >= 1)      return t.toFixed(0) + "s";
+      if (step >= 0.1)    return t.toFixed(1);
+      if (step >= 0.01)   return t.toFixed(2);
+      return t.toFixed(3);
     };
-    for (let s = 0; s <= STATE.duration; s++) {
+    // Every 5th major tick gets emphasis so scanning long timelines is easy.
+    const emphasizeEvery = step >= 1 ? 5 : (step >= 0.1 ? 5 : 4);
+    let idx = 0;
+    for (let t = 0; t <= STATE.duration + 0.0001; t += step, idx++) {
       const tick = document.createElement("div");
-      tick.className = "tl-tick" + (s > 0 && s % 5 === 0 ? " major-5" : "");
-      tick.style.left = (s * TL.pxPerSec) + "px";
-      tick.textContent = fmt(s);
+      tick.className = "tl-tick" + (idx > 0 && idx % emphasizeEvery === 0 ? " major-5" : "");
+      tick.style.left = (t * pxPerSec) + "px";
+      tick.textContent = fmt(t);
       el.tlRuler.appendChild(tick);
     }
     // Minor ticks: half-second marks appear when a second is wide
@@ -2984,8 +3012,8 @@
     // low zoom while surfacing frame boundaries at high zoom.
     const fps = STATE.fps || 30;
     const pxPerFrame = TL.pxPerSec / fps;
-    if (TL.pxPerSec >= 140) {
-      // Show half-second minor ticks
+    if (TL.pxPerSec >= 140 && step >= 1) {
+      // Show half-second minor ticks only when major step is still 1s+
       for (let s = 0; s < STATE.duration; s++) {
         const tick = document.createElement("div"); tick.className = "tl-tick-minor";
         tick.style.left = ((s + 0.5) * TL.pxPerSec) + "px"; el.tlRuler.appendChild(tick);
@@ -4160,7 +4188,7 @@
     void guide.offsetWidth;
     guide.classList.add("is-visible");
     clearTimeout(guide._clearTimer);
-    guide._clearTimer = setTimeout(() => guide.classList.remove("is-visible"), 260);
+    guide._clearTimer = setTimeout(() => guide.classList.remove("is-visible"), 180);
   }
 
   /* ============================================================ EFFECTS
