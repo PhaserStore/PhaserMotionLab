@@ -636,9 +636,14 @@
         try {
           const newSource = await VideoSource.create(buf);
           if (layer.videoSource) { try { layer.videoSource.close(); } catch (_) {} }
-          // v19.37: reset coalesce state so the new source doesn't
-          // reuse the old pending-seek target.
-          if (layer._vidCoalesce) { layer._vidCoalesce.pending = null; layer._vidCoalesce.seeking = false; layer._vidCoalesce.lastAppliedT = -1; }
+          // v19.37 → v19.38: reset all coalesce + dedup state so the
+          // new source doesn't reuse stale targets from the old one.
+          if (layer._vidCoalesce) {
+            layer._vidCoalesce.pending = null;
+            layer._vidCoalesce.seeking = false;
+            layer._vidCoalesce.lastAppliedT = -1;
+            if (layer._vidCoalesce.requestedIdx) layer._vidCoalesce.requestedIdx.clear();
+          }
           layer.videoSource = newSource;
           layer.natW = newSource.width;
           layer.natH = newSource.height;
@@ -893,6 +898,9 @@
       this._submittedUpTo = -1;
       this._closed = false;
       this._lastError = null;
+      // v19.38 instrumentation for playback perf diagnosis.
+      this.metrics = { decodedFrames: 0, enqueuedChunks: 0, cacheHits: 0, cacheMisses: 0,
+                       frameRequests: 0, decoderResets: 0, timeoutDrops: 0 };
     }
 
     static async create(arrayBuffer, step) {
@@ -914,6 +922,9 @@
     get frameRate()   { return this._frameRate; }
     get sampleCount() { return this._samples.length; }
     get cacheStats()  { return { frames: this._cache.size, bytes: this._cache.bytes, maxFrames: this._cache.maxFrames, maxBytes: this._cache.maxBytes }; }
+    // v19.38: live decoder queue depth (Chromium 94+).  Falls back to
+    // 0 when not exposed.
+    get decodeQueueSize() { return (this._decoder && this._decoder.decodeQueueSize) || 0; }
 
     async _init(MP4Box, step) {
       const log = step || (() => {});
@@ -1014,6 +1025,7 @@
 
     _onFrame(frame) {
       if (this._closed) { try { frame.close(); } catch(e){} return; }
+      this.metrics.decodedFrames++;
       const idx = this._sampleByPts.get(frame.timestamp);
       if (idx === undefined) { try { frame.close(); } catch(e){} return; }
       const byteSize = (frame.allocationSize && frame.allocationSize()) || (this._width * this._height * 4);
@@ -1047,10 +1059,12 @@
           data: s.data,
         }));
         this._submittedUpTo = idx;
+        this.metrics.enqueuedChunks++;
       } catch (e) { this._lastError = e; }
     }
 
     _resetDecoderForRewind() {
+      this.metrics.decoderResets++;
       // Fired when a request lands behind _submittedUpTo AND isn't in cache.
       try { this._decoder.reset(); } catch(e){}
       try {
@@ -1066,11 +1080,14 @@
     getFrameSyncIfCached(tSource) {
       const idx = this._sampleIndexForTime(tSource);
       if (idx < 0) return null;
-      return this._cache.get(idx);
+      const f = this._cache.get(idx);
+      if (f) this.metrics.cacheHits++; else this.metrics.cacheMisses++;
+      return f;
     }
 
     getFrameAtSourceTime(tSource) {
       if (this._closed) return Promise.reject(new Error("VideoSource closed"));
+      this.metrics.frameRequests++;
       const idx = this._sampleIndexForTime(tSource);
       if (idx < 0) return Promise.reject(new Error("No samples"));
       const cached = this._cache.get(idx);
@@ -1088,7 +1105,8 @@
         // Safety timeout so the promise can't hang forever if the decoder wedges.
         setTimeout(() => {
           const rs = this._pendingResolvers.get(idx);
-          if (rs) { this._pendingResolvers.delete(idx); for (const r of rs) r.reject(new Error("decode timeout")); }
+          if (rs) { this._pendingResolvers.delete(idx); this.metrics.timeoutDrops++;
+            for (const r of rs) r.reject(new Error("decode timeout")); }
         }, 2000);
       }
       return promise;
@@ -2322,7 +2340,11 @@
     // <video> element + object URL for legacy layers before we
     // disconnect the DOM.  Without this, seeking Promises resolve
     // against a stale layer reference and hold GPU memory.
-    if (layer._vidCoalesce) { layer._vidCoalesce.pending = null; layer._vidCoalesce.seeking = false; }
+    if (layer._vidCoalesce) {
+      layer._vidCoalesce.pending = null;
+      layer._vidCoalesce.seeking = false;
+      if (layer._vidCoalesce.requestedIdx) layer._vidCoalesce.requestedIdx.clear();
+    }
     if (layer.videoEl) {
       try { layer.videoEl.pause(); } catch (e) {}
       try { layer.videoEl.removeAttribute("src"); layer.videoEl.load(); } catch (e) {}
@@ -4672,59 +4694,129 @@
     if (!layer.videoSource || !layer.node) return;
     const active = layer.visible && t >= layer.start - 0.001 && t <= layer.start + layer.duration + 0.001;
     if (!active) return;   // opacity will be zeroed by composeLayer; canvas retains last drawn frame
-    // v19.37: L-Low actually throttles video repaint during scrub.
-    // On rapid mousemove we skip ~every other frame request, cutting
-    // GPU + decoder pressure ~50% while preserving the "you can see
-    // where you are" scrub feel.  Only active while SCRUB.active AND
-    // preview quality is "low".
-    if (SCRUB.active && STATE.previewQuality === "low") {
+    // v19.38 per-layer draw counter for playback perf diagnosis.
+    if (!layer._drawStats) layer._drawStats = { draws: 0, skipped_dup: 0, requested: 0, waited: 0, prefetched: 0 };
+    // v19.37 → v19.38: L-Low throttling now applies to BOTH scrub and
+    // playback (playback: ~30fps cap instead of RAF's 60).  Under low
+    // preview quality this halves paint workload for high-fps sources
+    // without changing decoded resolution.
+    if (STATE.previewQuality === "low") {
       const now = performance.now();
-      if (layer._lastLowPaintMs && now - layer._lastLowPaintMs < 66) return;   // ~15fps cap
+      const minGap = SCRUB.active ? 66 : 33;   // ~15fps scrub, ~30fps playback
+      if (layer._lastLowPaintMs && now - layer._lastLowPaintMs < minGap) return;
       layer._lastLowPaintMs = now;
     }
     const tSource = sourceTimeAt(layer, t);
     const state = _videoState(layer);
     // v19.37: skip redraw if we've already drawn this exact frame time.
-    // Without this, a static preview would re-drawImage the same
-    // frame on every RAF, burning GPU for no visible change.
-    if (Math.abs((state.lastAppliedT ?? -1) - tSource) < 1e-4) return;
-    const frame = layer.videoSource.getFrameSyncIfCached(tSource);
-    if (frame) {
+    if (Math.abs((state.lastAppliedT ?? -1) - tSource) < 1e-4) { layer._drawStats.skipped_dup++; return; }
+
+    const src = layer.videoSource;
+    const srcFR = src.frameRate || 30;
+    const cached = src.getFrameSyncIfCached(tSource);
+
+    if (cached) {
       try {
         const ctx = layer.node.getContext("2d");
-        ctx.drawImage(frame, 0, 0, layer.node.width, layer.node.height);
+        ctx.drawImage(cached, 0, 0, layer.node.width, layer.node.height);
         state.lastAppliedT = tSource;
+        layer._drawStats.draws++;
       } catch (e) {}
-    } else {
-      // v19.37: coalesce async requests during rapid scrubbing.  Store
-      // only the newest target; drop older ones.
+      // v19.38 forward prefetch (playback only, not scrub).  Keeps the
+      // decoder queue 1-2 frames ahead of the display clock so cache
+      // hits dominate — the mechanism that lets sequential decode
+      // actually work as playback.  Deduped via state.requestedIdx
+      // so we never enqueue a request that's already pending.
+      if (STATE.playing && !SCRUB.active) {
+        if (!state.requestedIdx) state.requestedIdx = new Set();
+        const outDur = layer.srcOutPoint || layer.videoDuration || src.duration || 0;
+        for (let i = 1; i <= 3; i++) {
+          const aheadT = tSource + i / srcFR;
+          if (aheadT >= outDur) break;
+          const aheadIdx = Math.round(aheadT * srcFR);
+          if (src.getFrameSyncIfCached(aheadT)) continue;
+          if (state.requestedIdx.has(aheadIdx)) continue;
+          state.requestedIdx.add(aheadIdx);
+          layer._drawStats.prefetched++;
+          src.getFrameAtSourceTime(aheadT)
+             .then(() => state.requestedIdx.delete(aheadIdx))
+             .catch(() => state.requestedIdx.delete(aheadIdx));
+        }
+      }
+      return;
+    }
+
+    // Miss.
+    layer._drawStats.waited++;
+
+    if (SCRUB.active) {
+      // v19.37 scrub path — coalesce, keep only newest target.
       state.pending = tSource;
       if (!state.seeking) {
         state.seeking = true;
         const flush = () => {
           if (state.pending == null) { state.seeking = false; return; }
           const target = state.pending; state.pending = null;
-          layer.videoSource.getFrameAtSourceTime(target).then((f) => {
+          src.getFrameAtSourceTime(target).then((f) => {
             if (!layer.node || !layer.node.getContext) { state.seeking = false; return; }
             try {
               const ctx = layer.node.getContext("2d");
               ctx.drawImage(f, 0, 0, layer.node.width, layer.node.height);
               state.lastAppliedT = target;
+              layer._drawStats.draws++;
             } catch (e) {}
             flush();
           }).catch(() => { state.seeking = false; });
         };
         flush();
       }
+      return;
     }
-    // v19.37: skip speculative prefetch while scrubbing — the target
-    // keeps changing and prefetches for stale positions just clog the
-    // decoder queue.  Only prefetch during steady-state playback /
-    // paused-review.
-    if (!SCRUB.active && frame) {
-      const ahead = tSource + 0.5;
-      if (ahead < (layer.srcOutPoint || layer.videoDuration || 0)) {
-        layer.videoSource.getFrameAtSourceTime(ahead).catch(() => {});
+
+    // v19.38 PLAYBACK MISS path — do NOT coalesce.  Kick off decode
+    // for current + a small forward window; return without waiting.
+    // Next RAF will see the frame in cache and draw it.  Deduped via
+    // requestedIdx to avoid duplicate in-flight requests for the same
+    // frame index.  This is the fix for the v19.37 stutter: the
+    // coalesced chain was serializing decodes to ~1 per round-trip,
+    // dropping frames between drawn positions.
+    if (!state.requestedIdx) state.requestedIdx = new Set();
+    const targetIdx = Math.round(tSource * srcFR);
+    if (!state.requestedIdx.has(targetIdx)) {
+      state.requestedIdx.add(targetIdx);
+      layer._drawStats.requested++;
+      src.getFrameAtSourceTime(tSource).then((f) => {
+        state.requestedIdx.delete(targetIdx);
+        // If STATE.time is still within one frame of when we requested,
+        // draw now — avoids waiting an extra RAF cycle.
+        if (!layer.node || !layer.node.getContext) return;
+        const curTSource = sourceTimeAt(layer, STATE.time);
+        const curIdx = Math.round(curTSource * srcFR);
+        if (curIdx === targetIdx) {
+          try {
+            const ctx = layer.node.getContext("2d");
+            ctx.drawImage(f, 0, 0, layer.node.width, layer.node.height);
+            state.lastAppliedT = curTSource;
+            layer._drawStats.draws++;
+          } catch (e) {}
+        }
+      }).catch(() => { state.requestedIdx.delete(targetIdx); });
+    }
+    // Also prefetch forward window even on miss so the decoder starts
+    // pipelining subsequent frames immediately.
+    if (STATE.playing) {
+      const outDur = layer.srcOutPoint || layer.videoDuration || src.duration || 0;
+      for (let i = 1; i <= 3; i++) {
+        const aheadT = tSource + i / srcFR;
+        if (aheadT >= outDur) break;
+        const aheadIdx = Math.round(aheadT * srcFR);
+        if (src.getFrameSyncIfCached(aheadT)) continue;
+        if (state.requestedIdx.has(aheadIdx)) continue;
+        state.requestedIdx.add(aheadIdx);
+        layer._drawStats.prefetched++;
+        src.getFrameAtSourceTime(aheadT)
+           .then(() => state.requestedIdx.delete(aheadIdx))
+           .catch(() => state.requestedIdx.delete(aheadIdx));
       }
     }
   }
