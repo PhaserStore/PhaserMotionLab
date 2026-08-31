@@ -636,6 +636,9 @@
         try {
           const newSource = await VideoSource.create(buf);
           if (layer.videoSource) { try { layer.videoSource.close(); } catch (_) {} }
+          // v19.37: reset coalesce state so the new source doesn't
+          // reuse the old pending-seek target.
+          if (layer._vidCoalesce) { layer._vidCoalesce.pending = null; layer._vidCoalesce.seeking = false; layer._vidCoalesce.lastAppliedT = -1; }
           layer.videoSource = newSource;
           layer.natW = newSource.width;
           layer.natH = newSource.height;
@@ -2315,6 +2318,17 @@
   }
   function deleteLayer(layer) {
     const i = layers.indexOf(layer); if (i < 0) return;
+    // v19.37: cancel any pending seeks / callbacks and free the
+    // <video> element + object URL for legacy layers before we
+    // disconnect the DOM.  Without this, seeking Promises resolve
+    // against a stale layer reference and hold GPU memory.
+    if (layer._vidCoalesce) { layer._vidCoalesce.pending = null; layer._vidCoalesce.seeking = false; }
+    if (layer.videoEl) {
+      try { layer.videoEl.pause(); } catch (e) {}
+      try { layer.videoEl.removeAttribute("src"); layer.videoEl.load(); } catch (e) {}
+      if (layer.videoUrl) { try { URL.revokeObjectURL(layer.videoUrl); } catch (e) {} }
+      layer.videoEl = null; layer.videoUrl = null;
+    }
     // Path B: release the decoder + close all cached VideoFrames.
     // Without this, GPU memory leaks with every deleted video layer.
     if (layer.videoSource) { try { layer.videoSource.close(); } catch (e) {} layer.videoSource = null; }
@@ -4572,6 +4586,19 @@
      Fire-and-forget on preview to keep scrubbing snappy; the video
      element updates its displayed frame when the seek completes. */
   const VIDEO_DRIFT_TOL = 0.10;   // 100ms
+  /* v19.37 seek coalescing state.  Per-layer bookkeeping to prevent
+   * currentTime spam during rapid scrubbing.  Without this, every
+   * mousemove writes a new currentTime and cancels the in-flight
+   * decode, so the video appears frozen or shows stale frames. */
+  function _videoState(layer) {
+    if (!layer._vidCoalesce) layer._vidCoalesce = { pending: null, seeking: false, lastAppliedT: -1 };
+    return layer._vidCoalesce;
+  }
+  /* Global scrubbing hint — set by the timeline scrub handlers.
+   * When true, video sync uses coarse/fast seeking (fastSeek where
+   * available, coalesced enqueue).  On release, one accurate seek
+   * lands us on the exact target frame. */
+  const SCRUB = { active: false };
   function syncVideoLayerToTimeline(layer, t, playing) {
     const v = layer.videoEl;
     if (!v || v.readyState < 2) return;   // metadata not decoded yet
@@ -4579,14 +4606,60 @@
     if (!active) { if (!v.paused) { try { v.pause(); } catch (e) {} } return; }
     const desired = sourceTimeAt(layer, t);
     const drift   = Math.abs(v.currentTime - desired);
-    if (drift > VIDEO_DRIFT_TOL) {
-      try { v.currentTime = desired; } catch (e) {}
-    }
     if (playing) {
+      // Playback: only nudge when drift exceeds tolerance; otherwise
+      // let the video play through naturally.
+      if (drift > VIDEO_DRIFT_TOL) {
+        try { v.currentTime = desired; } catch (e) {}
+      }
       if (v.paused) { const p = v.play(); if (p && p.catch) p.catch(() => {}); }
-    } else {
-      if (!v.paused) { try { v.pause(); } catch (e) {} }
+      return;
     }
+    // Paused/scrubbing.  Make sure we're paused.
+    if (!v.paused) { try { v.pause(); } catch (e) {} }
+    // v19.37: L-Low throttles legacy video sync during scrub too — cap
+    // seek rate to ~15/s to avoid drowning the decoder.
+    if (SCRUB.active && STATE.previewQuality === "low") {
+      const now = performance.now();
+      if (layer._lastLowSyncMs && now - layer._lastLowSyncMs < 66) return;
+      layer._lastLowSyncMs = now;
+    }
+    if (drift < 0.02) return;   // already at target
+    const state = _videoState(layer);
+    if (SCRUB.active) {
+      // Coalesce: remember the newest target, fire one seek at a time.
+      state.pending = desired;
+      if (!state.seeking) {
+        state.seeking = true;
+        const flush = () => {
+          if (state.pending == null) { state.seeking = false; return; }
+          const target = state.pending; state.pending = null;
+          // fastSeek jumps to the nearest keyframe — faster and more
+          // scrub-appropriate than currentTime = (which requests exact
+          // frame decode).  Fall back to currentTime when unsupported.
+          try {
+            if (typeof v.fastSeek === "function") v.fastSeek(target);
+            else v.currentTime = target;
+          } catch (e) { state.seeking = false; return; }
+          // Wait for seeked (or a timeout) then flush the newest target.
+          const onSeeked = () => {
+            v.removeEventListener("seeked", onSeeked);
+            clearTimeout(guard);
+            flush();
+          };
+          v.addEventListener("seeked", onSeeked);
+          const guard = setTimeout(() => {
+            v.removeEventListener("seeked", onSeeked);
+            state.seeking = false;
+          }, 250);
+        };
+        flush();
+      }
+      return;
+    }
+    // Not scrubbing — one accurate seek.
+    state.pending = null;
+    try { v.currentTime = desired; } catch (e) {}
   }
 
   /* Path B — per-frame video sync for WebCodecs-backed layers.
@@ -4599,28 +4672,60 @@
     if (!layer.videoSource || !layer.node) return;
     const active = layer.visible && t >= layer.start - 0.001 && t <= layer.start + layer.duration + 0.001;
     if (!active) return;   // opacity will be zeroed by composeLayer; canvas retains last drawn frame
+    // v19.37: L-Low actually throttles video repaint during scrub.
+    // On rapid mousemove we skip ~every other frame request, cutting
+    // GPU + decoder pressure ~50% while preserving the "you can see
+    // where you are" scrub feel.  Only active while SCRUB.active AND
+    // preview quality is "low".
+    if (SCRUB.active && STATE.previewQuality === "low") {
+      const now = performance.now();
+      if (layer._lastLowPaintMs && now - layer._lastLowPaintMs < 66) return;   // ~15fps cap
+      layer._lastLowPaintMs = now;
+    }
     const tSource = sourceTimeAt(layer, t);
+    const state = _videoState(layer);
+    // v19.37: skip redraw if we've already drawn this exact frame time.
+    // Without this, a static preview would re-drawImage the same
+    // frame on every RAF, burning GPU for no visible change.
+    if (Math.abs((state.lastAppliedT ?? -1) - tSource) < 1e-4) return;
     const frame = layer.videoSource.getFrameSyncIfCached(tSource);
     if (frame) {
       try {
         const ctx = layer.node.getContext("2d");
         ctx.drawImage(frame, 0, 0, layer.node.width, layer.node.height);
+        state.lastAppliedT = tSource;
       } catch (e) {}
     } else {
-      // Kick off async decode; result lands in the cache and gets drawn on a subsequent RAF.
-      layer.videoSource.getFrameAtSourceTime(tSource).then((f) => {
-        if (!layer.node || !layer.node.getContext) return;
-        try {
-          const ctx = layer.node.getContext("2d");
-          ctx.drawImage(f, 0, 0, layer.node.width, layer.node.height);
-        } catch (e) {}
-      }).catch(() => {});
+      // v19.37: coalesce async requests during rapid scrubbing.  Store
+      // only the newest target; drop older ones.
+      state.pending = tSource;
+      if (!state.seeking) {
+        state.seeking = true;
+        const flush = () => {
+          if (state.pending == null) { state.seeking = false; return; }
+          const target = state.pending; state.pending = null;
+          layer.videoSource.getFrameAtSourceTime(target).then((f) => {
+            if (!layer.node || !layer.node.getContext) { state.seeking = false; return; }
+            try {
+              const ctx = layer.node.getContext("2d");
+              ctx.drawImage(f, 0, 0, layer.node.width, layer.node.height);
+              state.lastAppliedT = target;
+            } catch (e) {}
+            flush();
+          }).catch(() => { state.seeking = false; });
+        };
+        flush();
+      }
     }
-    // Speculative prefetch — keeps a rolling window of ~15 frames warm.
-    // Harmless if the target is beyond the trim range (out-of-bounds request just fails).
-    const ahead = tSource + 0.5;
-    if (ahead < (layer.srcOutPoint || layer.videoDuration || 0)) {
-      layer.videoSource.getFrameAtSourceTime(ahead).catch(() => {});
+    // v19.37: skip speculative prefetch while scrubbing — the target
+    // keeps changing and prefetches for stale positions just clog the
+    // decoder queue.  Only prefetch during steady-state playback /
+    // paused-review.
+    if (!SCRUB.active && frame) {
+      const ahead = tSource + 0.5;
+      if (ahead < (layer.srcOutPoint || layer.videoDuration || 0)) {
+        layer.videoSource.getFrameAtSourceTime(ahead).catch(() => {});
+      }
     }
   }
 
@@ -11542,6 +11647,10 @@
       if (e.button !== 0) return;   // left-button only
       e.preventDefault();
       scrub = { active: true };
+      // v19.37: mark all video layers as scrubbing so their sync uses
+      // coalesced fastSeek instead of exact currentTime writes.  Enables
+      // the "fastSeek during drag, accurate seek on release" pattern.
+      SCRUB.active = true;
       if (el.tlPlayhead) el.tlPlayhead.classList.add("is-scrubbing");
       document.body.style.userSelect = "none";
       seekTo(tFromClientX(e.clientX));
@@ -11570,6 +11679,18 @@
       document.body.style.userSelect = "";
       document.removeEventListener("mousemove", onScrubMove);
       document.removeEventListener("mouseup", endScrub);
+      // v19.37: leave scrub mode → one accurate seek to land on the
+      // exact final frame.  Clears any pending coalesced target.
+      SCRUB.active = false;
+      layers.forEach((L) => {
+        if (L.kind !== "VIDEO") return;
+        if (L._vidCoalesce) L._vidCoalesce.pending = null;
+        // Force the sync path to re-request the frame at the exact
+        // final time (not fastSeek).  paintIfPaused runs a fresh
+        // syncOrPaintVideoLayer for every video layer.
+        if (L._vidCoalesce) L._vidCoalesce.lastAppliedT = -1;
+      });
+      paintIfPaused();
     }
     // Ruler: mousedown starts a scrub, mousemove continues, mouseup ends.
     // Replaces the previous click-only handler.
