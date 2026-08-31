@@ -648,6 +648,18 @@
           layer.natW = newSource.width;
           layer.natH = newSource.height;
           layer.name = name;
+          // v19.39: swap the native preview element to the new source.
+          // Reuse the same offscreen slot; revoke the old URL after
+          // the new one loads to prevent double-URL retention.
+          if (layer._previewVideoEl) {
+            const oldUrl = layer._previewVideoUrl;
+            try { layer._previewVideoEl.pause(); } catch (_) {}
+            const newBlob = new Blob([buf], { type: "video/mp4" });
+            const newUrl = URL.createObjectURL(newBlob);
+            try { layer._previewVideoEl.src = newUrl; layer._previewVideoEl.load(); } catch (_) {}
+            layer._previewVideoUrl = newUrl;
+            if (oldUrl) { try { URL.revokeObjectURL(oldUrl); } catch (_) {} }
+          }
           // Resize the canvas preview to the new natural size (subject
           // to the current preview-quality cap).
           if (layer.node && layer.node.tagName === "CANVAS") {
@@ -2135,6 +2147,32 @@
         node.width  = cap.w;
         node.height = cap.h;
         node._is_webcodecs_video = true;   // marker used by the render loop
+        // v19.39 hybrid preview: also create an offscreen native
+        // <video> element that owns the same source bytes (via a Blob
+        // URL).  During normal playback the RAF loop drawImages from
+        // this element — smooth sequential decode handled by the
+        // browser's native pipeline.  Paused/scrubbing still uses the
+        // WebCodecs videoSource for frame-accurate access.
+        try {
+          const blob = new Blob([asset.meta.arrayBuffer], { type: "video/mp4" });
+          const previewUrl = URL.createObjectURL(blob);
+          const pvEl = document.createElement("video");
+          pvEl.muted = true;          // never duplicate audio
+          pvEl.playsInline = true;
+          pvEl.preload = "auto";
+          pvEl.crossOrigin = "anonymous";
+          pvEl.src = previewUrl;
+          // Attached to a hidden container so the browser prioritizes
+          // decoding but nothing renders it in-layout.  layer.node
+          // (the canvas) remains the visible element.
+          pvEl.style.cssText = "position:absolute;left:-99999px;top:0;width:1px;height:1px;pointer-events:none;visibility:hidden";
+          document.body.appendChild(pvEl);
+          // Store on the node so we can find it after layer creation.
+          node._previewVideoEl = pvEl;
+          node._previewVideoUrl = previewUrl;
+        } catch (e) {
+          console.warn("[hybrid] preview <video> setup failed:", e);
+        }
         // Kick off VideoSource creation asynchronously; until it's
         // ready, the canvas stays black.  The initial snapshot is
         // drawn as soon as the source is ready.
@@ -2211,6 +2249,13 @@
       // Diag from import — inspector reads this to show WHY the layer
       // ended up on WebCodecs or Legacy.
       layer.videoDiag = nat.videoDiag || null;
+      // v19.39: hybrid preview — pull the native preview element off
+      // the node onto the layer where the paint path expects it.
+      if (node && node._previewVideoEl) {
+        layer._previewVideoEl = node._previewVideoEl;
+        layer._previewVideoUrl = node._previewVideoUrl;
+        delete node._previewVideoEl; delete node._previewVideoUrl;
+      }
     }
     captureOriginalColors(layer);
     layers.push(layer);
@@ -2350,6 +2395,14 @@
       try { layer.videoEl.removeAttribute("src"); layer.videoEl.load(); } catch (e) {}
       if (layer.videoUrl) { try { URL.revokeObjectURL(layer.videoUrl); } catch (e) {} }
       layer.videoEl = null; layer.videoUrl = null;
+    }
+    // v19.39: also tear down the hybrid preview element (WebCodecs layers).
+    if (layer._previewVideoEl) {
+      try { layer._previewVideoEl.pause(); } catch (e) {}
+      try { layer._previewVideoEl.removeAttribute("src"); layer._previewVideoEl.load(); } catch (e) {}
+      try { if (layer._previewVideoEl.parentNode) layer._previewVideoEl.parentNode.removeChild(layer._previewVideoEl); } catch (e) {}
+      if (layer._previewVideoUrl) { try { URL.revokeObjectURL(layer._previewVideoUrl); } catch (e) {} }
+      layer._previewVideoEl = null; layer._previewVideoUrl = null;
     }
     // Path B: release the decoder + close all cached VideoFrames.
     // Without this, GPU memory leaks with every deleted video layer.
@@ -4693,21 +4746,66 @@
   function paintVideoLayer_WebCodecs(layer, t) {
     if (!layer.videoSource || !layer.node) return;
     const active = layer.visible && t >= layer.start - 0.001 && t <= layer.start + layer.duration + 0.001;
-    if (!active) return;   // opacity will be zeroed by composeLayer; canvas retains last drawn frame
+    if (!active) {
+      // v19.39: also pause the native preview when the layer is out of
+      // its active timeline range or hidden, so a shifted layer doesn't
+      // keep decoding in the background.
+      const pv = layer._previewVideoEl;
+      if (pv && !pv.paused) { try { pv.pause(); } catch (e) {} }
+      return;
+    }
     // v19.38 per-layer draw counter for playback perf diagnosis.
-    if (!layer._drawStats) layer._drawStats = { draws: 0, skipped_dup: 0, requested: 0, waited: 0, prefetched: 0 };
+    if (!layer._drawStats) layer._drawStats = { draws: 0, skipped_dup: 0, requested: 0, waited: 0, prefetched: 0, native_draws: 0 };
     // v19.37 → v19.38: L-Low throttling now applies to BOTH scrub and
-    // playback (playback: ~30fps cap instead of RAF's 60).  Under low
-    // preview quality this halves paint workload for high-fps sources
-    // without changing decoded resolution.
+    // playback (playback: ~30fps cap instead of RAF's 60).
     if (STATE.previewQuality === "low") {
       const now = performance.now();
-      const minGap = SCRUB.active ? 66 : 33;   // ~15fps scrub, ~30fps playback
+      const minGap = SCRUB.active ? 66 : 33;
       if (layer._lastLowPaintMs && now - layer._lastLowPaintMs < minGap) return;
       layer._lastLowPaintMs = now;
     }
     const tSource = sourceTimeAt(layer, t);
     const state = _videoState(layer);
+
+    // v19.39 HYBRID PLAYBACK PATH.  During normal playback, use the
+    // native <video> element for smooth sequential decode.  Retains
+    // WebCodecs for the paused/scrub/export paths (below).  Rationale:
+    // native HTMLVideoElement uses the browser's optimized media
+    // pipeline (hardware decoding, frame-pacing, dropped-frame budget)
+    // which reliably delivers source-rate playback for typical H.264
+    // content on all platforms — WebCodecs random-access frame
+    // fetching has too much per-frame latency for smooth 30-60fps
+    // playback of 1080p+ sources.
+    const pv = layer._previewVideoEl;
+    if (STATE.playing && !SCRUB.active && pv && pv.readyState >= 2) {
+      // Sync currentTime if we've drifted (initial play, seek, loop).
+      const drift = Math.abs(pv.currentTime - tSource);
+      if (drift > 0.20) {
+        try { pv.currentTime = tSource; } catch (e) {}
+      }
+      // Play if paused (initial play / resume after pause).  Muted so
+      // audio never duplicates through the video element — music
+      // playback is owned by the AudioContext mixer.
+      if (pv.paused) {
+        try { pv.muted = true; const pr = pv.play(); if (pr && pr.catch) pr.catch(() => {}); } catch (e) {}
+      }
+      // Draw the current frame the browser is displaying internally.
+      // No decoded frame lookup, no async wait — the frame is already
+      // rasterized and drawImage samples it immediately.
+      try {
+        const ctx = layer.node.getContext("2d");
+        ctx.drawImage(pv, 0, 0, layer.node.width, layer.node.height);
+        state.lastAppliedT = tSource;
+        layer._drawStats.native_draws++;
+        layer._drawStats.draws++;
+      } catch (e) {}
+      return;
+    }
+
+    // Not playing (paused) or scrubbing.  Pause the native preview so
+    // it stops eating decode budget.
+    if (pv && !pv.paused) { try { pv.pause(); } catch (e) {} }
+
     // v19.37: skip redraw if we've already drawn this exact frame time.
     if (Math.abs((state.lastAppliedT ?? -1) - tSource) < 1e-4) { layer._drawStats.skipped_dup++; return; }
 
@@ -4722,31 +4820,10 @@
         state.lastAppliedT = tSource;
         layer._drawStats.draws++;
       } catch (e) {}
-      // v19.38 forward prefetch (playback only, not scrub).  Keeps the
-      // decoder queue 1-2 frames ahead of the display clock so cache
-      // hits dominate — the mechanism that lets sequential decode
-      // actually work as playback.  Deduped via state.requestedIdx
-      // so we never enqueue a request that's already pending.
-      if (STATE.playing && !SCRUB.active) {
-        if (!state.requestedIdx) state.requestedIdx = new Set();
-        const outDur = layer.srcOutPoint || layer.videoDuration || src.duration || 0;
-        for (let i = 1; i <= 3; i++) {
-          const aheadT = tSource + i / srcFR;
-          if (aheadT >= outDur) break;
-          const aheadIdx = Math.round(aheadT * srcFR);
-          if (src.getFrameSyncIfCached(aheadT)) continue;
-          if (state.requestedIdx.has(aheadIdx)) continue;
-          state.requestedIdx.add(aheadIdx);
-          layer._drawStats.prefetched++;
-          src.getFrameAtSourceTime(aheadT)
-             .then(() => state.requestedIdx.delete(aheadIdx))
-             .catch(() => state.requestedIdx.delete(aheadIdx));
-        }
-      }
       return;
     }
 
-    // Miss.
+    // Cache miss.
     layer._drawStats.waited++;
 
     if (SCRUB.active) {
@@ -4773,13 +4850,9 @@
       return;
     }
 
-    // v19.38 PLAYBACK MISS path — do NOT coalesce.  Kick off decode
-    // for current + a small forward window; return without waiting.
-    // Next RAF will see the frame in cache and draw it.  Deduped via
-    // requestedIdx to avoid duplicate in-flight requests for the same
-    // frame index.  This is the fix for the v19.37 stutter: the
-    // coalesced chain was serializing decodes to ~1 per round-trip,
-    // dropping frames between drawn positions.
+    // Paused (not scrubbing, not cached).  Kick off a one-shot decode
+    // for the current frame; dedup so we don't request the same idx
+    // repeatedly across RAFs.  Result draws on the promise callback.
     if (!state.requestedIdx) state.requestedIdx = new Set();
     const targetIdx = Math.round(tSource * srcFR);
     if (!state.requestedIdx.has(targetIdx)) {
@@ -4787,37 +4860,14 @@
       layer._drawStats.requested++;
       src.getFrameAtSourceTime(tSource).then((f) => {
         state.requestedIdx.delete(targetIdx);
-        // If STATE.time is still within one frame of when we requested,
-        // draw now — avoids waiting an extra RAF cycle.
         if (!layer.node || !layer.node.getContext) return;
-        const curTSource = sourceTimeAt(layer, STATE.time);
-        const curIdx = Math.round(curTSource * srcFR);
-        if (curIdx === targetIdx) {
-          try {
-            const ctx = layer.node.getContext("2d");
-            ctx.drawImage(f, 0, 0, layer.node.width, layer.node.height);
-            state.lastAppliedT = curTSource;
-            layer._drawStats.draws++;
-          } catch (e) {}
-        }
+        try {
+          const ctx = layer.node.getContext("2d");
+          ctx.drawImage(f, 0, 0, layer.node.width, layer.node.height);
+          state.lastAppliedT = tSource;
+          layer._drawStats.draws++;
+        } catch (e) {}
       }).catch(() => { state.requestedIdx.delete(targetIdx); });
-    }
-    // Also prefetch forward window even on miss so the decoder starts
-    // pipelining subsequent frames immediately.
-    if (STATE.playing) {
-      const outDur = layer.srcOutPoint || layer.videoDuration || src.duration || 0;
-      for (let i = 1; i <= 3; i++) {
-        const aheadT = tSource + i / srcFR;
-        if (aheadT >= outDur) break;
-        const aheadIdx = Math.round(aheadT * srcFR);
-        if (src.getFrameSyncIfCached(aheadT)) continue;
-        if (state.requestedIdx.has(aheadIdx)) continue;
-        state.requestedIdx.add(aheadIdx);
-        layer._drawStats.prefetched++;
-        src.getFrameAtSourceTime(aheadT)
-           .then(() => state.requestedIdx.delete(aheadIdx))
-           .catch(() => state.requestedIdx.delete(aheadIdx));
-      }
     }
   }
 
@@ -11781,6 +11831,14 @@
         // final time (not fastSeek).  paintIfPaused runs a fresh
         // syncOrPaintVideoLayer for every video layer.
         if (L._vidCoalesce) L._vidCoalesce.lastAppliedT = -1;
+        // v19.39: also sync the native preview element to the final
+        // timeline position (kept paused since we're back to paused
+        // state, unless play is active).  Ensures the native pipeline
+        // is at the right frame when play resumes.
+        if (L._previewVideoEl && L._previewVideoEl.readyState >= 1) {
+          const tSrc = sourceTimeAt(L, STATE.time);
+          try { L._previewVideoEl.currentTime = tSrc; } catch (e) {}
+        }
       });
       paintIfPaused();
     }
