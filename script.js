@@ -937,6 +937,28 @@
     // v19.38: live decoder queue depth (Chromium 94+).  Falls back to
     // 0 when not exposed.
     get decodeQueueSize() { return (this._decoder && this._decoder.decodeQueueSize) || 0; }
+    // v19.40: exact range of decodable presentation times.  Callers
+    // clamp their requested tSource to [firstSourceTime, lastValidSourceTime]
+    // so we never ask for a frame that isn't in the sample table.
+    // Requesting past the last pts is a known cause of export freezes:
+    // getFrameAtSourceTime would hit the sample-not-found path, no
+    // frame ever arrives, promise times out, canvas stays stale.
+    get firstSourceTime() {
+      return this._samples.length ? (this._samples[0].pts_us / 1e6) : 0;
+    }
+    get lastValidSourceTime() {
+      const N = this._samples.length;
+      if (!N) return 0;
+      // Scan the last few samples for the maximum pts (mp4box gives
+      // samples in decode order, so the *last* array entry is NOT
+      // necessarily the largest pts — B-frame streams have out-of-order
+      // decode).  Take max across the tail.
+      let maxPts = 0;
+      for (let i = Math.max(0, N - 8); i < N; i++) {
+        if (this._samples[i].pts_us > maxPts) maxPts = this._samples[i].pts_us;
+      }
+      return maxPts / 1e6;
+    }
 
     async _init(MP4Box, step) {
       const log = step || (() => {});
@@ -1038,11 +1060,22 @@
     _onFrame(frame) {
       if (this._closed) { try { frame.close(); } catch(e){} return; }
       this.metrics.decodedFrames++;
-      const idx = this._sampleByPts.get(frame.timestamp);
-      if (idx === undefined) { try { frame.close(); } catch(e){} return; }
+      let idx = this._sampleByPts.get(frame.timestamp);
+      // v19.40: If the decoded frame's timestamp doesn't match any known
+      // sample pts exactly (rounding drift, timescale conversion), fall
+      // back to nearest-pts within a ±1ms window.  Prevents silent
+      // frame drops when pts arithmetic loses a microsecond.
+      if (idx === undefined) {
+        const NEAR = 1000;   // 1ms window
+        let bestIdx = -1, bestDelta = Infinity;
+        for (let i = 0; i < this._samples.length; i++) {
+          const d = Math.abs(this._samples[i].pts_us - frame.timestamp);
+          if (d < bestDelta) { bestDelta = d; bestIdx = i; if (d === 0) break; }
+        }
+        if (bestIdx >= 0 && bestDelta <= NEAR) idx = bestIdx;
+      }
+      if (idx === undefined || idx < 0) { try { frame.close(); } catch(e){} return; }
       const byteSize = (frame.allocationSize && frame.allocationSize()) || (this._width * this._height * 4);
-      // Resolve pending BEFORE caching (so waiters get the frame even if cache
-      // immediately evicts).  Cache also pins by "just-inserted head" position.
       const resolvers = this._pendingResolvers.get(idx);
       this._cache.set(idx, frame, byteSize);
       if (resolvers) {
@@ -1097,14 +1130,18 @@
       return f;
     }
 
-    getFrameAtSourceTime(tSource) {
+    getFrameAtSourceTime(tSource, opts) {
       if (this._closed) return Promise.reject(new Error("VideoSource closed"));
       this.metrics.frameRequests++;
+      // v19.40: caller-supplied timeout — export uses a long window
+      // (10s) to allow deep decode pipelines to catch up on long
+      // videos; preview keeps the fast 2s default so a decode wedge
+      // doesn't hang the UI.
+      const timeoutMs = (opts && opts.timeoutMs) || 2000;
       const idx = this._sampleIndexForTime(tSource);
       if (idx < 0) return Promise.reject(new Error("No samples"));
       const cached = this._cache.get(idx);
       if (cached) return Promise.resolve(cached);
-      // Attach or create a pending resolver.
       const existing = this._pendingResolvers.get(idx);
       const promise = new Promise((resolve, reject) => {
         const entry = { resolve, reject };
@@ -1112,14 +1149,12 @@
         else { this._pendingResolvers.set(idx, [entry]); }
       });
       if (!existing) {
-        // We haven't started waiting for this idx yet — kick off decode.
         this._triggerDecodeTo(idx);
-        // Safety timeout so the promise can't hang forever if the decoder wedges.
         setTimeout(() => {
           const rs = this._pendingResolvers.get(idx);
           if (rs) { this._pendingResolvers.delete(idx); this.metrics.timeoutDrops++;
             for (const r of rs) r.reject(new Error("decode timeout")); }
-        }, 2000);
+        }, timeoutMs);
       }
       return promise;
     }
@@ -2403,6 +2438,14 @@
       try { if (layer._previewVideoEl.parentNode) layer._previewVideoEl.parentNode.removeChild(layer._previewVideoEl); } catch (e) {}
       if (layer._previewVideoUrl) { try { URL.revokeObjectURL(layer._previewVideoUrl); } catch (e) {} }
       layer._previewVideoEl = null; layer._previewVideoUrl = null;
+    }
+    // v19.40: also tear down the export-only paused HTMLVideoElement
+    // if an export was mid-flight when the layer was deleted.
+    if (layer._exportVideoEl) {
+      try { layer._exportVideoEl.pause(); } catch (e) {}
+      try { layer._exportVideoEl.removeAttribute("src"); layer._exportVideoEl.load(); } catch (e) {}
+      try { if (layer._exportVideoEl.parentNode) layer._exportVideoEl.parentNode.removeChild(layer._exportVideoEl); } catch (e) {}
+      layer._exportVideoEl = null;
     }
     // Path B: release the decoder + close all cached VideoFrames.
     // Without this, GPU memory leaks with every deleted video layer.
@@ -4968,9 +5011,23 @@
      previews start fresh. */
   function finalizeVideoLayersAfterExport() {
     layers.forEach((L) => {
-      if (L.kind !== "VIDEO" || !L.videoEl) return;
-      try { L.videoEl.pause(); } catch (e) {}
-      try { L.videoEl.currentTime = L.srcInPoint || 0; } catch (e) {}
+      if (L.kind !== "VIDEO") return;
+      if (L.videoEl) {
+        try { L.videoEl.pause(); } catch (e) {}
+        try { L.videoEl.currentTime = L.srcInPoint || 0; } catch (e) {}
+      }
+      // v19.40: tear down the export-only paused HTMLVideoElement.
+      // This is DISTINCT from _previewVideoEl (v19.39 preview path)
+      // which must survive export and continue driving preview
+      // playback.  We only remove the export-only fallback element.
+      if (L._exportVideoEl) {
+        try { L._exportVideoEl.pause(); } catch (e) {}
+        try { L._exportVideoEl.removeAttribute("src"); L._exportVideoEl.load(); } catch (e) {}
+        try { if (L._exportVideoEl.parentNode) L._exportVideoEl.parentNode.removeChild(L._exportVideoEl); } catch (e) {}
+        L._exportVideoEl = null;
+        // Do NOT revoke _previewVideoUrl here — the preview path still
+        // needs it.  We only shared the URL with the export element.
+      }
     });
   }
 
@@ -5053,35 +5110,136 @@
      Speculative prefetch decodes ~0.5s ahead so subsequent frames hit
      the cache.  Skipped when the loop is behind wall-clock (see the
      export loop for details).  */
+  /* v19.40 export-only paused HTMLVideoElement fallback.
+   *
+   * When WebCodecs fails to deliver a frame for a specific export
+   * time (decode timeout, unrecoverable pts drift, codec quirk near
+   * EOS), the exporter transparently falls through to a paused
+   * HTMLVideoElement.  It seeks to the exact requested source time,
+   * waits for the frame to be displayable, draws it into the layer's
+   * export canvas, then keeps the element paused.
+   *
+   *   - Separate from layer._previewVideoEl.  Preview element stays
+   *     untouched so v19.39 playback behavior is unaffected.
+   *   - Reuses the preview blob URL when available so we don't
+   *     double-buffer the underlying bytes.
+   *   - Never played (playbackRate=0-safe, only currentTime writes).
+   *   - Torn down in finalizeVideoLayersAfterExport.
+   */
+  async function _ensureExportFallbackVideo(layer) {
+    if (layer._exportVideoEl) {
+      // Wait for readyState if we're mid-load
+      if (layer._exportVideoEl.readyState >= 1) return layer._exportVideoEl;
+    } else {
+      const url = layer._previewVideoUrl || layer.videoUrl;
+      if (!url) return null;
+      const v = document.createElement("video");
+      v.muted = true;
+      v.playsInline = true;
+      v.preload = "auto";
+      v.crossOrigin = "anonymous";
+      v.src = url;
+      v.style.cssText = "position:absolute;left:-99999px;top:0;width:1px;height:1px;visibility:hidden;pointer-events:none";
+      document.body.appendChild(v);
+      layer._exportVideoEl = v;
+    }
+    // Wait for loadedmetadata + first frame available.
+    const v = layer._exportVideoEl;
+    if (v.readyState < 2) {
+      await new Promise((resolve) => {
+        let done = false;
+        const fin = () => { if (done) return; done = true; resolve(); };
+        v.addEventListener("loadeddata", fin, { once: true });
+        v.addEventListener("canplay", fin, { once: true });
+        setTimeout(fin, 3000);
+      });
+    }
+    return v;
+  }
+
+  /* Seek `_exportVideoEl` to tSource and await frame availability.
+     Uses requestVideoFrameCallback when supported (fires when a NEW
+     frame is on-screen, guaranteeing displayable content); falls back
+     to `seeked` + one RAF otherwise.  Never plays. */
+  async function _seekExportVideoTo(v, tSource) {
+    if (!v || v.readyState < 1) return false;
+    try { v.pause(); } catch (e) {}
+    const target = Math.max(0, tSource);
+    if (Math.abs(v.currentTime - target) < 1 / 240) return true;
+    return await new Promise((resolve) => {
+      let done = false;
+      const fin = (ok) => { if (done) return; done = true; resolve(!!ok); };
+      const useRVFC = typeof v.requestVideoFrameCallback === "function";
+      if (useRVFC) {
+        try { v.requestVideoFrameCallback(() => fin(true)); } catch (e) {}
+      } else {
+        v.addEventListener("seeked", () => fin(true), { once: true });
+      }
+      try { v.currentTime = target; } catch (e) { fin(false); return; }
+      setTimeout(() => fin(v.readyState >= 2), 2000);
+    });
+  }
+
   async function paintWebCodecsLayersForExport(t) {
     const vids = layers.filter((L) => L.kind === "VIDEO" && L.videoSource && L.visible);
     if (!vids.length) return;
     await Promise.all(vids.map(async (L) => {
       const inWindow = t >= L.start - 0.001 && t <= L.start + L.duration + 0.001;
       if (!inWindow) return;
-      // S2 — export uses a SEPARATE full-source-resolution canvas, so
-      // the preview-quality cap on L.node doesn't degrade the export.
-      // Lazily allocate the export canvas the first time we need it.
+      // S2 — export uses a SEPARATE full-source-resolution canvas.
       if (!L._exportCanvas || L._exportCanvas.width !== L.natW || L._exportCanvas.height !== L.natH) {
         L._exportCanvas = document.createElement("canvas");
         L._exportCanvas.width  = L.natW;
         L._exportCanvas.height = L.natH;
       }
-      const tSource = sourceTimeAt(L, t);
+      // v19.40: clamp to the actual last decodable pts.  Requesting
+      // exactly video.duration or beyond routinely hit the "no sample
+      // matches" branch and hung the decode-wait — the exported clip
+      // then froze on whatever the canvas last held for the remaining
+      // frames.  Freezing to lastValidSourceTime holds the true final
+      // frame instead.
+      let tSource = sourceTimeAt(L, t);
+      const lastValid = L.videoSource.lastValidSourceTime;
+      if (lastValid > 0 && tSource > lastValid) tSource = lastValid;
+
       // Fast path: sync cache hit.
       let frame = L.videoSource.getFrameSyncIfCached(tSource);
       if (!frame) {
-        try { frame = await L.videoSource.getFrameAtSourceTime(tSource); }
-        catch (e) { return; }
+        try {
+          // v19.40: 10s timeout for export path.  Long enough that even
+          // deep decoder pipelines on long clips have room to catch up.
+          frame = await L.videoSource.getFrameAtSourceTime(tSource, { timeoutMs: 10000 });
+        }
+        catch (e) {
+          // v19.40: WebCodecs failed — fall through to the paused
+          // HTMLVideoElement fallback.  This is the deterministic
+          // fallback path required for codecs / edge cases where the
+          // WebCodecs decoder can't deliver a specific frame.  We DO
+          // NOT return here anymore — that was the v19.39 silent-skip
+          // that caused missing tail frames.
+          try {
+            const fbV = await _ensureExportFallbackVideo(L);
+            if (fbV) {
+              const ok = await _seekExportVideoTo(fbV, tSource);
+              if (ok && fbV.readyState >= 2) {
+                try {
+                  const ctx = L._exportCanvas.getContext("2d");
+                  ctx.drawImage(fbV, 0, 0, L._exportCanvas.width, L._exportCanvas.height);
+                } catch (e) {}
+              }
+            }
+          } catch (e2) {}
+          return;
+        }
       }
       try {
         const ctx = L._exportCanvas.getContext("2d");
         ctx.drawImage(frame, 0, 0, L._exportCanvas.width, L._exportCanvas.height);
       } catch (e) {}
-      // Prefetch a rolling window ahead of the current position so
-      // subsequent iterations hit the sync cache path.
+      // Prefetch a rolling window ahead of the current position.  Also
+      // clamp so we don't chase a pts that doesn't exist.
+      const srcOut = Math.min(L.srcOutPoint || L.videoDuration || 0, lastValid || Infinity);
       const ahead = tSource + 0.5;
-      const srcOut = L.srcOutPoint || L.videoDuration || 0;
       if (ahead < srcOut) L.videoSource.getFrameAtSourceTime(ahead).catch(() => {});
     }));
   }
@@ -12156,7 +12314,7 @@
     requestAnimationFrame(() => fitZoom());
     setTimeout(() => { fitZoom(); renderTimeline(); }, 120);
     // Test hook: expose internals for automated verification (harmless in production).
-    window.__phaserDebug = Object.assign(window.__phaserDebug || {}, { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath, runSvgRepair, collectSvgRepairOps, releaseClipPaths, removeMasks, convertShapesToPaths, audio: () => audio });
+    window.__phaserDebug = Object.assign(window.__phaserDebug || {}, { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, paintWebCodecsLayersForExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath, runSvgRepair, collectSvgRepairOps, releaseClipPaths, removeMasks, convertShapesToPaths, audio: () => audio });
   }
   document.addEventListener("DOMContentLoaded", init);
 })();
