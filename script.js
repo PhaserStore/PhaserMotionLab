@@ -2056,6 +2056,262 @@
     layer._textPathApplied = null;
   }
 
+  /* ================================================================
+   * v19.42 WEIRD SLICE COMPOSITOR (text layers)
+   *
+   * Replaces the v19.41 whole-layer DOM approximation with true
+   * horizontal slice rendering.  Pipeline per frame:
+   *
+   *   1. Rasterize the current text into an offscreen source canvas
+   *      (cached — only re-drawn when the displayed text or style
+   *      changes).
+   *   2. Divide into `sliceDensity` horizontal bands.
+   *   3. Composite each band into layer._weirdCanvas with an
+   *      independent X displacement (deterministic per band via
+   *      mulberry32(seed + frame*991 + band*13)), plus optional
+   *      Y jitter and per-band RGB channel separation.
+   *   4. Overlay noise, color-flash difference blend, and
+   *      scanline-drop bands based on the remaining params.
+   *   5. Hide the SVG (layer.node.visibility = "hidden") and show
+   *      the canvas so the visible representation is the sliced
+   *      composite.
+   *
+   * Deterministic: same seed + frame_idx → identical output every
+   * time.  Same compositor used in preview, scrub, and export
+   * (export loop calls _renderWeirdCanvasIfActive per frame).
+   * Original layer.textStyle.text NEVER mutated.
+   * ================================================================ */
+
+  const _weirdScratchCanvas = document.createElement("canvas");
+  const _weirdNoiseTiles = new Map();
+
+  function _getWeirdNoiseTile(seedKey) {
+    let tile = _weirdNoiseTiles.get(seedKey);
+    if (tile) return tile;
+    tile = document.createElement("canvas");
+    tile.width = tile.height = 64;
+    const tctx = tile.getContext("2d");
+    const img = tctx.createImageData(64, 64);
+    const rng = _rng(seedKey);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = Math.floor(rng() * 255);
+      img.data[i] = v; img.data[i+1] = v; img.data[i+2] = v; img.data[i+3] = 255;
+    }
+    tctx.putImageData(img, 0, 0);
+    _weirdNoiseTiles.set(seedKey, tile);
+    // Bound the cache
+    if (_weirdNoiseTiles.size > 16) {
+      const firstKey = _weirdNoiseTiles.keys().next().value;
+      _weirdNoiseTiles.delete(firstKey);
+    }
+    return tile;
+  }
+
+  function _ensureWeirdCanvases(layer) {
+    const W = Math.max(1, layer.natW | 0);
+    const H = Math.max(1, layer.natH | 0);
+    if (!layer._weirdCanvas) {
+      layer._weirdCanvas = document.createElement("canvas");
+      // Fills the wrap so the CSS transforms (position, scale, rotation)
+      // applied to layer.wrap carry through to the visible canvas.
+      layer._weirdCanvas.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;display:none";
+      layer.wrap.appendChild(layer._weirdCanvas);
+    }
+    if (!layer._weirdSourceCanvas) layer._weirdSourceCanvas = document.createElement("canvas");
+    if (layer._weirdCanvas.width       !== W) layer._weirdCanvas.width       = W;
+    if (layer._weirdCanvas.height      !== H) layer._weirdCanvas.height      = H;
+    if (layer._weirdSourceCanvas.width !== W) layer._weirdSourceCanvas.width = W;
+    if (layer._weirdSourceCanvas.height!== H) layer._weirdSourceCanvas.height= H;
+  }
+
+  function _rasterizeTextToSource(layer) {
+    // The "displayed text" — either what applyTextFxAtTime last wrote
+    // to the SVG, or the original textStyle.text if no string mutators
+    // are active on this layer.
+    const displayText = (layer._lastDisplayedText != null) ? layer._lastDisplayedText : (layer.textStyle ? layer.textStyle.text : "");
+    const s = layer.textStyle || {};
+    const key = displayText + "|" + s.fontFamily + "|" + s.fontSize + "|" + s.fontWeight + "|" + s.color + "|" + s.align + "|" + layer.natW + "|" + layer.natH;
+    if (layer._weirdSourceKey === key) return;
+    const src = layer._weirdSourceCanvas;
+    const W = src.width, H = src.height;
+    const sctx = src.getContext("2d");
+    sctx.clearRect(0, 0, W, H);
+    if (!displayText) { layer._weirdSourceKey = key; return; }
+    sctx.font = `${s.fontWeight || 500} ${s.fontSize || 96}px "${s.fontFamily || "Inter"}", sans-serif`;
+    sctx.fillStyle = s.color || "#FFFFFF";
+    sctx.textAlign = s.align === "start" ? "left" : s.align === "end" ? "right" : "center";
+    sctx.textBaseline = "alphabetic";
+    const lines = String(displayText).split("\n");
+    const padX = Math.max(8, (s.fontSize || 96) * 0.25);
+    const anchorX = s.align === "start" ? padX : s.align === "end" ? (W - padX) : W / 2;
+    const lineH = (s.fontSize || 96) * (s.lineHeight || 1.2);
+    // Baseline ~82% of first-line font-size, matching buildTextLayerSVG's math.
+    const firstBaselineY = Math.max(8, (s.fontSize || 96) * 0.25) + (s.fontSize || 96) * 0.82;
+    lines.forEach((line, i) => {
+      sctx.fillText(line, anchorX, firstBaselineY + i * lineH);
+    });
+    layer._weirdSourceKey = key;
+  }
+
+  /* Draw a rectangular BAND of the source canvas onto `dstCtx` with a
+     channel tint applied.  Uses a scratch canvas: draw the band,
+     re-fill with the tint color under source-in composite (so only
+     opaque source pixels get tinted), then drawImage that onto dst
+     with "lighter" so R/G/B channels add up into the destination. */
+  function _drawTintedBand(dstCtx, src, sx, sy, sw, sh, dx, dy, tint) {
+    if (_weirdScratchCanvas.width  < sw) _weirdScratchCanvas.width  = Math.max(sw, _weirdScratchCanvas.width);
+    if (_weirdScratchCanvas.height < sh) _weirdScratchCanvas.height = Math.max(sh, _weirdScratchCanvas.height);
+    const tctx = _weirdScratchCanvas.getContext("2d");
+    tctx.globalCompositeOperation = "source-over";
+    tctx.clearRect(0, 0, sw, sh);
+    tctx.drawImage(src, sx, sy, sw, sh, 0, 0, sw, sh);
+    tctx.globalCompositeOperation = "source-in";
+    tctx.fillStyle = tint;
+    tctx.fillRect(0, 0, sw, sh);
+    tctx.globalCompositeOperation = "source-over";
+    dstCtx.globalCompositeOperation = "lighter";
+    dstCtx.drawImage(_weirdScratchCanvas, 0, 0, sw, sh, dx, dy, sw, sh);
+  }
+
+  function _compositeWeirdSlices(layer, P, sceneTime) {
+    const dstCanvas = layer._weirdCanvas;
+    const src = layer._weirdSourceCanvas;
+    const W = dstCanvas.width, H = dstCanvas.height;
+    const ctx = dstCanvas.getContext("2d");
+    ctx.clearRect(0, 0, W, H);
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = 1;
+
+    const chance       = (P.glitchChance   ?? 40) / 100;
+    const speed        = Math.max(1, P.glitchSpeed ?? 10);
+    const density      = Math.max(1, Math.floor(P.sliceDensity  ?? 45));
+    const strengthPct  = (P.sliceStrength  ?? 40) / 100;   // 0..1 fraction of W
+    const shake        = (P.shake          ?? 0) / 100;    // 0..1 -> px
+    const chroma       = (P.chroma         ?? 0) / 100;    // 0..1
+    const noise        = (P.noise          ?? 0) / 100;
+    const flash        = (P.colorFlash     ?? 0) / 100;
+    const scanDrop     = (P.scanlineDrop   ?? 0) / 100;
+    const seed         = (P.seed           ?? 137) | 0;
+
+    const frame  = Math.floor(sceneTime * speed);
+    const rngG   = _rng(seed + frame * 991);
+    const isGlitching = rngG() < chance;
+
+    const bandH = H / density;
+    const maxDispX = strengthPct * W * 0.6;      // up to 60% of layer width
+    const shakePx  = shake * 12;                 // up to ~12px whole-layer
+
+    for (let i = 0; i < density; i++) {
+      const rB = _rng(seed + frame * 991 + i * 13 + 1);
+      const sy = i * bandH;
+      const drawH = (i === density - 1) ? (H - sy) : bandH;   // last band fills remainder
+      // Deterministic per-band displacement.  When not glitching this frame,
+      // 30% of bands still get a tiny nudge so there's visible activity
+      // (avoids "totally frozen" look at low Chance).
+      let offX = 0, offY = 0;
+      const active = isGlitching ? (rB() < 0.75) : (rB() < 0.15);
+      if (active) {
+        offX = (rB() * 2 - 1) * maxDispX;
+        offY = (rB() * 2 - 1) * shakePx * 0.3;
+      }
+
+      // Scanline drop: some bands vanish (total drop) or dim.
+      let bandAlpha = 1;
+      if (scanDrop > 0 && (isGlitching || rB() < 0.3)) {
+        const roll = rB();
+        if (roll < scanDrop * 0.35)      continue;                 // TOTAL drop
+        else if (roll < scanDrop)        bandAlpha = 0.35;         // dim
+      }
+
+      ctx.globalAlpha = bandAlpha;
+      if (chroma > 0.03 && active) {
+        // Per-slice RGB channel offsets — additive composite.
+        const chOff = chroma * Math.max(6, maxDispX * 0.15);
+        _drawTintedBand(ctx, src, 0, sy, W, drawH, offX - chOff, sy + offY, "#ff0000");
+        _drawTintedBand(ctx, src, 0, sy, W, drawH, offX,          sy + offY, "#00ff00");
+        _drawTintedBand(ctx, src, 0, sy, W, drawH, offX + chOff, sy + offY, "#0000ff");
+      } else {
+        ctx.globalCompositeOperation = "source-over";
+        ctx.drawImage(src, 0, sy, W, drawH, offX, sy + offY, W, drawH);
+      }
+      ctx.globalCompositeOperation = "source-over";
+    }
+    ctx.globalAlpha = 1;
+
+    // Whole-layer shake — offset the entire composite via a translate
+    // on the canvas element (not baked into pixels so it doesn't blur).
+    const rngS = _rng(seed + frame * 7);
+    const shakeX = shake > 0 ? (rngS() * 2 - 1) * shakePx : 0;
+    const shakeY = shake > 0 ? (rngS() * 2 - 1) * shakePx * 0.6 : 0;
+    dstCanvas.style.transform = shake > 0 ? `translate(${shakeX.toFixed(2)}px, ${shakeY.toFixed(2)}px)` : "";
+
+    // Noise overlay — deterministic tile fill.
+    if (noise > 0.02) {
+      const tile = _getWeirdNoiseTile(seed + Math.floor(frame / 4));
+      ctx.globalAlpha = Math.min(0.6, noise * 0.5);
+      ctx.globalCompositeOperation = "overlay";
+      for (let ty = 0; ty < H; ty += tile.height) {
+        for (let tx = 0; tx < W; tx += tile.width) {
+          ctx.drawImage(tile, tx, ty);
+        }
+      }
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = "source-over";
+    }
+
+    // Color flash — deterministic color, difference blend.
+    if (flash > 0.05 && (isGlitching || rngG() < 0.3)) {
+      const rngF = _rng(seed + frame * 3 + 77);
+      const cols = ["#ff2a2a", "#2affff", "#ffff2a", "#ff2aff", "#2aff2a", "#ffffff"];
+      const col = cols[Math.floor(rngF() * cols.length)];
+      ctx.fillStyle = col;
+      ctx.globalCompositeOperation = "difference";
+      ctx.globalAlpha = Math.min(0.5, flash * 0.35);
+      ctx.fillRect(0, 0, W, H);
+      ctx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function _showWeirdCanvas(layer) {
+    if (layer._weirdCanvas) layer._weirdCanvas.style.display = "";
+    if (layer.node && layer.node.style) layer.node.style.visibility = "hidden";
+    layer._weirdActive = true;
+  }
+
+  function _clearWeirdCanvas(layer) {
+    if (layer._weirdCanvas) {
+      layer._weirdCanvas.style.display = "none";
+      layer._weirdCanvas.style.transform = "";
+      const ctx = layer._weirdCanvas.getContext("2d");
+      ctx.clearRect(0, 0, layer._weirdCanvas.width, layer._weirdCanvas.height);
+    }
+    if (layer.node && layer.node.style) layer.node.style.visibility = "";
+    layer._weirdActive = false;
+    layer._weirdSourceKey = null;
+  }
+
+  /* Called from applyTextFxAtTime for TEXT layers.  Also callable
+     directly from the export loop so preview and export use the SAME
+     compositor. */
+  function applyWeirdSlicesOnText(layer, weirdClipEntries, sceneTime) {
+    if (!layer || layer.kind !== "TEXT") return;
+    if (!weirdClipEntries || !weirdClipEntries.length) {
+      if (layer._weirdActive) _clearWeirdCanvas(layer);
+      return;
+    }
+    // Stacking multiple Weird clips is a no-op — use the last active
+    // one's params (matches "latest wins" convention used by morph /
+    // fill reveal / segment reveal).
+    const last = weirdClipEntries[weirdClipEntries.length - 1];
+    const clip = last.c;
+    const P = clip.params || {};
+    _ensureWeirdCanvases(layer);
+    _rasterizeTextToSource(layer);
+    _compositeWeirdSlices(layer, P, sceneTime);
+    _showWeirdCanvas(layer);
+  }
+
   /* Entry point — called from composeLayer for TEXT layers.
      Runs all active text-affecting clips (including persist-past-end
      ones for reveal-style effects).  Rebuilds SVG only when the
@@ -2110,6 +2366,15 @@
     } else if (layer._textPathApplied) {
       _clearTextPathIfApplied(layer);
     }
+    // v19.42: WEIRD SLICE PASS.  If any weirdGlitch clip is active on
+    // this TEXT layer, render true horizontal slices into an overlay
+    // canvas and hide the underlying SVG.  Compositor owns the visual
+    // representation while active — the DOM-level delta from
+    // EFFECTS.weirdGlitch still runs on composeLayer but is invisible
+    // (SVG hidden); harmless.  When no weird clip is active, the
+    // canvas is hidden and the SVG shows again.
+    const weirdClips = activeAll.filter(({ c }) => c.fxKey === "weirdGlitch");
+    applyWeirdSlicesOnText(layer, weirdClips, sceneTime);
   }
 
   /* Create a new text layer at the given ARTBOARD pixel position (not
@@ -3012,6 +3277,14 @@
       try { if (layer._exportVideoEl.parentNode) layer._exportVideoEl.parentNode.removeChild(layer._exportVideoEl); } catch (e) {}
       layer._exportVideoEl = null;
     }
+    // v19.42: weird slice compositor cleanup (text layers).
+    if (layer._weirdCanvas) {
+      try { if (layer._weirdCanvas.parentNode) layer._weirdCanvas.parentNode.removeChild(layer._weirdCanvas); } catch (e) {}
+      layer._weirdCanvas = null;
+    }
+    layer._weirdSourceCanvas = null;
+    layer._weirdSourceKey = null;
+    layer._weirdActive = false;
     // Path B: release the decoder + close all cached VideoFrames.
     // Without this, GPU memory leaks with every deleted video layer.
     if (layer.videoSource) { try { layer.videoSource.close(); } catch (e) {} layer.videoSource = null; }
@@ -5986,6 +6259,51 @@
     });
   }
 
+  /* v19.42: per-frame text FX + weird slice export hook.
+   *
+   * Runs on every export frame BEFORE drawExportFrame so the raster
+   * source that drawExportFrame samples reflects the current frame's
+   * text FX state (Scramble, Counter, Odometer, Bulk Typing) and any
+   * active Weird slice compositing.  Without this, the export loop's
+   * initial rasterizeAll would bake in the t=0 frame for the whole
+   * export duration, freezing text FX.
+   *
+   * For text layers:
+   *   1. Run applyTextFxAtTime(layer, t, sig) — updates SVG contents
+   *      to reflect display-text at time t and applies DOM mutators.
+   *   2. If any weirdGlitch clip is active on this text layer,
+   *      applyWeirdSlicesOnText renders the current frame's slice
+   *      composite into layer._weirdCanvas.  Point imgs[layer.id]
+   *      at layer._weirdCanvas so the export samples the compositor.
+   *   3. Otherwise, re-rasterize the text SVG so text FX state
+   *      changes get picked up.  layerToImage returns a serialized
+   *      SVG-based image; call it and cache in imgs.
+   */
+  async function updateTextLayersForExportFrame(imgs, t, W, H) {
+    const sig = (typeof audioSignal === "function") ? audioSignal() : { bass:0, mid:0, high:0, level:0, beat:0, peak:0 };
+    const textLayers = layers.filter((L) => L.kind === "TEXT" && L.visible);
+    for (const L of textLayers) {
+      const inWindow = t >= L.start - 0.001 && t <= L.start + L.duration + 0.001;
+      if (!inWindow) continue;
+      // 1. Run text FX (updates SVG + weird canvas).
+      try { applyTextFxAtTime(L, t, sig); } catch (e) {}
+      // 2. If weird is active on this layer, route imgs[L.id] at the
+      // weird canvas so drawExportFrame samples the slice composite.
+      if (L._weirdActive && L._weirdCanvas) {
+        imgs[L.id] = L._weirdCanvas;
+      } else if (imgs[L.id] && imgs[L.id] === L._weirdCanvas) {
+        // Weird just ended — re-rasterize the SVG so imgs[L.id]
+        // points back at a fresh raster.
+        try { imgs[L.id] = await layerToImage(L, W, H); } catch (e) {}
+      } else {
+        // No weird active — re-rasterize the SVG so text FX state
+        // changes get baked into the raster.  Otherwise the initial
+        // rasterizeAll would freeze text FX at t=0.
+        try { imgs[L.id] = await layerToImage(L, W, H); } catch (e) {}
+      }
+    }
+  }
+
   /* ---------------- RENDER LOOP ---------------- */
   let rafStart = performance.now();
   let hudLayer = null, flashOverlay = null;
@@ -6054,10 +6372,19 @@
     const def = FX_EVENT_DEF.get(clip.fxKey);
     const isTransformOnly = FX_TRANSFORM.has(clip.fxKey);
     if (isTransformOnly && !allowT) return null;
+    // v19.42: weirdGlitch on TEXT is fully handled by the canvas slice
+    // compositor (applyWeirdSlicesOnText).  Return null here so the
+    // DOM-level shake/rgb/flash deltas don't double up on the same
+    // layer — the compositor renders shake, chroma, flash internally.
+    // Non-text layers keep the delta path.
+    if (clip.fxKey === "weirdGlitch" && layer && layer.kind === "TEXT") return null;
     if (def && def.sustained) {
       const mod = EFFECTS[clip.fxKey]; if (!mod) return null;
       const clipLocal = sceneTime - (layer.start + clip.start);
-      return mod(sig, clipLocal) || null;
+      // v19.42: pass clip.params to sustained handlers so effects like
+      // weirdGlitch / rgbSplitPro receive their tuned params (previous
+      // call was mod(sig, clipLocal) — params were undefined).
+      return mod(sig, clipLocal, clip.params) || null;
     }
     const mod = EVENT_EFFECTS[clip.fxKey]; if (!mod) return null;
     return mod(p, sig, clip.params) || null;
@@ -9797,6 +10124,7 @@
     const { W, H, crop } = exportDims(), c = document.createElement("canvas"); c.width = W; c.height = H;
     const ctx = c.getContext("2d"), imgs = await rasterizeAll(W, H);
     redirectImgsToExportCanvases(imgs);
+    await updateTextLayersForExportFrame(imgs, STATE.time, W, H);
     await drawExportFrame(ctx, W, H, imgs, STATE.time, { bg: transparent ? null : resolveExportBg(false) }, crop);
     c.toBlob((b) => { downloadBlob(b, transparent ? baseName("transparent.png") : baseName("png")); setExportStatus("Done — PNG saved", "done"); closeSheet(); }, "image/png");
   }
@@ -9808,7 +10136,7 @@
     const { W, H, crop } = exportDims(), c = document.createElement("canvas"); c.width = W; c.height = H;
     const ctx = c.getContext("2d"), imgs = await rasterizeAll(W, H), bg = transparent ? null : resolveExportBg(false);
     redirectImgsToExportCanvases(imgs);
-    for (let f = 0; f < total; f++) { await seekAllVideoLayersTo(f / fps); await paintWebCodecsLayersForExport(f / fps); await drawExportFrame(ctx, W, H, imgs, f / fps, { bg }, crop); await new Promise((res) => c.toBlob((b) => { downloadBlob(b, `phaser-seq-${String(f).padStart(4, "0")}.png`); setTimeout(res, 55); }, "image/png")); if (f % 10 === 0) setExportStatus(`Rendering frame ${f + 1}/${total}…`, "work"); }
+    for (let f = 0; f < total; f++) { await seekAllVideoLayersTo(f / fps); await paintWebCodecsLayersForExport(f / fps); await updateTextLayersForExportFrame(imgs, f / fps, W, H); await drawExportFrame(ctx, W, H, imgs, f / fps, { bg }, crop); await new Promise((res) => c.toBlob((b) => { downloadBlob(b, `phaser-seq-${String(f).padStart(4, "0")}.png`); setTimeout(res, 55); }, "image/png")); if (f % 10 === 0) setExportStatus(`Rendering frame ${f + 1}/${total}…`, "work"); }
     setExportStatus("Done — sequence saved", "done"); closeSheet();
   }
   function pickWebmMime() { return ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"].find((m) => MediaRecorder.isTypeSupported(m)) || "video/webm"; }
@@ -9892,6 +10220,7 @@
         // On budget — do the full seek + WebCodecs paint + composite.
         await driveVideoLayersRealtime(t % STATE.duration);
         await paintWebCodecsLayersForExport(t % STATE.duration);
+        await updateTextLayersForExportFrame(imgs, t % STATE.duration, W, H);
         await drawExportFrame(ctx, W, H, imgs, t % STATE.duration, { bg }, crop);
       } else {
         // Behind by more than 1.5 frame intervals — reuse the last
@@ -10311,6 +10640,7 @@
       // seek which is deterministic though slower.
       await seekAllVideoLayersTo(t);              // legacy layers only (no-op otherwise)
       await paintWebCodecsLayersForExport(t);     // WebCodecs layers only (no-op otherwise)
+      await updateTextLayersForExportFrame(imgs, t, W, H);
       await drawExportFrame(ctx, W, H, imgs, t, { bg }, crop);
       // Phase 1 diag: capture pre-encode PNG at target frame.  This
       // is the canvas EXACTLY as it enters new VideoFrame(canvas, ...).
@@ -10659,6 +10989,7 @@
         if (behindMs < frameIntervalMs * 1.5) {
           await driveVideoLayersRealtime(t % STATE.duration);
           await paintWebCodecsLayersForExport(t % STATE.duration);
+          await updateTextLayersForExportFrame(imgs, t % STATE.duration, W, H);
           await drawExportFrame(ctx, W, H, imgs, t % STATE.duration, { bg }, crop);
         } else {
           droppedFrames++;
@@ -13047,7 +13378,7 @@
     requestAnimationFrame(() => fitZoom());
     setTimeout(() => { fitZoom(); renderTimeline(); }, 120);
     // Test hook: expose internals for automated verification (harmless in production).
-    window.__phaserDebug = Object.assign(window.__phaserDebug || {}, { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, FX_EVENT_DEF, fxSupportsLayer, applyTextFxAtTime, TEXT_FX_STRING, TEXT_FX_DOM, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, paintWebCodecsLayersForExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath, runSvgRepair, collectSvgRepairOps, releaseClipPaths, removeMasks, convertShapesToPaths, audio: () => audio });
+    window.__phaserDebug = Object.assign(window.__phaserDebug || {}, { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, FX_EVENT_DEF, fxSupportsLayer, applyTextFxAtTime, applyWeirdSlicesOnText, TEXT_FX_STRING, TEXT_FX_DOM, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, paintWebCodecsLayersForExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath, runSvgRepair, collectSvgRepairOps, releaseClipPaths, removeMasks, convertShapesToPaths, audio: () => audio });
   }
   document.addEventListener("DOMContentLoaded", init);
 })();
