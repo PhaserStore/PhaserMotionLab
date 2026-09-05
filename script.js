@@ -330,19 +330,28 @@
     { key: "svgTextOnPath",  label: "SVG Text on Path",defDur: "layer", group: "text",
       category: "text", supportedLayerTypes: ["TEXT","SVG"], placement: "layerStart", sustained: true, persistEnd: true,
       paramDefs: [
-        // v19.43: pathSource lets the user choose between built-in
-        // shape presets (circle/rectangle/line), an uploaded SVG,
-        // or a freehand path drawn on the canvas.
+        // v19.44: pathSource simplified — presets + freehand only.
+        // SVG file import removed (was too complex for this workflow).
         { key: "pathSource", label: "Path Source", type: "select",
-          options: ["custom","circle","rectangle","line","freehand","svg"], default: "custom" },
-        { key: "pathD",      label: "Path (d attr)", type: "text",
-          default: "M 20 100 Q 200 20 380 100 T 740 100" },
-        // Shape preset controls — used when pathSource=circle/rectangle/line
+          options: ["circle","rectangle","line","freehand"], default: "circle" },
         { key: "shapeSize",  label: "Shape Size (px)", type: "range", min: 60, max: 800, step: 10, default: 300 },
-        { key: "startOffset",label: "Start Offset (%)", type: "range", min: 0, max: 100, step: 1, default: 0 },
-        { key: "reverse",    label: "Reverse",    type: "select", options: ["no","yes"], default: "no" },
-        { key: "align",      label: "Align",      type: "select", options: ["start","middle","end"], default: "start" },
-        { key: "fitToPath",  label: "Fit To Path",type: "select", options: ["no","yes"], default: "no" },
+        // Freehand-only geometry data (JSON path string).  Set by the
+        // freehand tool; otherwise ignored.
+        { key: "freehandPath",  label: "Freehand Path", type: "text", default: "" },
+        // v19.44: helper path visibility + styling in the EDITOR
+        // (excluded from export unless renderPath is on).
+        { key: "showPath",    label: "Show Path (editor)", type: "select", options: ["yes","no"], default: "yes" },
+        { key: "renderPath",  label: "Render Path in export", type: "select", options: ["no","yes"], default: "no" },
+        { key: "pathStroke",  label: "Path Color",  type: "text",  default: "#7A5CFF" },
+        { key: "pathOpacity", label: "Path Opacity (%)", type: "range", min: 0, max: 100, step: 5, default: 60 },
+        { key: "pathOffsetX", label: "Path X Offset", type: "range", min: -400, max: 400, step: 5, default: 0 },
+        { key: "pathOffsetY", label: "Path Y Offset", type: "range", min: -400, max: 400, step: 5, default: 0 },
+        { key: "pathRotation",label: "Path Rotation", type: "range", min: -180, max: 180, step: 1, default: 0 },
+        // Text-along-path controls
+        { key: "startOffset",label: "Text Start Offset (%)", type: "range", min: 0, max: 100, step: 1, default: 0 },
+        { key: "reverse",    label: "Reverse Path",   type: "select", options: ["no","yes"], default: "no" },
+        { key: "align",      label: "Text Align",     type: "select", options: ["start","middle","end"], default: "start" },
+        { key: "fitToPath",  label: "Fit To Path",    type: "select", options: ["no","yes"], default: "no" },
         { key: "animateOffset",label: "Animate Speed", type: "range", min: 0, max: 200, step: 1, default: 0 },
       ] },
 
@@ -391,9 +400,10 @@
     { key: "springFollow",    label: "Spring Follow",    defDur: "layer", group: "motion",
       category: "universal", supportedLayerTypes: ["TEXT","IMG","SVG","VIDEO","SHAPE"], sustained: true,
       paramDefs: [
-        { key: "amount",   label: "Follow Amount", type: "range", min: 0, max: 200, step: 5, default: 60 },
-        { key: "stiffness",label: "Stiffness",     type: "range", min: 20, max: 400, step: 10, default: 120 },
-        { key: "damping",  label: "Damping",       type: "range", min: 1, max: 30, step: 1, default: 10 },
+        { key: "strength", label: "Strength",       type: "range", min: 0, max: 200, step: 5, default: 100 },
+        { key: "damping",  label: "Damping",        type: "range", min: 1, max: 30, step: 1, default: 8 },
+        { key: "delay",    label: "Delay (ms)",     type: "range", min: 0, max: 800, step: 10, default: 250 },
+        { key: "distance", label: "Distance (px)",  type: "range", min: 0, max: 400, step: 5, default: 80 },
       ] },
     { key: "pendulum",        label: "Pendulum",         defDur: "layer", group: "motion",
       category: "universal", supportedLayerTypes: ["TEXT","IMG","SVG","VIDEO","SHAPE"], sustained: true,
@@ -405,9 +415,11 @@
     { key: "orbit",           label: "Orbit",            defDur: "layer", group: "motion",
       category: "universal", supportedLayerTypes: ["TEXT","IMG","SVG","VIDEO","SHAPE"], sustained: true,
       paramDefs: [
-        { key: "radius",   label: "Radius (px)", type: "range", min: 5, max: 400, step: 5, default: 80 },
-        { key: "period",   label: "Period (sec)",type: "range", min: 0.2, max: 12, step: 0.1, default: 3 },
-        { key: "phase",    label: "Phase (deg)", type: "range", min: 0, max: 360, step: 5, default: 0 },
+        { key: "radiusX",  label: "Radius X (px)", type: "range", min: 5, max: 600, step: 5, default: 120 },
+        { key: "radiusY",  label: "Radius Y (px)", type: "range", min: 5, max: 600, step: 5, default: 120 },
+        { key: "period",   label: "Period (sec)",  type: "range", min: 0.2, max: 12, step: 0.1, default: 3 },
+        { key: "phase",    label: "Phase (deg)",   type: "range", min: 0, max: 360, step: 5, default: 0 },
+        { key: "direction",label: "Direction",     type: "select", options: ["cw","ccw"], default: "cw" },
       ] },
     { key: "pathJitter",      label: "Path Jitter",      defDur: "layer", group: "motion",
       category: "universal", supportedLayerTypes: ["TEXT","IMG","SVG","VIDEO","SHAPE"], sustained: true,
@@ -466,7 +478,60 @@
     textOnly: new Set([
       "textFlicker", "textReplace",
     ]),
+    // v19.44 CONSOLIDATION: effects flagged as duplicates or
+    // demonstrably non-functional.  Kept in FX_EVENTS so old
+    // projects that reference them still load and render, but
+    // HIDDEN FROM PICKER via `deprecated: true` (see filter below).
+    // The migration alias table maps old keys → survivors when a
+    // project is loaded, so users get the working equivalent going
+    // forward.
+    deprecatedIds: new Set([
+      "rgbOffset",       // → rgbSplitPro (extended params)
+      "rgbSpike",        // → rgbSplitPro (short burst as event; rgbSplitPro can be paramSet)
+      "flickerBlocks",   // → textFlicker (same visual result, simpler)
+      "microJitter",     // → pathJitter (same visual result, more control)
+      "coordShift",      // → pathJitter (positional wobble)
+      "coordBlinkEvt",   // → textFlicker on text layers (blink/flicker output)
+      "frameHold",       // no observable effect on the current renderer
+      "targetPing",      // → radarSweep (overlapping visual language)
+      "waveformBurst",   // → oscilloscope (overlapping visual language)
+      "hardCutEvent",    // duplicate of internal Hard Cut
+      "signalInterrupt", // no observable effect on current renderer
+      "layerSwap",       // legacy; superseded by textReplace + layer visibility
+    ]),
+    // v19.44 SCENE-SCOPE effects.  These emit ONLY scene-level
+    // channels (hud overlay, radar overlay, oscilloscope waveform,
+    // scanline/noise boost) — they produce visible output on the
+    // artboard but NOT on the selected layer itself.  Attaching
+    // multiple copies to different layers is redundant.  Still
+    // shown in the picker for backwards compatibility but tagged
+    // so the inspector can label them clearly.
+    sceneScope: new Set([
+      "hudOverlay", "radarSweep", "oscilloscope", "dataStream",
+    ]),
+    // Old ID → new ID map.  Applied at project load and at clip
+    // create time (createEventClip aliases before assigning).  Never
+    // maps to a key that doesn't exist in FX_EVENT_DEF.
+    idMigration: {
+      "rgbOffset":     "rgbSplitPro",
+      "rgbSpike":      "rgbSplitPro",
+      "flickerBlocks": "textFlicker",
+      "microJitter":   "pathJitter",
+      "coordShift":    "pathJitter",
+      "targetPing":    "radarSweep",
+      "waveformBurst": "oscilloscope",
+    },
   };
+  function migrateFxKey(oldKey) {
+    // Return migrated key if the source is in the migration table
+    // AND the target actually exists in FX_EVENT_DEF; otherwise
+    // return the original key untouched so old projects never fail
+    // to load.  Called from project-load / import paths.
+    if (!oldKey) return oldKey;
+    const migrated = FX_CAPABILITY.idMigration[oldKey];
+    if (migrated && FX_EVENT_DEF && FX_EVENT_DEF.get(migrated)) return migrated;
+    return oldKey;
+  }
   (function _hydrateFxCapability() {
     for (const fx of FX_EVENTS) {
       if (!fx.category) {
@@ -481,6 +546,10 @@
         else if (fx.category === "image")     fx.supportedLayerTypes = ["IMG"];
         else                                  fx.supportedLayerTypes = ["TEXT","IMG","SVG","VIDEO","SHAPE"];
       }
+      // v19.44: mark deprecated entries so the picker can filter them.
+      if (FX_CAPABILITY.deprecatedIds.has(fx.key)) fx.deprecated = true;
+      // v19.44: tag scene-scope so the inspector can label the button.
+      if (FX_CAPABILITY.sceneScope.has(fx.key)) fx.sceneScope = true;
     }
   })();
   function fxSupportsLayer(fx, layer) {
@@ -744,7 +813,7 @@
     textWeight: $("#textWeight"),
     textColor: $("#textColor"), textColorHex: $("#textColorHex"),
     textAlignSeg: $("#textAlignSeg"),
-    textLetterSpacing: $("#textLetterSpacing"), textLineHeight: $("#textLineHeight"),
+    textLetterSpacing: $("#textLetterSpacing"), textLineHeight: $("#textLineHeight"), textSlashedZero: $("#textSlashedZero"),
     timecodeFrame: $("#timecodeFrame"),
     readoutFilename: $("#readoutFilename"),
     // export
@@ -1719,6 +1788,11 @@
       align: "middle",         // start | middle | end (SVG text-anchor values)
       letterSpacing: 0,        // em units (1 em = fontSize px approx)
       lineHeight: 1.2,         // multiplier
+      // v19.44: OpenType Slashed Zero — when true and the font
+      // supports it, applies `font-feature-settings: "zero" 1`.
+      // Fonts without the feature leave the '0' unchanged (never
+      // replaces the character or affects metrics).
+      slashedZero: false,
     };
   }
 
@@ -1777,6 +1851,11 @@
     textEl.setAttribute("font-weight", String(s.fontWeight));
     textEl.setAttribute("fill", s.color);
     if (s.letterSpacing) textEl.setAttribute("letter-spacing", (s.letterSpacing * s.fontSize).toFixed(2));
+    // v19.44: OpenType feature settings.  Currently only Slashed Zero;
+    // uses `font-feature-settings: "zero" 1`.  Fonts without the
+    // feature ignore it silently — the character '0' remains
+    // unchanged, metrics unchanged, no text-content substitution.
+    if (s.slashedZero) textEl.style.fontFeatureSettings = `"zero" 1`;
     lines.forEach((line, i) => {
       const tspan = document.createElementNS(svgNS, "tspan");
       tspan.setAttribute("x", String(anchorX));
@@ -1905,28 +1984,21 @@
     bulkTyping(layer, clip, p, sig, sceneTime, inputText) {
       const P = clip.params || {};
       const src = String(inputText);
-      // Position by cps within the clip's local time, or by p (fallback).
       const localT = Math.max(0, sceneTime - (layer.start + clip.start));
       const cps = P.cps || 20;
       let visibleChars = Math.floor(localT * cps);
-      // Backspace behavior: after `backspace` percent of duration, delete
-      // `backspaceAmt` chars then continue typing.  Simple deterministic model.
       const backspaceAt = (P.backspace || 0) / 100;
       const backspaceAmt = P.backspaceAmt || 0;
       if (backspaceAt > 0 && backspaceAmt > 0 && p > backspaceAt) {
         const backP = (p - backspaceAt) / (1 - backspaceAt);
-        // Delete over 15% of the remaining window, then keep typing.
         if (backP < 0.15) {
           const backProg = backP / 0.15;
           const backedChars = Math.floor(backspaceAmt * backProg);
           visibleChars = Math.max(0, visibleChars - backedChars);
         } else {
-          // Compensate visibleChars so typing resumes from the backspaced point
-          // (no jump forward).
           visibleChars = Math.max(0, visibleChars - backspaceAmt);
         }
       }
-      // Pause on punctuation: for every . , ; : encountered, add pauseMs delay.
       const pausePunct = (P.pausePunct || 0) / 1000;
       if (pausePunct > 0) {
         let elapsed = 0, shown = 0;
@@ -1937,14 +2009,18 @@
         }
         visibleChars = Math.min(visibleChars, shown);
       }
-      let display = src.slice(0, Math.min(visibleChars, src.length));
-      // Cursor.
+      const display = src.slice(0, Math.min(visibleChars, src.length));
+      // v19.44: DO NOT append a cursor glyph to the text string —
+      // stash cursor state on the layer for a separate DOM overlay
+      // (drawn by _updateTypingCursorOverlay).  This keeps the text
+      // bounding box, wrap, and font size completely stable across
+      // every blink state.
       const cursor = P.cursor || "underscore";
       const blinkHz = P.cursorBlink ?? 2;
       const on = blinkHz > 0 ? (Math.floor(sceneTime * blinkHz * 2) & 1) === 0 : true;
-      if (cursor !== "none" && on && p < 1.02) {
-        display += cursor === "underscore" ? "_" : cursor === "block" ? "\u2588" : "|";
-      }
+      layer._typingCursor = (cursor !== "none" && p < 1.02) ? {
+        style: cursor, visible: on, charIndex: display.length, blinkHz,
+      } : null;
       return display;
     },
 
@@ -2178,18 +2254,22 @@
         pathEl.setAttribute("fill", "none");
         defs.appendChild(pathEl);
       }
-      // v19.43: derive `d` from pathSource — built-in shapes generated
-      // in-place, custom/SVG/freehand from the pathD string.  Shape
-      // presets use layer.natW/natH so they scale with the layer size,
-      // and shapeSize controls the primary dimension.
-      const source = P.pathSource || "custom";
+      // v19.44: build path `d` from source preset OR freehand JSON.
+      // Uploaded-SVG import removed.
+      const source = P.pathSource || "circle";
       const W = Math.max(60, layer.natW || 600), H = Math.max(60, layer.natH || 300);
       const sz = Math.max(60, Math.min(Math.max(W, H) - 40, P.shapeSize || 300));
-      let d = P.pathD || "M 20 100 Q 200 20 380 100 T 740 100";
-      if (source === "circle") {
+      const offX = P.pathOffsetX || 0, offY = P.pathOffsetY || 0;
+      const rot  = P.pathRotation || 0;
+      let d;
+      if (source === "freehand" && P.freehandPath) {
+        // Freehand path stored as SVG `d` string (produced by the
+        // freehand drawing tool below).  Coords already in the layer's
+        // local space.
+        d = P.freehandPath;
+      } else if (source === "circle") {
         const cx = W / 2, cy = H / 2;
         const r = sz / 2;
-        // Circle as two arcs (closed).  Starting at top.
         d = `M ${cx} ${cy - r} A ${r} ${r} 0 1 1 ${cx} ${cy + r} A ${r} ${r} 0 1 1 ${cx} ${cy - r} Z`;
       } else if (source === "rectangle") {
         const rw = sz, rh = sz * 0.6;
@@ -2199,15 +2279,50 @@
         const y = H / 2;
         const x0 = (W - sz) / 2;
         d = `M ${x0} ${y} L ${x0 + sz} ${y}`;
+      } else {
+        // freehand with no path drawn yet — fallback to a small line
+        // so textPath has SOMETHING to render on.
+        const y = H / 2;
+        d = `M 20 ${y} L ${W - 20} ${y}`;
       }
-      // else custom / svg / freehand — use P.pathD as-is.
       pathEl.setAttribute("d", d);
-      // Wrap all text elements to use textPath.  We modify the existing <text>.
+      // Apply transform (offset + rotation around layer center) via a
+      // wrapping <g> so text picks up the same transform.
+      const gTransform = `translate(${offX}, ${offY}) rotate(${rot}, ${W/2}, ${H/2})`;
+      pathEl.setAttribute("transform", gTransform);
+
+      // v19.44 HELPER PATH — a visible <path> stroked line drawn
+      // inside the layer's SVG so the user can see where text will
+      // flow.  Excluded from export unless renderPath is enabled.
+      const helperId = "tphelper-" + (clip.id || "x");
+      let helper = svg.querySelector("#" + helperId);
+      const showPath = (P.showPath !== "no");   // default yes
+      const renderInExport = (P.renderPath === "yes");
+      if (showPath) {
+        if (!helper) {
+          helper = document.createElementNS(NS, "path");
+          helper.setAttribute("id", helperId);
+          helper.setAttribute("fill", "none");
+          helper.setAttribute("pointer-events", "none");
+          helper.setAttribute("data-editor-helper", renderInExport ? "0" : "1");
+          svg.appendChild(helper);
+        }
+        helper.setAttribute("d", d);
+        helper.setAttribute("transform", gTransform);
+        helper.setAttribute("stroke", P.pathStroke || "#7A5CFF");
+        helper.setAttribute("stroke-width", "2");
+        helper.setAttribute("stroke-dasharray", "6 4");
+        helper.setAttribute("opacity", String((P.pathOpacity ?? 60) / 100));
+        // Mark as editor-only so the export path can strip it
+        helper.setAttribute("data-editor-helper", renderInExport ? "0" : "1");
+      } else if (helper) {
+        helper.remove();
+      }
+
+      // Wrap text in <textPath>.
       const textEl = svg.querySelector("text");
       if (!textEl) return;
-      // Extract current text content (concatenation of tspans).
       const currentText = textEl.textContent;
-      // Rebuild: <text><textPath href="#pathId" startOffset="X%">...</textPath></text>
       while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
       const tp = document.createElementNS(NS, "textPath");
       tp.setAttribute("href", "#" + pathId);
@@ -2649,6 +2764,147 @@
     _showWeirdCanvas(layer);
   }
 
+  /* v19.44 WEIRD FOR NON-TEXT LAYERS.
+   *
+   * Extends the deterministic slice compositor to IMG / SVG / SHAPE.
+   * The source-canvas raster comes from the layer's own DOM node
+   * (Image/SVG element).  Then the SAME _compositeWeirdSlices runs
+   * with the same params → identical burst rhythm and pixel output.
+   *
+   * VIDEO layers are handled separately in the export path (v19.42)
+   * so the working video decoding/export system stays untouched.
+   * Preview for VIDEO still shows the raw video during Weird —
+   * canvas overlay would require touching the video pipeline.
+   */
+  function _rasterizeAnyLayerToSource(layer) {
+    const src = layer._weirdSourceCanvas;
+    const W = src.width, H = src.height;
+    const sctx = src.getContext("2d");
+    const kind = layer.kind;
+    const node = layer.node;
+
+    // Cache key — bumped when the layer's rendered representation
+    // meaningfully changes.  For IMG: source URL.  For SVG/SHAPE:
+    // outerHTML length + fill signature.
+    let key = null;
+    try {
+      if (kind === "IMG" && node) {
+        key = "img|" + (node.src || node.currentSrc || "") + "|" + W + "|" + H;
+      } else if (kind === "SHAPE" && node) {
+        const s = layer.shapeStyle || {};
+        key = "shape|" + layer.shapeType + "|" + (s.fill || "") + "|" + (s.stroke || "") + "|" + (s.strokeWidth || 0) + "|" + W + "|" + H;
+      } else if (kind === "SVG" && node) {
+        const inner = node.innerHTML || "";
+        key = "svg|" + inner.length + "|" + W + "|" + H;
+      }
+    } catch (e) {}
+    if (key && layer._weirdSourceKey === key && layer._weirdSourceRasterOK) return;
+
+    // Always clear + draw a synchronous fallback FIRST so a Weird
+    // burst has something to work with on the very first frame,
+    // even before any async SVG raster completes.
+    sctx.clearRect(0, 0, W, H);
+
+    try {
+      if (kind === "IMG" && node && node.complete && node.naturalWidth > 0) {
+        sctx.drawImage(node, 0, 0, W, H);
+        layer._weirdSourceKey = key; layer._weirdSourceRasterOK = true;
+        return;
+      }
+      if (kind === "SHAPE") {
+        // Synchronous fallback: draw the shape's fill color as its
+        // approximate geometry.  Not a pixel-perfect match to the
+        // rendered SVG (stroke, corners, non-rectangular shapes get
+        // an inscribed approximation) but always visible and cheap.
+        const s = layer.shapeStyle || {};
+        const fill = s.fill || "#7A5CFF";
+        sctx.fillStyle = fill;
+        const stype = layer.shapeType || "rect";
+        if (stype === "rect" || stype === "square") {
+          sctx.fillRect(0, 0, W, H);
+        } else if (stype === "circle" || stype === "ellipse") {
+          sctx.beginPath();
+          sctx.ellipse(W / 2, H / 2, W / 2, H / 2, 0, 0, Math.PI * 2);
+          sctx.fill();
+        } else if (stype === "line") {
+          const sw = (s.strokeWidth || 4);
+          sctx.fillStyle = s.stroke || fill;
+          sctx.fillRect(0, (H - sw) / 2, W, sw);
+        } else {
+          // triangle / polygon fallback: fill triangle
+          sctx.beginPath();
+          sctx.moveTo(W / 2, 0);
+          sctx.lineTo(W, H);
+          sctx.lineTo(0, H);
+          sctx.closePath();
+          sctx.fill();
+        }
+        // Optional stroke overlay
+        if (s.stroke && s.strokeWidth > 0 && stype !== "line") {
+          sctx.strokeStyle = s.stroke;
+          sctx.lineWidth = s.strokeWidth;
+          sctx.strokeRect(s.strokeWidth / 2, s.strokeWidth / 2, W - s.strokeWidth, H - s.strokeWidth);
+        }
+        layer._weirdSourceKey = key; layer._weirdSourceRasterOK = true;
+        return;
+      }
+      if (kind === "SVG" && node && !layer._weirdRasterInFlight) {
+        // Serialize SVG with explicit dimensions so the loaded Image
+        // renders at the correct size.  Runs async — first frame will
+        // use whatever's currently in the source canvas (blank or
+        // last-rasterized); subsequent frames use the fresh raster.
+        layer._weirdRasterInFlight = true;
+        try {
+          // Clone and add explicit width/height so <img src=svgblob> sizes correctly
+          const clone = node.cloneNode(true);
+          clone.setAttribute("width", String(W));
+          clone.setAttribute("height", String(H));
+          if (!clone.getAttribute("xmlns")) clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+          const outer = new XMLSerializer().serializeToString(clone);
+          const svgBlob = new Blob([outer], { type: "image/svg+xml;charset=utf-8" });
+          const url = URL.createObjectURL(svgBlob);
+          const img = new Image();
+          img.onload = () => {
+            try {
+              const ctx2 = src.getContext("2d");
+              ctx2.clearRect(0, 0, W, H);
+              ctx2.drawImage(img, 0, 0, W, H);
+              layer._weirdSourceKey = key; layer._weirdSourceRasterOK = true;
+            } catch (e) {}
+            URL.revokeObjectURL(url);
+            layer._weirdRasterInFlight = false;
+          };
+          img.onerror = () => {
+            URL.revokeObjectURL(url);
+            layer._weirdRasterInFlight = false;
+          };
+          img.src = url;
+        } catch (e) { layer._weirdRasterInFlight = false; }
+      }
+    } catch (e) {}
+  }
+
+  /* Public entry — non-text layers.  Called from composeLayer for
+     IMG/SVG/SHAPE layers with active weirdGlitch clips. */
+  function applyWeirdSlicesOnLayer(layer, weirdClipEntries, sceneTime) {
+    if (!layer) return;
+    if (!weirdClipEntries || !weirdClipEntries.length) {
+      if (layer._weirdActive) _clearWeirdCanvas(layer);
+      return;
+    }
+    if (!(layer.kind === "IMG" || layer.kind === "SVG" || layer.kind === "SHAPE")) return;
+    const last = weirdClipEntries[weirdClipEntries.length - 1];
+    const clip = last.c;
+    const P = clip.params || {};
+    _ensureWeirdCanvases(layer);
+    _rasterizeAnyLayerToSource(layer);
+    // Composite regardless of raster success — if the source is stale
+    // we still produce a sliced result; the first frame after edit
+    // may show the previous raster but the burst rhythm continues.
+    _compositeWeirdSlices(layer, P, sceneTime);
+    _showWeirdCanvas(layer);
+  }
+
   /* Entry point — called from composeLayer for TEXT layers.
      Runs all active text-affecting clips (including persist-past-end
      ones for reveal-style effects).  Rebuilds SVG only when the
@@ -2712,6 +2968,82 @@
     // canvas is hidden and the SVG shows again.
     const weirdClips = activeAll.filter(({ c }) => c.fxKey === "weirdGlitch");
     applyWeirdSlicesOnText(layer, weirdClips, sceneTime);
+    // v19.44: BULK TYPING CURSOR — render as a separate SVG overlay
+    // element so the underlying text layout is never altered by blink
+    // state.  When no cursor is active, remove the overlay.
+    _updateTypingCursorOverlay(layer);
+  }
+
+  /* Renders/updates the typing cursor SVG overlay for a text layer.
+     Reads layer._typingCursor stashed by TEXT_FX_STRING.bulkTyping.
+     Cursor lives in the same <svg> as the text and inherits the same
+     scaling — but it is APPENDED, not merged into <text>, so it
+     doesn't affect text width, wrap, alignment, or bounding box. */
+  function _updateTypingCursorOverlay(layer) {
+    const svg = layer.node;
+    if (!svg) return;
+    const NS = "http://www.w3.org/2000/svg";
+    const st = layer._typingCursor;
+    let overlay = svg.querySelector('rect[data-typing-cursor="1"]');
+    if (!st || !st.visible) {
+      if (overlay) overlay.remove();
+      return;
+    }
+    // Find the LAST rendered glyph tspan (represents current caret
+    // position); if empty, position at the text start point.
+    const glyphs = svg.querySelectorAll('tspan[data-glyph="1"]');
+    let cx = 8, cy = (layer.textStyle.fontSize || 96) * 0.25 || 24;
+    let charW = (layer.textStyle.fontSize || 96) * 0.5;
+    let charH = (layer.textStyle.fontSize || 96) * 0.85;
+    try {
+      if (glyphs.length > 0) {
+        const last = glyphs[glyphs.length - 1];
+        const bb = last.getBBox();
+        cx = bb.x + bb.width + 2;
+        cy = bb.y;
+        charW = Math.max(charW * 0.6, bb.width);
+        charH = bb.height;
+      } else {
+        // No glyphs yet — position at the text element's origin
+        const textEl = svg.querySelector("text");
+        if (textEl) {
+          cx = parseFloat(textEl.getAttribute("x") || "8");
+          cy = parseFloat(textEl.getAttribute("y") || cy) - charH * 0.85;
+        }
+      }
+    } catch (e) { /* getBBox may fail if not laid out */ }
+    if (!overlay) {
+      overlay = document.createElementNS(NS, "rect");
+      overlay.setAttribute("data-typing-cursor", "1");
+      overlay.setAttribute("pointer-events", "none");
+      svg.appendChild(overlay);
+    }
+    // Style by cursor shape.  underscore = thin bar below baseline,
+    // bar = thin vertical line, block = solid rectangle overlaying the
+    // caret position.
+    const color = layer.textStyle.color || "#FFFFFF";
+    overlay.setAttribute("fill", color);
+    if (st.style === "underscore") {
+      const uw = Math.max(charW * 0.85, 8);
+      const uh = Math.max(charH * 0.08, 3);
+      overlay.setAttribute("x", (cx - uw).toFixed(1));
+      overlay.setAttribute("y", (cy + charH - uh).toFixed(1));
+      overlay.setAttribute("width", uw.toFixed(1));
+      overlay.setAttribute("height", uh.toFixed(1));
+    } else if (st.style === "block") {
+      const bw = charW;
+      overlay.setAttribute("x", cx.toFixed(1));
+      overlay.setAttribute("y", cy.toFixed(1));
+      overlay.setAttribute("width", bw.toFixed(1));
+      overlay.setAttribute("height", charH.toFixed(1));
+    } else {
+      // bar (default fallback)
+      const bw = Math.max(charH * 0.06, 2);
+      overlay.setAttribute("x", cx.toFixed(1));
+      overlay.setAttribute("y", cy.toFixed(1));
+      overlay.setAttribute("width", bw.toFixed(1));
+      overlay.setAttribute("height", charH.toFixed(1));
+    }
   }
 
   /* Create a new text layer at the given ARTBOARD pixel position (not
@@ -2782,6 +3114,140 @@
     if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) return null;
     const z = STATE.zoom || 1;
     return { x: (clientX - rect.left) / z, y: (clientY - rect.top) / z };
+  }
+
+  /* v19.44 FREEHAND PATH CAPTURE — pointer-drag on the artboard,
+     sample points, convert to layer-local SVG coords, output a
+     simplified SVG `d` string.  Undoable via the standard param
+     update path (writing clip.params.freehandPath goes through the
+     same serialization the rest of the inspector uses).  Preserves
+     source layer editability — the layer's textStyle.text is never
+     touched. */
+  function startFreehandPathCapture(layer, clip) {
+    if (!layer || !clip || !el.artboard) return;
+    // Grab the layer's wrap position so we can translate artboard
+    // coords → layer-local SVG coords.  natW/natH set the viewBox scale.
+    const A = STATE.format;
+    const T = layer.transform;
+    const wPx = (T.wPct / 100) * A.w, hPx = (T.hPct / 100) * A.h;
+    const wLeft = (T.cx / 100) * A.w + A.w / 2 - wPx / 2;
+    const wTop  = (T.cy / 100) * A.h + A.h / 2 - hPx / 2;
+    const natW = layer.natW || wPx, natH = layer.natH || hPx;
+
+    // Enter capture mode — visual cue on the cursor + a translucent
+    // overlay so the user knows we're waiting for a drag.
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:absolute;inset:0;z-index:9999;cursor:crosshair;background:rgba(122,92,255,0.06);";
+    el.artboard.appendChild(overlay);
+    toast("Draw freehand path — press mouse down and drag on the canvas");
+
+    const points = [];
+    let dragging = false;
+    let liveEl = null;
+
+    const artToLayer = (ax, ay) => {
+      const lx = (ax - wLeft) / wPx * natW;
+      const ly = (ay - wTop) / hPx * natH;
+      return { x: lx, y: ly };
+    };
+
+    const onDown = (e) => {
+      const pt = stagePointToArtboard(e.clientX, e.clientY);
+      if (!pt) return;
+      dragging = true;
+      const lp = artToLayer(pt.x, pt.y);
+      points.length = 0; points.push(lp);
+      // Live preview: draw a stroked polyline directly on top of the artboard
+      liveEl = document.createElement("canvas");
+      liveEl.width = A.w; liveEl.height = A.h;
+      liveEl.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:10000";
+      el.artboard.appendChild(liveEl);
+      e.preventDefault(); e.stopPropagation();
+    };
+    const onMove = (e) => {
+      if (!dragging) return;
+      const pt = stagePointToArtboard(e.clientX, e.clientY);
+      if (!pt) return;
+      const lp = artToLayer(pt.x, pt.y);
+      // Skip near-duplicate points (min distance in layer coords)
+      const last = points[points.length - 1];
+      const dx = lp.x - last.x, dy = lp.y - last.y;
+      if (dx * dx + dy * dy < 12) return;
+      points.push(lp);
+      // Live draw in ARTBOARD coords
+      const ctx = liveEl.getContext("2d");
+      ctx.clearRect(0, 0, A.w, A.h);
+      ctx.strokeStyle = "#7A5CFF"; ctx.lineWidth = 3; ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      const first = points[0];
+      const fart = { x: first.x * wPx / natW + wLeft, y: first.y * hPx / natH + wTop };
+      ctx.moveTo(fart.x, fart.y);
+      for (let i = 1; i < points.length; i++) {
+        const art = { x: points[i].x * wPx / natW + wLeft, y: points[i].y * hPx / natH + wTop };
+        ctx.lineTo(art.x, art.y);
+      }
+      ctx.stroke();
+    };
+    const onUp = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      const cleanup = () => {
+        overlay.remove();
+        if (liveEl) liveEl.remove();
+        document.removeEventListener("pointerdown", onDown, true);
+        document.removeEventListener("pointermove", onMove, true);
+        document.removeEventListener("pointerup", onUp, true);
+      };
+      if (points.length < 2) {
+        cleanup();
+        toast("Freehand cancelled — draw at least 2 points");
+        return;
+      }
+      // Ramer–Douglas–Peucker simplification (basic) with epsilon in layer coords.
+      const simplified = _simplifyPoints(points, 3);
+      // Build SVG `d` string.
+      let d = "M " + simplified[0].x.toFixed(1) + " " + simplified[0].y.toFixed(1);
+      for (let i = 1; i < simplified.length; i++) {
+        d += " L " + simplified[i].x.toFixed(1) + " " + simplified[i].y.toFixed(1);
+      }
+      clip.params.freehandPath = d;
+      clip.params.pathSource = "freehand";
+      cleanup();
+      renderClipInspector(); renderTimeline(); paintIfPaused();
+      toast(`Freehand path saved (${simplified.length} points)`);
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    document.addEventListener("pointermove", onMove, true);
+    document.addEventListener("pointerup", onUp, true);
+  }
+
+  // Ramer–Douglas–Peucker with iterative stack (safe for long paths)
+  function _simplifyPoints(pts, eps) {
+    if (pts.length < 3) return pts.slice();
+    const keep = new Uint8Array(pts.length);
+    keep[0] = 1; keep[pts.length - 1] = 1;
+    const stack = [[0, pts.length - 1]];
+    while (stack.length) {
+      const [i0, i1] = stack.pop();
+      let maxD = 0, maxI = -1;
+      const p0 = pts[i0], p1 = pts[i1];
+      const dx = p1.x - p0.x, dy = p1.y - p0.y;
+      const len2 = dx * dx + dy * dy || 1;
+      for (let i = i0 + 1; i < i1; i++) {
+        const px = pts[i].x - p0.x, py = pts[i].y - p0.y;
+        const t = (px * dx + py * dy) / len2;
+        const projx = p0.x + t * dx, projy = p0.y + t * dy;
+        const d = Math.hypot(pts[i].x - projx, pts[i].y - projy);
+        if (d > maxD) { maxD = d; maxI = i; }
+      }
+      if (maxD > eps && maxI >= 0) {
+        keep[maxI] = 1;
+        stack.push([i0, maxI]); stack.push([maxI, i1]);
+      }
+    }
+    const out = [];
+    for (let i = 0; i < pts.length; i++) if (keep[i]) out.push(pts[i]);
+    return out;
   }
 
   /* Update layer.textStyle with `patch` and rebuild the SVG + transform. */
@@ -3935,6 +4401,8 @@
         if (el.textColorHex) el.textColorHex.textContent = (s.color || "").toUpperCase();
         setIf(el.textLetterSpacing, s.letterSpacing || 0);
         setIf(el.textLineHeight, s.lineHeight || 1.2);
+        // v19.44: Slashed Zero toggle sync
+        if (el.textSlashedZero) el.textSlashedZero.checked = !!s.slashedZero;
         if (el.textAlignSeg) {
           el.textAlignSeg.querySelectorAll("[data-align]").forEach((b) => {
             b.classList.toggle("active", b.dataset.align === s.align);
@@ -4069,7 +4537,7 @@
       // v19.41: Effect Capability filter — only show effects whose
       // supportedLayerTypes include the currently selected layer's kind.
       // Generated purely from FX_EVENTS metadata, no hardcoded lists.
-      const compatible = FX_EVENTS.filter((fx) => fxSupportsLayer(fx, selectedLayer));
+      const compatible = FX_EVENTS.filter((fx) => !fx.deprecated && fxSupportsLayer(fx, selectedLayer));
       FX_EVENT_GROUPS.forEach((grp) => {
         const events = compatible.filter((e) => e.group === grp.id);
         if (!events.length) return;
@@ -4084,7 +4552,9 @@
           b.dataset.eventKey = fx.key;
           b.innerHTML = `<span class="fx-dot"></span>${fx.label}`;
           const catBadge = fx.category === "universal" ? "" : ` (${fx.category})`;
-          b.title = `${fx.label}${catBadge}. Click to add a timeline clip on the selected layer at the playhead.`;
+          const sceneBadge = fx.sceneScope ? " · scene overlay" : "";
+          b.title = `${fx.label}${catBadge}${sceneBadge}. Click to add a timeline clip on the selected layer at the playhead.`;
+          if (fx.sceneScope) b.classList.add("fx-scene-scope");
           b.addEventListener("click", () => toggleEventClipOnLayer(fx.key, fx.label));
           wrap.appendChild(b);
         });
@@ -4722,49 +5192,31 @@
               row.appendChild(inp); paramsHost.appendChild(row);
             }
           });
-          // Special: svgTextOnPath — add a "Load path from SVG…" button
-          // that parses an uploaded SVG file's first <path d=""> and
-          // writes it into params.pathD.  Sanitized: only <path> d
-          // attributes are read; no scripts / event handlers touched.
+          // v19.44: svgTextOnPath — Freehand draw + clear buttons.
+          // SVG file import removed.  "Draw" enters a pointer-capture
+          // mode on the artboard; "Clear" wipes the freehand path.
           if (selectedEventClip.ec.fxKey === "svgTextOnPath") {
             const row = document.createElement("div"); row.className = "prop-row";
-            row.innerHTML = `<span class="prop-label">Load SVG</span>`;
-            const btn = document.createElement("button");
-            btn.className = "mini-btn"; btn.textContent = "Pick file…";
-            btn.addEventListener("click", () => {
-              const input = document.createElement("input");
-              input.type = "file"; input.accept = "image/svg+xml,.svg";
-              input.style.display = "none";
-              input.addEventListener("change", () => {
-                const file = input.files && input.files[0];
-                if (!file) { document.body.removeChild(input); return; }
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                  try {
-                    const doc = new DOMParser().parseFromString(String(e.target.result), "image/svg+xml");
-                    if (doc.querySelector("parsererror")) { toast("Couldn't parse SVG"); return; }
-                    const paths = Array.from(doc.querySelectorAll("path"));
-                    if (!paths.length) { toast("SVG has no <path> elements"); return; }
-                    // If multiple paths, ask which one (simple prompt fallback for MVP).
-                    let idx = 0;
-                    if (paths.length > 1) {
-                      const pick = prompt(`SVG contains ${paths.length} paths (1..${paths.length}). Pick one:`, "1");
-                      const n = parseInt(pick, 10);
-                      if (isFinite(n) && n >= 1 && n <= paths.length) idx = n - 1;
-                    }
-                    const d = paths[idx].getAttribute("d") || "";
-                    if (!d) { toast("Selected path has no `d` attribute"); return; }
-                    p.pathD = d;
-                    renderClipInspector(); renderTimeline(); paintIfPaused();
-                    toast(`Loaded path #${idx + 1} of ${paths.length}`);
-                  } catch (err) { toast("SVG load failed"); }
-                };
-                reader.readAsText(file);
-                document.body.removeChild(input);
-              });
-              document.body.appendChild(input); input.click();
+            row.innerHTML = `<span class="prop-label">Freehand</span>`;
+            const btnDraw = document.createElement("button");
+            btnDraw.className = "mini-btn"; btnDraw.textContent = "Draw…";
+            btnDraw.title = "Click, then drag on the canvas to draw a path.  Release to finish.";
+            btnDraw.addEventListener("click", () => {
+              const layer = selectedEventClip && selectedEventClip.layer;
+              const cl = selectedEventClip && selectedEventClip.ec;
+              if (!layer || !cl) return;
+              startFreehandPathCapture(layer, cl);
             });
-            row.appendChild(btn); paramsHost.appendChild(row);
+            const btnClear = document.createElement("button");
+            btnClear.className = "mini-btn"; btnClear.textContent = "Clear";
+            btnClear.style.marginLeft = "4px";
+            btnClear.addEventListener("click", () => {
+              p.freehandPath = "";
+              renderClipInspector(); renderTimeline(); paintIfPaused();
+              toast("Freehand path cleared");
+            });
+            row.appendChild(btnDraw); row.appendChild(btnClear);
+            paramsHost.appendChild(row);
           }
         }
         // Event-specific extra params (Lost Signal / Vector Beam).
@@ -5405,6 +5857,11 @@
   /* ---- Event clip creation ---- */
   function createEventClip(fxKey, layer, startTime, duration) {
     if (!layer) { toast("Select a layer first"); return null; }
+    // v19.44: migrate deprecated keys to their survivors before any
+    // pipeline dispatch.  Old projects that pass e.g. "rgbOffset"
+    // silently become "rgbSplitPro".  If FX_EVENT_DEF doesn't know
+    // the target, migrateFxKey returns the original unchanged.
+    fxKey = migrateFxKey(fxKey);
     const def = FX_EVENT_DEF.get(fxKey);
     // v18.7: honor placement + "layer" defDur so migrated sustained
     // effects fill the layer duration and reveal effects anchor at
@@ -5627,7 +6084,18 @@
     hudOverlay(sig, t) { return { hud: true, hudFlicker: 0.6 + sig.mid * 0.4 }; },
     pulseGlow(sig, t) { const b = Math.sin(t * (1.4 + sig.bass * 2)) * 0.5 + 0.5; return { glow: 6 + b * 12 + sig.bass * 30, opacity: 0.85 + 0.15 * b }; },
     symbolTrans(sig, t) { const k = Math.sin(t * 0.8) * 0.5 + 0.5; return { blur: k * 3, opacity: 0.6 + 0.4 * k, scaleSafe: 1 }; },
-    textFlicker(sig, t) { const amt = STATE.flicker / 100; const cut = Math.random() < (0.05 + sig.mid * 0.2) * amt; return { textFlicker: amt, opacity: cut ? 0.4 : 1 }; },
+    // v19.44: textFlicker now drives from clip params directly.
+    // Previously depended on the global STATE.flicker slider — a
+    // per-clip effect that did nothing unless a separate scene
+    // control was raised.  Now `intensity` (0-100) is the primary
+    // driver and gives independent visible output per clip.  Still
+    // reacts to audio (sig.mid boosts cut probability) but the
+    // baseline is always non-zero at intensity > 0.
+    textFlicker(sig, t, params) {
+      const amt = ((params && params.intensity != null) ? params.intensity : 60) / 100;
+      const cut = Math.random() < (0.05 + sig.mid * 0.2) * amt + 0.02 * amt;
+      return { textFlicker: amt, opacity: cut ? Math.max(0.15, 0.6 - amt * 0.35) : 1 };
+    },
     lineDraw(sig, t) { const k = clamp01((t % 5) / 2.2); return { pathDraw: k }; },
     trimPaths(sig, t) { const k = (Math.sin(t * 0.9) * 0.5 + 0.5); return { pathTrim: k }; },
     radarSweep(sig, t) { return { radar: (t * (60 + sig.mid * 120)) % 360, glow: 4 + sig.mid * 14 }; },
@@ -5698,14 +6166,23 @@
       const env = Math.exp(-decayRate * t);
       return { rot: amp * env * Math.sin((2 * Math.PI * t) / period) };
     },
+    // v19.44 Orbit — elliptical revolution around the layer's own
+    // resting position.  Emits pixel-domain motionTx/motionTy which
+    // bypass the allowTransform gate so it moves any layer visibly.
+    // radiusX / radiusY are in real pixels; period in seconds;
+    // phase in degrees; direction +1 (cw) / -1 (ccw).
     orbit(sig, t, params) {
       const P = params || {};
-      const r = P.radius || 80;
+      const rx = P.radiusX ?? P.radius ?? 80;
+      const ry = P.radiusY ?? P.radius ?? 80;
       const period = Math.max(0.05, P.period || 3);
       const phase = ((P.phase || 0) * Math.PI) / 180;
-      const a = (2 * Math.PI * t) / period + phase;
-      return { tx: (Math.cos(a) * r) * 0.1, ty: (Math.sin(a) * r) * 0.1 };
+      const dir = (P.direction === "ccw" || P.direction === -1) ? -1 : 1;
+      const a = dir * (2 * Math.PI * t) / period + phase;
+      return { motionTx: Math.cos(a) * rx, motionTy: Math.sin(a) * ry };
     },
+    // v19.44 Path Jitter — smoothed pseudo-noise position offset.
+    // Now emits real pixel motion (motionTx/motionTy).
     pathJitter(sig, t, params) {
       const P = params || {};
       const ax = P.amountX || 12;
@@ -5717,8 +6194,8 @@
       const s3 = Math.sin(t * hz * 5.1 + seed * 0.51);
       const s4 = Math.sin(t * hz * 6.8 + seed * 0.77);
       return {
-        tx: (ax * (s1 * 0.6 + s3 * 0.4)) * 0.1,
-        ty: (ay * (s2 * 0.6 + s4 * 0.4)) * 0.1,
+        motionTx: ax * (s1 * 0.6 + s3 * 0.4),
+        motionTy: ay * (s2 * 0.6 + s4 * 0.4),
       };
     },
     softBody(sig, t, params) {
@@ -5742,16 +6219,34 @@
       const sy = 1 + (syMax - 1) * u;
       return { scaleSafe: (sx + sy) * 0.5, skew: (sx - sy) * 8 };
     },
+    // v19.44 Spring Follow — layer springs back to rest after being
+    // displaced by a slow "input" signal.  Delay lags the input,
+    // Damping controls how quickly oscillation settles, Strength
+    // scales the response, Distance is the max travel in pixels.
+    // The input signal is a slow triangle sweep of the layer's local
+    // time so preview shows continuous spring-like sway; deterministic
+    // by construction.
     springFollow(sig, t, params) {
       const P = params || {};
-      const amt = (P.amount || 60) / 100;
-      const stiff = Math.max(20, P.stiffness || 120);
-      const damping = Math.max(1, P.damping || 10);
-      const omega = Math.sqrt(stiff);
-      const zeta  = damping / (2 * omega);
-      const target = Math.sin(t * 0.7) * 40 * amt;
-      const lag = Math.max(0, 1 - Math.exp(-zeta * omega * 0.3));
-      return { tx: (target * lag) * 0.1 };
+      const strength = (P.strength ?? 100) / 100;
+      const damping  = Math.max(1, P.damping || 8);      // higher = quicker settle
+      const delayMs  = P.delay ?? 250;                    // ms lag
+      const distance = P.distance ?? 60;                  // px max travel
+      const lagSec = delayMs / 1000;
+      // Input signal: slow oscillation
+      const inputT = t - lagSec;
+      const raw    = Math.sin(inputT * 1.2) + 0.5 * Math.sin(inputT * 0.53);
+      const clamped = Math.max(-1.5, Math.min(1.5, raw)) / 1.5;
+      // Damped-spring impulse envelope applied to the amplitude —
+      // creates visible overshoot/settle when the signal changes fast.
+      const oscHz = 4.0 / (damping / 10 + 0.5);
+      const overshoot = Math.exp(-damping * 0.15 * Math.abs(inputT)) *
+                        Math.sin(inputT * oscHz * Math.PI) * 0.25;
+      const amount = clamped + overshoot * strength;
+      return {
+        motionTx: amount * distance * strength,
+        motionTy: amount * distance * strength * 0.3,   // small Y bounce
+      };
     },
   };
 
@@ -5823,7 +6318,18 @@
     // Signal Drop: hard opacity cut like a bad feed, plus small RGB kick.
     signalDrop(p, sig, params) { const k = (params?.intensity ?? 50) / 50; const drop = p > 0.2 && p < 0.7; return { opacity: drop ? (1 - 0.9 * k) : 1, rgb: drop ? 4 * k : 0, flash: drop ? "#000" : null, flashA: drop ? 0.08 * k : 0 }; },
     // Magnetic Snap: quick offset then springs back to center.
-    magneticSnap(p, sig, params) { const k = (params?.intensity ?? 50) / 50; const dir = (params?.direction ?? 0) === 0 ? 1 : -1; const amt = (1 - p) * 4 * k * dir; return { tx: amt }; },
+    // v19.44: magneticSnap emits motionTx (pixel-domain, ungated)
+    // so the brief snap is visible on ALL layer kinds, not only those
+    // with allowTransform on.  Previous `tx: amt` in canvas-percent
+    // (÷100) was too tiny to see even when allowTransform was on.
+    magneticSnap(p, sig, params) {
+      const k = (params?.intensity ?? 50) / 50;
+      const dir = (params?.direction ?? 0) === 0 ? 1 : -1;
+      // Larger px amplitude, symmetric ramp so snap has both approach
+      // and recovery.  Peak displacement scales with intensity.
+      const amt = (1 - p) * 30 * k * dir;
+      return { motionTx: amt };
+    },
     // Phase Shift: RGB channel wobble suggesting an out-of-phase signal.
     phaseShift(p, sig, params) { const k = (params?.intensity ?? 50) / 50; return { rgb: 6 * Math.abs(Math.sin(p * Math.PI * 3)) * k }; },
     // Data Scramble: heavy breakup + noise burst.
@@ -6765,6 +7271,11 @@
       // changes and mutates tspan attributes for DOM-level effects.
       // Original layer.textStyle.text is never mutated — always editable.
       if (layer.kind === "TEXT") applyTextFxAtTime(layer, t, sig);
+      else if (layer.kind === "IMG" || layer.kind === "SVG" || layer.kind === "SHAPE") {
+        // v19.44: Weird slice compositor for non-text raster layers.
+        const active = activeEventClipsAt(layer, t).filter(e => e.c.fxKey === "weirdGlitch");
+        applyWeirdSlicesOnLayer(layer, active, t);
+      }
       if (r.hud) { anyHud = true; hudFlicker = r.hudFlicker; }
       if (r.flash) { anyFlash = r.flash; flashA = r.flashA; }
       if (r.scanBoost) sceneScan = Math.min(1, sceneScan + r.scanBoost * 0.3);
@@ -6818,6 +7329,13 @@
     // v19.15: expansion origin translation — bypasses the
     // allowTransform gate that limits per-clip jitter.
     let expansionTx = 0, expansionTy = 0;
+    // v19.44: PIXEL-DOMAIN motion channels for dedicated motion
+    // effects (Orbit, Spring Follow, Path Jitter).  These bypass the
+    // allowTransform gate because moving the layer IS the purpose of
+    // those effects — gating them the same way as per-clip micro-
+    // jitter effects would make them silently do nothing.  Applied
+    // additively to cxPx / cyPx below in real pixels (no ÷100).
+    let motionTx = 0, motionTy = 0;
     let opacity = T.opacity / 100, blur = 0, rgb = 0, glow = 0;
     let hud = false, hudFlicker = 1, flash = null, flashA = 0, scanBoost = 0, breakup = 0;
     let pathDraw = null, pathTrim = null;
@@ -6907,6 +7425,10 @@
         if (d.ty) ty += d.ty;
         if (d.rot) rot += d.rot;
         if (d.scaleSafe !== undefined) extraScale *= d.scaleSafe;
+        // v19.44: pixel-domain motion channels — always additive,
+        // never gated (see comment at motionTx declaration above).
+        if (d.motionTx) motionTx += d.motionTx;
+        if (d.motionTy) motionTy += d.motionTy;
         // v18.7: migrated sustained effects (hologramTilt, digitalWave)
         // emit rotX/rotY/skew.  These are transform-gated at the
         // evaluator level (evaluateClipDelta returns null when a
@@ -7003,8 +7525,8 @@
       const natHpx = ((layer._groupNatHpct || T.hPct) / 100) * A.h;
       const scaleX = (T.wPct / (layer._groupNatWpct || T.wPct)) * extraScale;
       const scaleY = (T.hPct / (layer._groupNatHpct || T.hPct)) * extraScale;
-      const gCxPx = (T.cx / 100) * A.w + (allowT ? (tx / 100) * A.w : 0) + (expansionTx / 100) * A.w;
-      const gCyPx = (T.cy / 100) * A.h + (allowT ? (ty / 100) * A.h : 0) + (expansionTy / 100) * A.h;
+      const gCxPx = (T.cx / 100) * A.w + (allowT ? (tx / 100) * A.w : 0) + (expansionTx / 100) * A.w + motionTx;
+      const gCyPx = (T.cy / 100) * A.h + (allowT ? (ty / 100) * A.h : 0) + (expansionTy / 100) * A.h + motionTy;
       layer.wrap.style.width = natWpx + "px";
       layer.wrap.style.height = natHpx + "px";
       layer.wrap.style.left = (A.w / 2 + gCxPx - natWpx / 2) + "px";
@@ -7017,8 +7539,8 @@
       return { hud, hudFlicker, flash, flashA, scanBoost, breakup, radarBar };
     }
     const wPx = (T.wPct / 100) * A.w * extraScale, hPx = (T.hPct / 100) * A.h * extraScale;
-    const cxPx = (T.cx / 100) * A.w + (allowT ? (tx / 100) * A.w : 0) + (expansionTx / 100) * A.w;
-    const cyPx = (T.cy / 100) * A.h + (allowT ? (ty / 100) * A.h : 0) + (expansionTy / 100) * A.h;
+    const cxPx = (T.cx / 100) * A.w + (allowT ? (tx / 100) * A.w : 0) + (expansionTx / 100) * A.w + motionTx;
+    const cyPx = (T.cy / 100) * A.h + (allowT ? (ty / 100) * A.h : 0) + (expansionTy / 100) * A.h + motionTy;
     const leftPx = A.w / 2 + cxPx - wPx / 2, topPx = A.h / 2 + cyPx - hPx / 2;
 
     layer.wrap.style.width = wPx + "px"; layer.wrap.style.height = hPx + "px";
@@ -7187,6 +7709,11 @@
       const lt = t - layer.start + layer.recipe.delay;
       const r = composeLayer(layer, lt, sig, t);
       if (layer.kind === "TEXT") applyTextFxAtTime(layer, t, sig);
+      else if (layer.kind === "IMG" || layer.kind === "SVG" || layer.kind === "SHAPE") {
+        // v19.44: Weird slice compositor for non-text raster layers.
+        const active = activeEventClipsAt(layer, t).filter(e => e.c.fxKey === "weirdGlitch");
+        applyWeirdSlicesOnLayer(layer, active, t);
+      }
       if (r.hud) { anyHud = true; hudFlicker = r.hudFlicker; }
       if (r.flash) { anyFlash = r.flash; flashA = r.flashA; }
       if (r.scanBoost) sceneScan = Math.min(1, sceneScan + r.scanBoost * 0.3);
@@ -9718,6 +10245,18 @@
         layer._groupNatH = groupH;
       }
       const nodeToSerialize = layer.kind === "GROUP" ? layer._groupSyntheticNode : layer.node;
+      // v19.44: strip editor-only helpers (Text on Path helper stroke)
+      // from the export raster.  Clone before mutating so preview DOM
+      // stays intact.  Helpers marked `data-editor-helper="1"` are
+      // removed; `="0"` (renderPath enabled) are kept.
+      let serializeNode = nodeToSerialize;
+      try {
+        const helpers = nodeToSerialize.querySelectorAll('[data-editor-helper="1"]');
+        if (helpers.length > 0) {
+          serializeNode = nodeToSerialize.cloneNode(true);
+          serializeNode.querySelectorAll('[data-editor-helper="1"]').forEach((e) => e.remove());
+        }
+      } catch (e) {}
       const natW = (layer.kind === "GROUP" ? layer._groupNatW : layer.natW) || 400;
       const natH = (layer.kind === "GROUP" ? layer._groupNatH : layer.natH) || 400;
       const cap = 4096;
@@ -9740,7 +10279,7 @@
       const rasterW = Math.max(1, Math.round(natW * scale));
       const rasterH = Math.max(1, Math.round(natH * scale));
 
-      const svgStr = new XMLSerializer().serializeToString(nodeToSerialize);
+      const svgStr = new XMLSerializer().serializeToString(serializeNode);
       const url = URL.createObjectURL(new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" }));
       const svgImg = new Image();
       svgImg.onload = () => {
@@ -9847,6 +10386,10 @@
       if (d.rotY) s.rotY += d.rotY;
       if (d.skew) s.skew += d.skew;
       if (d.scaleSafe !== undefined) s.extraScale *= d.scaleSafe;
+      // v19.44: pixel-domain motion channels — read by drawExportFrame
+      // and applied same way as expansionTx/Ty.  Not gated.
+      if (d.motionTx) s.motionTx = (s.motionTx || 0) + d.motionTx;
+      if (d.motionTy) s.motionTy = (s.motionTy || 0) + d.motionTy;
       // v19.14 Expansion Build in export.  Same computation as preview
       // but folded into export's `s` accumulator so the resulting MP4
       // matches preview exactly.  Uses STATE.format (global) for the
@@ -10000,8 +10543,8 @@
       // Layer placement in artboard coordinates
       const wPx = (T.wPct / 100) * A.w * s.extraScale;
       const hPx = (T.hPct / 100) * A.h * s.extraScale;
-      const cxPx = (T.cx / 100) * A.w + (allowT ? (s.tx / 100) * A.w : 0) + ((s.expansionTx || 0) / 100) * A.w;
-      const cyPx = (T.cy / 100) * A.h + (allowT ? (s.ty / 100) * A.h : 0) + ((s.expansionTy || 0) / 100) * A.h;
+      const cxPx = (T.cx / 100) * A.w + (allowT ? (s.tx / 100) * A.w : 0) + ((s.expansionTx || 0) / 100) * A.w + (s.motionTx || 0);
+      const cyPx = (T.cy / 100) * A.h + (allowT ? (s.ty / 100) * A.h : 0) + ((s.expansionTy || 0) / 100) * A.h + (s.motionTy || 0);
       const centerX = (A.w / 2 + cxPx - offX) * sx;
       const centerY = (A.h / 2 + cyPx - offY) * sy;
       const dw = wPx * sx, dh = hPx * sy;
@@ -11885,6 +12428,15 @@
     });
     wireTextInput(el.textLetterSpacing, (n) => ({ letterSpacing: +n.value || 0 }));
     wireTextInput(el.textLineHeight, (n) => ({ lineHeight: Math.max(0.5, +n.value || 1.2) }));
+    // v19.44: Slashed Zero toggle — applies "zero" OpenType feature
+    // when the font supports it, otherwise leaves the character alone.
+    if (el.textSlashedZero) {
+      el.textSlashedZero.addEventListener("change", () => {
+        if (selectedLayer && selectedLayer.kind === "TEXT") {
+          updateTextLayer(selectedLayer, { slashedZero: !!el.textSlashedZero.checked });
+        }
+      });
+    }
     if (el.textAlignSeg) {
       el.textAlignSeg.querySelectorAll("[data-align]").forEach((btn) => {
         btn.addEventListener("click", () => {
@@ -13831,7 +14383,7 @@
     requestAnimationFrame(() => fitZoom());
     setTimeout(() => { fitZoom(); renderTimeline(); }, 120);
     // Test hook: expose internals for automated verification (harmless in production).
-    window.__phaserDebug = Object.assign(window.__phaserDebug || {}, { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, FX_EVENT_DEF, fxSupportsLayer, applyTextFxAtTime, applyWeirdSlicesOnText, TEXT_FX_STRING, TEXT_FX_DOM, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, paintWebCodecsLayersForExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath, runSvgRepair, collectSvgRepairOps, releaseClipPaths, removeMasks, convertShapesToPaths, audio: () => audio });
+    window.__phaserDebug = Object.assign(window.__phaserDebug || {}, { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, FX_EVENT_DEF, fxSupportsLayer, applyTextFxAtTime, applyWeirdSlicesOnText, applyWeirdSlicesOnLayer, TEXT_FX_STRING, TEXT_FX_DOM, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, paintWebCodecsLayersForExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath, runSvgRepair, collectSvgRepairOps, releaseClipPaths, removeMasks, convertShapesToPaths, audio: () => audio });
   }
   document.addEventListener("DOMContentLoaded", init);
 })();
