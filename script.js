@@ -237,11 +237,158 @@
     { key: "ghostFrame",      label: "Ghost Frame",      defDur: 0.25, group: "signal" },
     { key: "lostSignal",      label: "Lost Signal",      defDur: 0.45, group: "signal" },
     { key: "pixelSweep",      label: "Pixel Sweep",      defDur: 0.60, group: "signal" },
+
+    // --- v19.41 TEXT FX PACK + universal Weird / RGB Split (Pro) ---
+    // Every entry declares category + supportedLayerTypes for the
+    // Effect Capability System (see below).  UI panel filters the
+    // picker automatically — no hardcoded rules.  paramDefs drive
+    // the inspector's control generation.
+    { key: "textScramble",   label: "Text Scramble",   defDur: 1.20, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", persistEnd: true,
+      paramDefs: [
+        { key: "intensity",  label: "Intensity",  type: "range", min: 0, max: 100, step: 1, default: 60 },
+        { key: "charset",    label: "Charset",    type: "select", options: ["alnum","binary","matrix","symbols","hex"], default: "matrix" },
+        { key: "target",     label: "Target",     type: "select", options: ["char","word","line"], default: "char" },
+        { key: "speed",      label: "Speed",      type: "range", min: 1, max: 60, step: 1, default: 24 },
+        { key: "seed",       label: "Seed",       type: "range", min: 0, max: 1000, step: 1, default: 42 },
+      ] },
+    { key: "bulkTyping",     label: "Bulk Typing",     defDur: 2.00, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", persistEnd: true,
+      paramDefs: [
+        { key: "cps",        label: "Chars/Sec",  type: "range", min: 1, max: 60, step: 1, default: 20 },
+        { key: "cursor",     label: "Cursor",     type: "select", options: ["none","underscore","block","bar"], default: "underscore" },
+        { key: "cursorBlink",label: "Blink Hz",   type: "range", min: 0, max: 8, step: 0.5, default: 2 },
+        { key: "pausePunct", label: "Pause on . , ; :", type: "range", min: 0, max: 500, step: 10, default: 120 },
+        { key: "backspace",  label: "Backspace At", type: "range", min: 0, max: 100, step: 1, default: 0 },
+        { key: "backspaceAmt",label: "Backspace Chars", type: "range", min: 0, max: 40, step: 1, default: 6 },
+      ] },
+    { key: "animatedCounter",label: "Animated Counter",defDur: 1.60, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], persistEnd: true,
+      paramDefs: [
+        { key: "from",       label: "From",       type: "number", default: 0 },
+        { key: "to",         label: "To",         type: "number", default: 1000 },
+        { key: "decimals",   label: "Decimals",   type: "range", min: 0, max: 6, step: 1, default: 0 },
+        { key: "separator",  label: "Thousands",  type: "select", options: ["none",",",".","'"," "], default: "," },
+        { key: "prefix",     label: "Prefix",     type: "text", default: "" },
+        { key: "suffix",     label: "Suffix",     type: "text", default: "" },
+        { key: "easing",     label: "Easing",     type: "select", options: ["linear","easeOut","easeInOut","expoOut"], default: "easeOut" },
+      ] },
+    { key: "odometer",       label: "Odometer",        defDur: 1.60, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], persistEnd: true,
+      paramDefs: [
+        { key: "from",       label: "From",       type: "number", default: 0 },
+        { key: "to",         label: "To",         type: "number", default: 100 },
+        { key: "digits",     label: "Digit Slots",type: "range", min: 0, max: 10, step: 1, default: 0 },
+        { key: "reverse",    label: "Reverse",    type: "select", options: ["no","yes"], default: "no" },
+        { key: "easing",     label: "Easing",     type: "select", options: ["linear","easeOut","easeInOut","expoOut"], default: "easeOut" },
+        { key: "prefix",     label: "Prefix",     type: "text", default: "" },
+        { key: "suffix",     label: "Suffix",     type: "text", default: "" },
+      ] },
+    { key: "charStagger",    label: "Character Stagger", defDur: 1.00, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", persistEnd: true,
+      paramDefs: [
+        { key: "target",     label: "Unit",       type: "select", options: ["char","word","line"], default: "char" },
+        { key: "stagger",    label: "Per-Unit Delay (ms)", type: "range", min: 0, max: 400, step: 5, default: 60 },
+        { key: "duration",   label: "Per-Unit Dur (ms)",   type: "range", min: 50, max: 1000, step: 10, default: 350 },
+        { key: "distance",   label: "Distance",   type: "range", min: 0, max: 200, step: 1, default: 40 },
+        { key: "direction",  label: "Direction",  type: "select", options: ["up","down","left","right","fade","scale"], default: "up" },
+        { key: "order",      label: "Order",      type: "select", options: ["forward","reverse","center","edges","random"], default: "forward" },
+      ] },
+    { key: "sineWaveText",   label: "Sine Wave Text",  defDur: "layer", group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", sustained: true,
+      paramDefs: [
+        { key: "amplitude",  label: "Amplitude",  type: "range", min: 0, max: 100, step: 1, default: 20 },
+        { key: "wavelength", label: "Wavelength", type: "range", min: 20, max: 800, step: 5, default: 200 },
+        { key: "speed",      label: "Speed",      type: "range", min: 0, max: 8, step: 0.1, default: 1.0 },
+        { key: "axis",       label: "Axis",       type: "select", options: ["y","x","both"], default: "y" },
+        { key: "target",     label: "Unit",       type: "select", options: ["char","word"], default: "char" },
+      ] },
+    { key: "rgbSplitPro",    label: "RGB Split (Pro)", defDur: "layer", group: "signal",
+      category: "universal", supportedLayerTypes: ["TEXT","IMG","SVG","VIDEO","SHAPE"], sustained: true,
+      paramDefs: [
+        { key: "distance",   label: "Distance",   type: "range", min: 0, max: 40, step: 0.5, default: 6 },
+        { key: "angle",      label: "Angle",      type: "range", min: 0, max: 360, step: 1, default: 0 },
+        { key: "jitter",     label: "Jitter",     type: "range", min: 0, max: 100, step: 1, default: 0 },
+        { key: "intensity",  label: "Intensity",  type: "range", min: 0, max: 100, step: 1, default: 100 },
+        { key: "blend",      label: "Blend",      type: "select", options: ["screen","add","lighten","normal"], default: "screen" },
+      ] },
+    { key: "weirdGlitch",    label: "Weird",           defDur: "layer", group: "signal",
+      category: "universal", supportedLayerTypes: ["TEXT","IMG","SVG","VIDEO","SHAPE"], sustained: true,
+      paramDefs: [
+        { key: "glitchChance", label: "Glitch Chance", type: "range", min: 0, max: 100, step: 1, default: 40 },
+        { key: "glitchSpeed",  label: "Glitch Speed",  type: "range", min: 1, max: 30,  step: 1, default: 10 },
+        { key: "sliceDensity", label: "Slice Density", type: "range", min: 0, max: 100, step: 1, default: 45 },
+        { key: "sliceStrength",label: "Slice Strength",type: "range", min: 0, max: 100, step: 1, default: 40 },
+        { key: "shake",        label: "Shake",         type: "range", min: 0, max: 100, step: 1, default: 20 },
+        { key: "chroma",       label: "Chroma Split",  type: "range", min: 0, max: 100, step: 1, default: 30 },
+        { key: "noise",        label: "Noise",         type: "range", min: 0, max: 100, step: 1, default: 15 },
+        { key: "colorFlash",   label: "Color Flash",   type: "range", min: 0, max: 100, step: 1, default: 10 },
+        { key: "scanlineDrop", label: "Scanline Drop", type: "range", min: 0, max: 100, step: 1, default: 20 },
+        { key: "seed",         label: "Seed",          type: "range", min: 0, max: 1000, step: 1, default: 137 },
+      ] },
+    { key: "svgTextOnPath",  label: "SVG Text on Path",defDur: "layer", group: "text",
+      category: "text", supportedLayerTypes: ["TEXT","SVG"], placement: "layerStart", sustained: true, persistEnd: true,
+      paramDefs: [
+        { key: "pathD",      label: "Path (d attr)", type: "text", default: "M 20 100 Q 200 20 380 100 T 740 100" },
+        { key: "startOffset",label: "Start Offset (%)", type: "range", min: 0, max: 100, step: 1, default: 0 },
+        { key: "reverse",    label: "Reverse",    type: "select", options: ["no","yes"], default: "no" },
+        { key: "align",      label: "Align",      type: "select", options: ["start","middle","end"], default: "start" },
+        { key: "fitToPath",  label: "Fit To Path",type: "select", options: ["no","yes"], default: "no" },
+        { key: "animateOffset",label: "Animate Speed", type: "range", min: 0, max: 200, step: 1, default: 0 },
+      ] },
   ];
   const FX_EVENT_KEYS = new Set(FX_EVENTS.map((f) => f.key));
   // Lookup: key → definition (for placement / defDur / sustained flag)
   const FX_EVENT_DEF = new Map(FX_EVENTS.map((f) => [f.key, f]));
+
+  /* v19.41 Effect Capability System.
+   *
+   * Every FX_EVENTS entry declares:
+   *   category            — "universal" | "text" | "image" | "video" | "svg"
+   *   supportedLayerTypes — subset of ["TEXT","IMG","SVG","VIDEO","SHAPE"]
+   *
+   * Entries pre-dating v19.41 get defaults filled in below so nothing
+   * breaks.  The Effects panel filters buttons via
+   * `fx.supportedLayerTypes.includes(layer.kind)` — the UI is
+   * generated purely from this metadata, so adding a new effect
+   * requires only adding an FX_EVENTS entry.
+   *
+   * Layer kinds: TEXT, IMG, SVG, VIDEO, SHAPE, GROUP.
+   */
+  const FX_CAPABILITY = {
+    // Effects predating v19.41 that historically ran on SVG geometry
+    // target SHAPE + SVG.  Everything else defaults to universal.
+    vectorOnly: new Set([
+      "lineDraw", "trimPaths", "symbolTrans", "fillReveal", "segmentReveal",
+      "expansionBuild", "shapeMorph", "strokeWidthPulse", "fillColorFlash", "pathEnergize",
+    ]),
+    textOnly: new Set([
+      "textFlicker", "textReplace",
+    ]),
+  };
+  (function _hydrateFxCapability() {
+    for (const fx of FX_EVENTS) {
+      if (!fx.category) {
+        if (FX_CAPABILITY.textOnly.has(fx.key))       fx.category = "text";
+        else if (FX_CAPABILITY.vectorOnly.has(fx.key)) fx.category = "svg";
+        else                                            fx.category = "universal";
+      }
+      if (!fx.supportedLayerTypes) {
+        if (fx.category === "text")           fx.supportedLayerTypes = ["TEXT"];
+        else if (fx.category === "svg")       fx.supportedLayerTypes = ["SHAPE", "SVG"];
+        else if (fx.category === "video")     fx.supportedLayerTypes = ["VIDEO"];
+        else if (fx.category === "image")     fx.supportedLayerTypes = ["IMG"];
+        else                                  fx.supportedLayerTypes = ["TEXT","IMG","SVG","VIDEO","SHAPE"];
+      }
+    }
+  })();
+  function fxSupportsLayer(fx, layer) {
+    if (!layer) return false;
+    if (!fx.supportedLayerTypes) return true;
+    return fx.supportedLayerTypes.includes(layer.kind);
+  }
   const FX_EVENT_GROUPS = [
+    { id: "text",      label: "Text FX" },
     { id: "reveal",    label: "Reveal" },
     { id: "sustained", label: "Sustained" },
     { id: "core",      label: "Core" },
@@ -345,7 +492,17 @@
       // v19.9 Shape Morph.  morphTargetLayerId is 0 by default (=
       // "no target"), and the effect no-ops until the user picks one.
       case "shapeMorph":       return { ...base, intensity: 100, morphTargetLayerId: 0, morphTargetIndex: 0 };
-      default: return { ...base };
+      default: {
+        // v19.41: seed defaults from paramDefs when present.  New
+        // effects only need paramDefs — no defaultParamsFor case.
+        const def = FX_EVENT_DEF && FX_EVENT_DEF.get(key);
+        if (def && def.paramDefs) {
+          const out = { ...base };
+          for (const pd of def.paramDefs) out[pd.key] = pd.default;
+          return out;
+        }
+        return { ...base };
+      }
     }
   }
 
@@ -1545,6 +1702,414 @@
     // preserving the previous visual size.  We keep transform.wPct/hPct.
     // The <svg> auto-scales via viewBox to the outer size set by the CSS.
     return { W, H };
+  }
+
+  /* ================================================================
+   * v19.41 TEXT FX ENGINE
+   *
+   * All text-affecting effects run through this module. The layer's
+   * ORIGINAL text (layer.textStyle.text) is never mutated — it stays
+   * fully editable.  Effects mutate the RENDERED SVG only.
+   *
+   * Two mutation categories:
+   *   1. STRING mutators (Scramble, BulkTyping, Counter, Odometer)
+   *      — return a new display string.  Chained: earlier effects'
+   *        outputs feed the next.
+   *   2. DOM mutators (CharStagger, SineWaveText, SvgTextOnPath)
+   *      — operate on the resulting SVG (tspan positions, opacity,
+   *        textPath wrap).
+   *
+   * The engine is invoked from composeLayer's TEXT branch.  It only
+   * rebuilds SVG when the composed display string changes (rebuilds
+   * are expensive) — most frames are attribute-only updates on
+   * existing tspans (fast).
+   *
+   * Deterministic randomness via mulberry32(clip.id + seedParam +
+   * frameIdx) so preview and export match exactly.
+   * ================================================================ */
+
+  // Charsets for scramble.
+  const SCRAMBLE_CHARSETS = {
+    alnum:   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+    binary:  "01",
+    matrix:  "ｦｧｨｩｪｫｬｭｮｯｰｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜ0123456789",
+    symbols: "!@#$%^&*()_+-=[]{}|;:,.<>?/\\~`",
+    hex:     "0123456789ABCDEF",
+  };
+
+  // Easing functions used by counter/odometer + stagger.
+  const TEXT_EASE = {
+    linear:    (t) => t,
+    easeOut:   (t) => 1 - Math.pow(1 - t, 3),
+    easeInOut: (t) => (t < 0.5) ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2,
+    expoOut:   (t) => (t >= 1) ? 1 : 1 - Math.pow(2, -10 * t),
+  };
+
+  function _rng(seed) {
+    // Local closure for a deterministic per-frame RNG.  mulberry32 is
+    // already defined further down; inline a tiny copy here for early
+    // availability during Text FX evaluation.
+    let a = seed | 0;
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // ---- STRING MUTATORS ----
+  const TEXT_FX_STRING = {
+    textScramble(layer, clip, p, sig, sceneTime, inputText) {
+      const P = clip.params || {};
+      const src = String(inputText);
+      // v19.41: at p >= ~1 (including past-end persistEnd fires at p=1),
+      // return the source unmodified so the "resolved" state is exact.
+      // Also protects the divide-by-zero at the last order slot.
+      if (p >= 0.999) return src;
+      const charset = SCRAMBLE_CHARSETS[P.charset || "matrix"] || SCRAMBLE_CHARSETS.matrix;
+      const intensity = (P.intensity ?? 60) / 100;
+      const speed = P.speed || 24;
+      const seed = (P.seed || 0) + (clip.id || 0) * 17;
+      const target = P.target || "char";
+      const units = _splitUnits(src, target);
+      const N = units.length;
+      const order = _shuffleOrder(N, seed);
+      const frameIdx = Math.floor(sceneTime * speed);
+      const rng = _rng(seed + frameIdx);
+      const out = units.slice();
+      for (let i = 0; i < N; i++) {
+        const orderPos = order.indexOf(i) / Math.max(1, N - 1);
+        const unitP = (p - orderPos) / Math.max(0.001, 1 - orderPos);
+        if (unitP >= 1) continue;
+        const scrambleAmt = Math.max(0, 1 - unitP) * intensity;
+        if (target === "char") {
+          if (rng() < scrambleAmt) {
+            out[i] = charset[Math.floor(rng() * charset.length)];
+          }
+        } else {
+          const orig = units[i];
+          if (rng() < scrambleAmt) {
+            let s = "";
+            for (let k = 0; k < orig.length; k++) {
+              s += (/\s/.test(orig[k])) ? orig[k] : charset[Math.floor(rng() * charset.length)];
+            }
+            out[i] = s;
+          }
+        }
+      }
+      return _joinUnits(out, target);
+    },
+
+    bulkTyping(layer, clip, p, sig, sceneTime, inputText) {
+      const P = clip.params || {};
+      const src = String(inputText);
+      // Position by cps within the clip's local time, or by p (fallback).
+      const localT = Math.max(0, sceneTime - (layer.start + clip.start));
+      const cps = P.cps || 20;
+      let visibleChars = Math.floor(localT * cps);
+      // Backspace behavior: after `backspace` percent of duration, delete
+      // `backspaceAmt` chars then continue typing.  Simple deterministic model.
+      const backspaceAt = (P.backspace || 0) / 100;
+      const backspaceAmt = P.backspaceAmt || 0;
+      if (backspaceAt > 0 && backspaceAmt > 0 && p > backspaceAt) {
+        const backP = (p - backspaceAt) / (1 - backspaceAt);
+        // Delete over 15% of the remaining window, then keep typing.
+        if (backP < 0.15) {
+          const backProg = backP / 0.15;
+          const backedChars = Math.floor(backspaceAmt * backProg);
+          visibleChars = Math.max(0, visibleChars - backedChars);
+        } else {
+          // Compensate visibleChars so typing resumes from the backspaced point
+          // (no jump forward).
+          visibleChars = Math.max(0, visibleChars - backspaceAmt);
+        }
+      }
+      // Pause on punctuation: for every . , ; : encountered, add pauseMs delay.
+      const pausePunct = (P.pausePunct || 0) / 1000;
+      if (pausePunct > 0) {
+        let elapsed = 0, shown = 0;
+        for (let i = 0; i < src.length; i++) {
+          const dt = 1 / cps + (/[.,;:!?]/.test(src[i]) ? pausePunct : 0);
+          if (elapsed + dt > localT) break;
+          elapsed += dt; shown++;
+        }
+        visibleChars = Math.min(visibleChars, shown);
+      }
+      let display = src.slice(0, Math.min(visibleChars, src.length));
+      // Cursor.
+      const cursor = P.cursor || "underscore";
+      const blinkHz = P.cursorBlink ?? 2;
+      const on = blinkHz > 0 ? (Math.floor(sceneTime * blinkHz * 2) & 1) === 0 : true;
+      if (cursor !== "none" && on && p < 1.02) {
+        display += cursor === "underscore" ? "_" : cursor === "block" ? "\u2588" : "|";
+      }
+      return display;
+    },
+
+    animatedCounter(layer, clip, p, sig, sceneTime, _inputText) {
+      const P = clip.params || {};
+      const from = +P.from || 0, to = +P.to || 0;
+      const ease = TEXT_EASE[P.easing || "easeOut"] || TEXT_EASE.easeOut;
+      const val = from + (to - from) * ease(clamp01(p));
+      const decimals = Math.max(0, Math.min(6, P.decimals ?? 0));
+      const sepChar = (P.separator === "none") ? "" : (P.separator || ",");
+      let s = val.toFixed(decimals);
+      if (sepChar) {
+        const [intPart, fracPart] = s.split(".");
+        const withSep = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, sepChar);
+        s = fracPart ? withSep + "." + fracPart : withSep;
+      }
+      return (P.prefix || "") + s + (P.suffix || "");
+    },
+
+    odometer(layer, clip, p, sig, sceneTime, _inputText) {
+      const P = clip.params || {};
+      const from = Math.round(+P.from || 0);
+      const to   = Math.round(+P.to   || 0);
+      const ease = TEXT_EASE[P.easing || "easeOut"] || TEXT_EASE.easeOut;
+      const eased = ease(clamp01(p));
+      const val = Math.round(from + (to - from) * eased);
+      let s = String(P.reverse === "yes" ? (to - (val - from)) : val);
+      const slots = P.digits || 0;
+      if (slots > 0 && s.length < slots) s = "0".repeat(slots - s.length) + s;
+      return (P.prefix || "") + s + (P.suffix || "");
+    },
+  };
+
+  // ---- DOM MUTATORS (operate on the rebuilt SVG's tspans) ----
+  const TEXT_FX_DOM = {
+    charStagger(layer, clip, p, sig, sceneTime) {
+      const P = clip.params || {};
+      const tspans = _getGlyphTspans(layer);
+      if (!tspans.length) return;
+      const unit = P.target || "char";
+      const staggerMs = P.stagger || 60;
+      const dur       = P.duration || 350;
+      const dist      = P.distance || 40;
+      const dir       = P.direction || "up";
+      const order     = P.order || "forward";
+      // Group tspans by unit.
+      const groups = _groupTspansByUnit(tspans, unit, layer);
+      const N = groups.length;
+      const orderIdx = _computeOrderIndices(N, order, (clip.id || 0) * 13);
+      const localMs = Math.max(0, sceneTime - (layer.start + clip.start)) * 1000;
+      for (let i = 0; i < N; i++) {
+        const delay = orderIdx[i] * staggerMs;
+        const t = clamp01((localMs - delay) / dur);
+        const eased = TEXT_EASE.easeOut(t);
+        const groupTspans = groups[i];
+        let dx = 0, dy = 0, op = 1, scaleAttr = null;
+        switch (dir) {
+          case "up":    dy = -dist * (1 - eased); op = eased; break;
+          case "down":  dy =  dist * (1 - eased); op = eased; break;
+          case "left":  dx = -dist * (1 - eased); op = eased; break;
+          case "right": dx =  dist * (1 - eased); op = eased; break;
+          case "fade":  op = eased; break;
+          case "scale": op = eased; scaleAttr = 0.2 + 0.8 * eased; break;
+        }
+        for (const ts of groupTspans) {
+          if (dx || ts._fxDx !== undefined) { ts.setAttribute("dx", String((ts._baseDx || 0) + dx)); ts._fxDx = dx; }
+          if (dy || ts._fxDy !== undefined) { ts.setAttribute("dy", String((ts._baseDy || 0) + dy)); ts._fxDy = dy; }
+          ts.setAttribute("opacity", String(op));
+          if (scaleAttr != null) {
+            // font-size scale via style; leaves layout somewhat intact for the demo.
+            ts.style.opacity = String(op);
+          }
+        }
+      }
+    },
+
+    sineWaveText(layer, clip, p, sig, sceneTime) {
+      const P = clip.params || {};
+      const tspans = _getGlyphTspans(layer);
+      if (!tspans.length) return;
+      const amp = P.amplitude || 20;
+      const wavelen = P.wavelength || 200;
+      const speed = P.speed ?? 1;
+      const axis = P.axis || "y";
+      // Wave phase advances with scene time — deterministic.
+      const phase = sceneTime * speed * 2 * Math.PI;
+      const groups = (P.target === "word") ? _groupTspansByUnit(tspans, "word", layer) : tspans.map(t => [t]);
+      let x = 0;
+      for (let i = 0; i < groups.length; i++) {
+        const angle = (x / wavelen) * 2 * Math.PI + phase;
+        const wave = Math.sin(angle) * amp;
+        for (const ts of groups[i]) {
+          const w = _tspanApproxWidth(ts, layer);
+          if (axis === "y" || axis === "both") ts.setAttribute("dy", String((ts._baseDy || 0) + wave));
+          if (axis === "x" || axis === "both") ts.setAttribute("dx", String((ts._baseDx || 0) + wave * 0.3));
+          x += w;
+        }
+      }
+    },
+
+    svgTextOnPath(layer, clip, p, sig, sceneTime) {
+      const P = clip.params || {};
+      const svg = layer.node;
+      if (!svg) return;
+      const NS = "http://www.w3.org/2000/svg";
+      // Ensure a <defs> with our path exists (id = "tp-<clip.id>").
+      let defs = svg.querySelector("defs");
+      if (!defs) { defs = document.createElementNS(NS, "defs"); svg.insertBefore(defs, svg.firstChild); }
+      const pathId = "tp-" + (clip.id || "x");
+      let pathEl = defs.querySelector("#" + pathId);
+      if (!pathEl) {
+        pathEl = document.createElementNS(NS, "path");
+        pathEl.setAttribute("id", pathId);
+        pathEl.setAttribute("fill", "none");
+        defs.appendChild(pathEl);
+      }
+      const d = P.pathD || "M 20 100 Q 200 20 380 100 T 740 100";
+      pathEl.setAttribute("d", d);
+      // Wrap all text elements to use textPath.  We modify the existing <text>.
+      const textEl = svg.querySelector("text");
+      if (!textEl) return;
+      // Extract current text content (concatenation of tspans).
+      const currentText = textEl.textContent;
+      // Rebuild: <text><textPath href="#pathId" startOffset="X%">...</textPath></text>
+      while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
+      const tp = document.createElementNS(NS, "textPath");
+      tp.setAttribute("href", "#" + pathId);
+      const animSpeed = P.animateOffset || 0;
+      const baseOffset = P.startOffset || 0;
+      const dynOffset  = (baseOffset + (animSpeed * sceneTime)) % 100;
+      tp.setAttribute("startOffset", dynOffset + "%");
+      tp.setAttribute("side", (P.reverse === "yes") ? "right" : "left");
+      const alignMap = { start: "start", middle: "middle", end: "end" };
+      tp.setAttribute("text-anchor", alignMap[P.align] || "start");
+      tp.textContent = currentText;
+      textEl.appendChild(tp);
+      textEl.setAttribute("text-anchor", alignMap[P.align] || "start");
+      layer._textPathApplied = clip.id;
+    },
+  };
+
+  // ---- Universal (non-text-specific) — pipeline attaches these via the DELTA path.
+  // Weird and RGB Split (Pro) are implemented in EVENT_EFFECTS below.
+
+  // Helpers
+  function _splitUnits(src, target) {
+    if (target === "line") return src.split("\n");
+    if (target === "word") return src.split(/(\s+)/);
+    return [...src];
+  }
+  function _joinUnits(units, target) {
+    return units.join(target === "line" ? "\n" : "");
+  }
+  function _shuffleOrder(N, seed) {
+    const r = _rng(seed);
+    const arr = Array.from({ length: N }, (_, i) => i);
+    for (let i = N - 1; i > 0; i--) {
+      const j = Math.floor(r() * (i + 1));
+      const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+    }
+    return arr;
+  }
+  function _computeOrderIndices(N, order, seed) {
+    const idx = new Array(N);
+    if (order === "forward") for (let i = 0; i < N; i++) idx[i] = i;
+    else if (order === "reverse") for (let i = 0; i < N; i++) idx[i] = N - 1 - i;
+    else if (order === "center") {
+      const c = (N - 1) / 2;
+      for (let i = 0; i < N; i++) idx[i] = Math.abs(i - c);
+    } else if (order === "edges") {
+      const c = (N - 1) / 2;
+      for (let i = 0; i < N; i++) idx[i] = c - Math.abs(i - c);
+    } else {
+      const arr = _shuffleOrder(N, seed);
+      for (let i = 0; i < N; i++) idx[i] = arr[i];
+    }
+    return idx;
+  }
+  function _getGlyphTspans(layer) {
+    if (!layer.node) return [];
+    return Array.from(layer.node.querySelectorAll('tspan[data-glyph="1"]'));
+  }
+  function _groupTspansByUnit(tspans, unit, layer) {
+    if (unit === "char" || tspans.length === 0) return tspans.map(t => [t]);
+    if (unit === "line") {
+      // Multi-line text was rebuilt into single tspans per line —
+      // treat each tspan as a line-group.
+      return [tspans];
+    }
+    // word: split at whitespace tspans
+    const groups = []; let cur = [];
+    for (const ts of tspans) {
+      if (/^\s+$/.test(ts.textContent)) {
+        if (cur.length) groups.push(cur);
+        groups.push([ts]);   // whitespace as its own group
+        cur = [];
+      } else { cur.push(ts); }
+    }
+    if (cur.length) groups.push(cur);
+    return groups;
+  }
+  function _tspanApproxWidth(ts, layer) {
+    const fs = layer.textStyle && layer.textStyle.fontSize || 96;
+    return fs * 0.55 * (ts.textContent || " ").length;
+  }
+  function _clearTextPathIfApplied(layer) {
+    if (!layer._textPathApplied) return;
+    // Rebuild base SVG to remove the textPath wrapper.
+    buildTextLayerSVG(layer);
+    layer._textPathApplied = null;
+  }
+
+  /* Entry point — called from composeLayer for TEXT layers.
+     Runs all active text-affecting clips (including persist-past-end
+     ones for reveal-style effects).  Rebuilds SVG only when the
+     composed display string changes, then applies DOM mutators. */
+  function applyTextFxAtTime(layer, sceneTime, sig) {
+    if (!layer || layer.kind !== "TEXT") return;
+    const activeAll = activeEventClipsAt(layer, sceneTime);
+    // Partition by category.
+    const strMutClips = [], domMutClips = [], textPathClips = [];
+    for (const { c, p } of activeAll) {
+      if (TEXT_FX_STRING[c.fxKey]) strMutClips.push({ c, p });
+      if (TEXT_FX_DOM[c.fxKey])    domMutClips.push({ c, p });
+      if (c.fxKey === "svgTextOnPath") textPathClips.push({ c, p });
+    }
+    // 1. Compose display string by chaining string mutators (sort by clip.start for stable order)
+    const original = layer.textStyle ? String(layer.textStyle.text || "") : "";
+    let display = original;
+    strMutClips.sort((a, b) => a.c.start - b.c.start);
+    for (const { c, p } of strMutClips) {
+      const fn = TEXT_FX_STRING[c.fxKey];
+      try { display = fn(layer, c, p, sig, sceneTime, display); } catch (e) {}
+    }
+    // 2. Rebuild SVG only if display string differs from what's currently rendered.
+    if (display !== (layer._lastDisplayedText ?? original) || (!strMutClips.length && layer._lastDisplayedText != null && layer._lastDisplayedText !== original)) {
+      const backup = layer.textStyle.text;
+      // Temporarily swap in the display text so buildTextLayerSVG uses it.
+      layer.textStyle.text = display;
+      buildTextLayerSVG(layer);
+      layer.textStyle.text = backup;
+      layer._lastDisplayedText = display;
+    }
+    // 3. Apply DOM mutators (position/opacity/textPath).
+    // Reset dx/dy attributes on all glyph tspans first so mutators
+    // compose from a clean base each frame.
+    if (domMutClips.length || textPathClips.length) {
+      const tspans = _getGlyphTspans(layer);
+      for (const ts of tspans) {
+        if (ts.hasAttribute("dx")) ts.removeAttribute("dx");
+        if (ts.hasAttribute("dy") && !ts.getAttribute("dy").match(/^\d/)) ts.removeAttribute("dy");
+        if (ts.hasAttribute("opacity")) ts.removeAttribute("opacity");
+      }
+    }
+    for (const { c, p } of domMutClips) {
+      if (c.fxKey === "svgTextOnPath") continue;   // handled separately
+      const fn = TEXT_FX_DOM[c.fxKey];
+      try { fn(layer, c, p, sig, sceneTime); } catch (e) {}
+    }
+    if (textPathClips.length) {
+      // Only the LAST textPath clip wins (stacking textPaths is nonsensical).
+      const tp = textPathClips[textPathClips.length - 1];
+      try { TEXT_FX_DOM.svgTextOnPath(layer, tp.c, tp.p, sig, sceneTime); } catch (e) {}
+    } else if (layer._textPathApplied) {
+      _clearTextPathIfApplied(layer);
+    }
   }
 
   /* Create a new text layer at the given ARTBOARD pixel position (not
@@ -2891,13 +3456,15 @@
     // ---- PRIMARY UI: Event Clip grid, grouped by category ----
     if (el.fxEventGrid) {
       el.fxEventGrid.innerHTML = "";
+      // v19.41: Effect Capability filter — only show effects whose
+      // supportedLayerTypes include the currently selected layer's kind.
+      // Generated purely from FX_EVENTS metadata, no hardcoded lists.
+      const compatible = FX_EVENTS.filter((fx) => fxSupportsLayer(fx, selectedLayer));
       FX_EVENT_GROUPS.forEach((grp) => {
-        const events = FX_EVENTS.filter((e) => e.group === grp.id);
+        const events = compatible.filter((e) => e.group === grp.id);
         if (!events.length) return;
         const hd = document.createElement("div");
         hd.className = "fx-event-group-hd"; hd.textContent = grp.label;
-        // v19.29: tag group heading for keyboard-shortcut scrolling
-        // (V = vector, G = signal/glitch).  E goes to the panel top.
         hd.dataset.groupId = grp.id;
         el.fxEventGrid.appendChild(hd);
         const wrap = document.createElement("div"); wrap.className = "fx-event-grid-inner";
@@ -2906,7 +3473,8 @@
           b.className = "fx-event";
           b.dataset.eventKey = fx.key;
           b.innerHTML = `<span class="fx-dot"></span>${fx.label}`;
-          b.title = `Toggle a ${fx.label} clip on the selected layer at the playhead. Click again to disable / enable it.`;
+          const catBadge = fx.category === "universal" ? "" : ` (${fx.category})`;
+          b.title = `${fx.label}${catBadge}. Click to add a timeline clip on the selected layer at the playhead.`;
           b.addEventListener("click", () => toggleEventClipOnLayer(fx.key, fx.label));
           wrap.appendChild(b);
         });
@@ -3485,6 +4053,109 @@
             btns.appendChild(b);
           });
           row.appendChild(btns); paramsHost.appendChild(row);
+        }
+        // v19.41: paramDefs-driven UI generation.  Any effect that
+        // declares `paramDefs` on its FX_EVENTS entry gets its
+        // inspector controls generated automatically here — new
+        // effects don't need any inspector code changes.  Supported
+        // types: range (slider), number (text input), select
+        // (dropdown), text (text input).  Skips params already
+        // rendered above (intensity, opacityMix, direction, color).
+        const def = FX_EVENT_DEF.get(selectedEventClip.ec.fxKey);
+        if (def && def.paramDefs) {
+          const already = new Set(["intensity", "opacityMix", "direction", "corruptionDirection", "color"]);
+          def.paramDefs.forEach((pd) => {
+            if (already.has(pd.key)) return;
+            const cur = (p[pd.key] !== undefined) ? p[pd.key] : pd.default;
+            if (pd.type === "range") {
+              paramsHost.appendChild(makeParamSlider(pd.key, pd.label, cur, pd.min, pd.max, (v) => {
+                p[pd.key] = v; renderTimeline(); renderEventButtons(); paintIfPaused();
+              }, pd.step));
+            } else if (pd.type === "select") {
+              const row = document.createElement("div"); row.className = "prop-row";
+              row.innerHTML = `<span class="prop-label">${pd.label}</span>`;
+              const sel = document.createElement("select");
+              sel.className = "ctl-num"; sel.style.minWidth = "0"; sel.style.flex = "1"; sel.style.width = "auto"; sel.style.padding = "2px 6px";
+              pd.options.forEach((opt) => {
+                const o = document.createElement("option");
+                o.value = String(opt); o.textContent = String(opt);
+                sel.appendChild(o);
+              });
+              sel.value = String(cur);
+              sel.addEventListener("change", () => {
+                p[pd.key] = sel.value;
+                renderTimeline(); renderEventButtons(); paintIfPaused();
+              });
+              row.appendChild(sel); paramsHost.appendChild(row);
+            } else if (pd.type === "number") {
+              const row = document.createElement("div"); row.className = "prop-row";
+              row.innerHTML = `<span class="prop-label">${pd.label}</span>`;
+              const inp = document.createElement("input");
+              inp.type = "number"; inp.className = "ctl-num";
+              inp.style.width = "88px"; inp.value = String(cur);
+              inp.addEventListener("input", () => {
+                const v = parseFloat(inp.value);
+                p[pd.key] = isFinite(v) ? v : 0;
+                renderTimeline(); renderEventButtons(); paintIfPaused();
+              });
+              row.appendChild(inp); paramsHost.appendChild(row);
+            } else if (pd.type === "text") {
+              const row = document.createElement("div"); row.className = "prop-row";
+              row.innerHTML = `<span class="prop-label">${pd.label}</span>`;
+              const inp = document.createElement("input");
+              inp.type = "text"; inp.className = "ctl-num";
+              inp.style.width = "160px"; inp.value = String(cur);
+              inp.addEventListener("input", () => {
+                p[pd.key] = inp.value;
+                renderTimeline(); renderEventButtons(); paintIfPaused();
+              });
+              row.appendChild(inp); paramsHost.appendChild(row);
+            }
+          });
+          // Special: svgTextOnPath — add a "Load path from SVG…" button
+          // that parses an uploaded SVG file's first <path d=""> and
+          // writes it into params.pathD.  Sanitized: only <path> d
+          // attributes are read; no scripts / event handlers touched.
+          if (selectedEventClip.ec.fxKey === "svgTextOnPath") {
+            const row = document.createElement("div"); row.className = "prop-row";
+            row.innerHTML = `<span class="prop-label">Load SVG</span>`;
+            const btn = document.createElement("button");
+            btn.className = "mini-btn"; btn.textContent = "Pick file…";
+            btn.addEventListener("click", () => {
+              const input = document.createElement("input");
+              input.type = "file"; input.accept = "image/svg+xml,.svg";
+              input.style.display = "none";
+              input.addEventListener("change", () => {
+                const file = input.files && input.files[0];
+                if (!file) { document.body.removeChild(input); return; }
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                  try {
+                    const doc = new DOMParser().parseFromString(String(e.target.result), "image/svg+xml");
+                    if (doc.querySelector("parsererror")) { toast("Couldn't parse SVG"); return; }
+                    const paths = Array.from(doc.querySelectorAll("path"));
+                    if (!paths.length) { toast("SVG has no <path> elements"); return; }
+                    // If multiple paths, ask which one (simple prompt fallback for MVP).
+                    let idx = 0;
+                    if (paths.length > 1) {
+                      const pick = prompt(`SVG contains ${paths.length} paths (1..${paths.length}). Pick one:`, "1");
+                      const n = parseInt(pick, 10);
+                      if (isFinite(n) && n >= 1 && n <= paths.length) idx = n - 1;
+                    }
+                    const d = paths[idx].getAttribute("d") || "";
+                    if (!d) { toast("Selected path has no `d` attribute"); return; }
+                    p.pathD = d;
+                    renderClipInspector(); renderTimeline(); paintIfPaused();
+                    toast(`Loaded path #${idx + 1} of ${paths.length}`);
+                  } catch (err) { toast("SVG load failed"); }
+                };
+                reader.readAsText(file);
+                document.body.removeChild(input);
+              });
+              document.body.appendChild(input); input.click();
+            });
+            row.appendChild(btn); paramsHost.appendChild(row);
+          }
         }
         // Event-specific extra params (Lost Signal / Vector Beam).
         const schema = EVENT_PARAM_SCHEMA[selectedEventClip.ec.fxKey];
@@ -4357,6 +5028,52 @@
     // transform effects (gated)
     signalShake(sig, t) { const s = (STATE.glitch / 100) * 1.5 + 0.6, impact = 1 + sig.bass * 3 + sig.beat * 2.5; return { tx: (Math.random() - 0.5) * s * impact, ty: (Math.random() - 0.5) * s * impact }; },
     hologramTilt(sig, t) { return { rotX: Math.sin(t * 0.7) * (7 + sig.mid * 8), rotY: Math.cos(t * 0.5) * (9 + sig.mid * 10) }; },
+    // v19.41 sustained text-fx placeholders — their real work is done
+    // by applyTextFxAtTime.  Returning empty delta so the pipeline
+    // doesn't warn about a missing sustained handler.
+    sineWaveText(sig, t)  { return {}; },
+    svgTextOnPath(sig, t) { return {}; },
+    // v19.41 universal RGB Split (Pro) — extended params over legacy rgbOffset.
+    // distance/angle project into rgb offset magnitude with per-frame jitter.
+    rgbSplitPro(sig, t, params) {
+      const P = params || {};
+      const dist = P.distance ?? 6;
+      const jitter = (P.jitter || 0) / 100;
+      const intensity = (P.intensity ?? 100) / 100;
+      // Angle unused for the DOM channel-split preview (canvas export uses it).
+      const jitterAmt = jitter * dist * 0.5 * (Math.sin(t * 27) * 0.5 + 0.5);
+      return { rgb: (dist + jitterAmt) * intensity };
+    },
+    // v19.41 Weird — sustained "everything at once" glitch inspired by Efecto.
+    // We synthesize deltas per RAF: shake, chroma split, slice offset, noise,
+    // color flash, scanline drop.  Deterministic via seed × time-quantized frame.
+    weirdGlitch(sig, t, params) {
+      const P = params || {};
+      const glitchChance = (P.glitchChance || 40) / 100;
+      const glitchSpeed = P.glitchSpeed || 10;
+      const shake = (P.shake || 0) / 100;
+      const chroma = (P.chroma || 0) / 100;
+      const noise = (P.noise || 0) / 100;
+      const flash = (P.colorFlash || 0) / 100;
+      const seed = (P.seed || 137);
+      const frame = Math.floor(t * glitchSpeed);
+      const r = _rng(seed + frame * 991);
+      const isGlitching = r() < glitchChance;
+      const delta = {
+        rgb: chroma * (isGlitching ? 12 : 3),
+        breakup: isGlitching ? noise * 0.9 : noise * 0.2,
+        glow: isGlitching ? flash * 15 : 0,
+        scanBoost: isGlitching ? (P.scanlineDrop || 0) / 100 * 0.8 : 0,
+        tx: (r() - 0.5) * shake * (isGlitching ? 12 : 3),
+        ty: (r() - 0.5) * shake * (isGlitching ? 8 : 2),
+      };
+      if (isGlitching && flash > 0.1 && r() < 0.4) {
+        const cols = ["#ff2a2a","#2affff","#ffff2a","#ff2affaa","#2aff2a"];
+        delta.flash = cols[Math.floor(r() * cols.length)];
+        delta.flashA = flash * 0.25;
+      }
+      return delta;
+    },
   };
 
   /* ============================================================ EVENT EFFECTS
@@ -4365,6 +5082,15 @@
      the playhead is within the event clip.
      ============================================================ */
   const EVENT_EFFECTS = {
+    // v19.41 event-style text-fx placeholders — actual mutation lives
+    // in applyTextFxAtTime.  Returning empty delta is enough for the
+    // clip to be "active" in the pipeline (activeEventClipsAt) so the
+    // text engine picks them up.
+    textScramble()    { return {}; },
+    bulkTyping()      { return {}; },
+    animatedCounter() { return {}; },
+    odometer()        { return {}; },
+    charStagger()     { return {}; },
     // Focus Snap: blur ramps up then snaps sharp on release.
     focusSnap(p, sig, params) { const k = (params?.intensity ?? 50) / 50; const b = p < 0.6 ? p / 0.6 : (1 - p) / 0.4; return { blur: 6 * b * k, glow: 10 * b * k, opacity: 0.85 + 0.15 * b }; },
     // Signal Interrupt: 1-3 frame opacity dropout with brief RGB kick.
@@ -5294,6 +6020,12 @@
       if (!active) { layer.wrap.style.opacity = "0"; return; }
       const lt = t - layer.start + layer.recipe.delay;
       const r = composeLayer(layer, lt, sig, t);
+      // v19.41: apply text-fx (Scramble, Bulk Typing, Counter,
+      // Odometer, Stagger, SineWave, TextOnPath) AFTER composeLayer.
+      // The engine rebuilds text SVG only when its display string
+      // changes and mutates tspan attributes for DOM-level effects.
+      // Original layer.textStyle.text is never mutated — always editable.
+      if (layer.kind === "TEXT") applyTextFxAtTime(layer, t, sig);
       if (r.hud) { anyHud = true; hudFlicker = r.hudFlicker; }
       if (r.flash) { anyFlash = r.flash; flashA = r.flashA; }
       if (r.scanBoost) sceneScan = Math.min(1, sceneScan + r.scanBoost * 0.3);
@@ -5706,6 +6438,7 @@
       if (!active) { layer.wrap.style.opacity = "0"; return; }
       const lt = t - layer.start + layer.recipe.delay;
       const r = composeLayer(layer, lt, sig, t);
+      if (layer.kind === "TEXT") applyTextFxAtTime(layer, t, sig);
       if (r.hud) { anyHud = true; hudFlicker = r.hudFlicker; }
       if (r.flash) { anyFlash = r.flash; flashA = r.flashA; }
       if (r.scanBoost) sceneScan = Math.min(1, sceneScan + r.scanBoost * 0.3);
@@ -12314,7 +13047,7 @@
     requestAnimationFrame(() => fitZoom());
     setTimeout(() => { fitZoom(); renderTimeline(); }, 120);
     // Test hook: expose internals for automated verification (harmless in production).
-    window.__phaserDebug = Object.assign(window.__phaserDebug || {}, { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, paintWebCodecsLayersForExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath, runSvgRepair, collectSvgRepairOps, releaseClipPaths, removeMasks, convertShapesToPaths, audio: () => audio });
+    window.__phaserDebug = Object.assign(window.__phaserDebug || {}, { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, FX_EVENT_DEF, fxSupportsLayer, applyTextFxAtTime, TEXT_FX_STRING, TEXT_FX_DOM, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, paintWebCodecsLayersForExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath, runSvgRepair, collectSvgRepairOps, releaseClipPaths, removeMasks, convertShapesToPaths, audio: () => audio });
   }
   document.addEventListener("DOMContentLoaded", init);
 })();
