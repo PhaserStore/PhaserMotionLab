@@ -214,7 +214,8 @@
     // at p=1.  Optional cross-effects: fade during expansion, rotate
     // during expansion.  This is a transform/opacity delta, not a
     // vector-DOM mutation, so it works on every layer kind.
-    { key: "expansionBuild",   label: "Expansion Build",    defDur: 1.50, group: "vector", placement: "layerStart", persistEnd: true },
+    { key: "expansionBuild",   label: "Expansion Build",    defDur: 1.50, group: "vector", placement: "layerStart", persistEnd: true,
+      category: "universal", supportedLayerTypes: ["TEXT","IMG","SVG","VIDEO","SHAPE"] },
     // v19.9 Morphing v1 — path-to-path interpolation.  Supports:
     //   rect ↔ rect · circle ↔ circle · ellipse ↔ ellipse · line ↔ line
     //   polygon ↔ polygon (same side count)
@@ -329,12 +330,106 @@
     { key: "svgTextOnPath",  label: "SVG Text on Path",defDur: "layer", group: "text",
       category: "text", supportedLayerTypes: ["TEXT","SVG"], placement: "layerStart", sustained: true, persistEnd: true,
       paramDefs: [
-        { key: "pathD",      label: "Path (d attr)", type: "text", default: "M 20 100 Q 200 20 380 100 T 740 100" },
+        // v19.43: pathSource lets the user choose between built-in
+        // shape presets (circle/rectangle/line), an uploaded SVG,
+        // or a freehand path drawn on the canvas.
+        { key: "pathSource", label: "Path Source", type: "select",
+          options: ["custom","circle","rectangle","line","freehand","svg"], default: "custom" },
+        { key: "pathD",      label: "Path (d attr)", type: "text",
+          default: "M 20 100 Q 200 20 380 100 T 740 100" },
+        // Shape preset controls — used when pathSource=circle/rectangle/line
+        { key: "shapeSize",  label: "Shape Size (px)", type: "range", min: 60, max: 800, step: 10, default: 300 },
         { key: "startOffset",label: "Start Offset (%)", type: "range", min: 0, max: 100, step: 1, default: 0 },
         { key: "reverse",    label: "Reverse",    type: "select", options: ["no","yes"], default: "no" },
         { key: "align",      label: "Align",      type: "select", options: ["start","middle","end"], default: "start" },
         { key: "fitToPath",  label: "Fit To Path",type: "select", options: ["no","yes"], default: "no" },
         { key: "animateOffset",label: "Animate Speed", type: "range", min: 0, max: 200, step: 1, default: 0 },
+      ] },
+
+    // === v19.43 KINETIC + PHYSICS PACK ===
+    // Text kinetic — extends the text-fx DOM mutator layer.
+    { key: "characterSpring", label: "Character Spring", defDur: 1.20, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", persistEnd: true,
+      paramDefs: [
+        { key: "target",   label: "Unit",       type: "select", options: ["char","word"], default: "char" },
+        { key: "stagger",  label: "Stagger (ms)",type: "range", min: 0, max: 300, step: 5, default: 40 },
+        { key: "stiffness",label: "Stiffness",  type: "range", min: 20, max: 400, step: 10, default: 180 },
+        { key: "damping",  label: "Damping",    type: "range", min: 1, max: 40, step: 1, default: 14 },
+        { key: "distance", label: "Drop (px)",  type: "range", min: 0, max: 300, step: 5, default: 80 },
+      ] },
+    { key: "wordStomp",       label: "Word Stomp",       defDur: 1.20, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", persistEnd: true,
+      paramDefs: [
+        { key: "stagger",  label: "Stagger (ms)",type: "range", min: 0, max: 500, step: 10, default: 180 },
+        { key: "overshoot",label: "Overshoot",  type: "range", min: 100, max: 350, step: 5, default: 220 },
+        { key: "settleMs", label: "Settle (ms)",type: "range", min: 100, max: 800, step: 20, default: 300 },
+      ] },
+    { key: "elasticStretch",  label: "Elastic Stretch",  defDur: 0.80, group: "text",
+      category: "universal", supportedLayerTypes: ["TEXT","IMG","SVG","VIDEO","SHAPE"], persistEnd: false,
+      paramDefs: [
+        { key: "stretchX", label: "Stretch X",  type: "range", min: 100, max: 400, step: 5, default: 180 },
+        { key: "stretchY", label: "Stretch Y",  type: "range", min: 40, max: 200, step: 5, default: 70 },
+        { key: "snapMs",   label: "Snap (ms)",  type: "range", min: 50, max: 500, step: 10, default: 200 },
+      ] },
+    { key: "cascadeAssemble", label: "Cascade Assemble", defDur: 1.60, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", persistEnd: true,
+      paramDefs: [
+        { key: "target",   label: "Unit",      type: "select", options: ["char","word"], default: "char" },
+        { key: "distance", label: "Fly Distance (px)", type: "range", min: 40, max: 500, step: 10, default: 180 },
+        { key: "stagger",  label: "Stagger (ms)",type: "range", min: 10, max: 200, step: 5, default: 45 },
+        { key: "seed",     label: "Seed",      type: "range", min: 0, max: 1000, step: 1, default: 7 },
+      ] },
+    { key: "variableFontPulse", label: "Variable Font Pulse", defDur: "layer", group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", sustained: true,
+      paramDefs: [
+        { key: "weightMin",label: "Min Weight", type: "range", min: 100, max: 900, step: 25, default: 200 },
+        { key: "weightMax",label: "Max Weight", type: "range", min: 100, max: 900, step: 25, default: 800 },
+        { key: "cycleSec", label: "Cycle (sec)",type: "range", min: 0.2, max: 6, step: 0.1, default: 1.5 },
+      ] },
+
+    // Physics — universal (work on any layer via CSS transform deltas).
+    { key: "springFollow",    label: "Spring Follow",    defDur: "layer", group: "motion",
+      category: "universal", supportedLayerTypes: ["TEXT","IMG","SVG","VIDEO","SHAPE"], sustained: true,
+      paramDefs: [
+        { key: "amount",   label: "Follow Amount", type: "range", min: 0, max: 200, step: 5, default: 60 },
+        { key: "stiffness",label: "Stiffness",     type: "range", min: 20, max: 400, step: 10, default: 120 },
+        { key: "damping",  label: "Damping",       type: "range", min: 1, max: 30, step: 1, default: 10 },
+      ] },
+    { key: "pendulum",        label: "Pendulum",         defDur: "layer", group: "motion",
+      category: "universal", supportedLayerTypes: ["TEXT","IMG","SVG","VIDEO","SHAPE"], sustained: true,
+      paramDefs: [
+        { key: "amplitude",label: "Amplitude (deg)", type: "range", min: 1, max: 90, step: 1, default: 25 },
+        { key: "period",   label: "Period (sec)",    type: "range", min: 0.2, max: 8, step: 0.1, default: 1.6 },
+        { key: "decay",    label: "Decay",           type: "range", min: 0, max: 100, step: 1, default: 0 },
+      ] },
+    { key: "orbit",           label: "Orbit",            defDur: "layer", group: "motion",
+      category: "universal", supportedLayerTypes: ["TEXT","IMG","SVG","VIDEO","SHAPE"], sustained: true,
+      paramDefs: [
+        { key: "radius",   label: "Radius (px)", type: "range", min: 5, max: 400, step: 5, default: 80 },
+        { key: "period",   label: "Period (sec)",type: "range", min: 0.2, max: 12, step: 0.1, default: 3 },
+        { key: "phase",    label: "Phase (deg)", type: "range", min: 0, max: 360, step: 5, default: 0 },
+      ] },
+    { key: "pathJitter",      label: "Path Jitter",      defDur: "layer", group: "motion",
+      category: "universal", supportedLayerTypes: ["TEXT","IMG","SVG","VIDEO","SHAPE"], sustained: true,
+      paramDefs: [
+        { key: "amountX",  label: "Amount X (px)", type: "range", min: 0, max: 100, step: 1, default: 12 },
+        { key: "amountY",  label: "Amount Y (px)", type: "range", min: 0, max: 100, step: 1, default: 12 },
+        { key: "smoothHz", label: "Smoothing Hz",  type: "range", min: 0.2, max: 20, step: 0.1, default: 3 },
+        { key: "seed",     label: "Seed",          type: "range", min: 0, max: 1000, step: 1, default: 31 },
+      ] },
+    { key: "softBody",        label: "Soft Body / Wobble", defDur: "layer", group: "motion",
+      category: "universal", supportedLayerTypes: ["TEXT","IMG","SVG","VIDEO","SHAPE"], sustained: true,
+      paramDefs: [
+        { key: "wobble",   label: "Wobble",     type: "range", min: 0, max: 100, step: 1, default: 30 },
+        { key: "period",   label: "Period (sec)", type: "range", min: 0.2, max: 6, step: 0.1, default: 0.8 },
+        { key: "skewMax",  label: "Max Skew (deg)", type: "range", min: 0, max: 30, step: 1, default: 6 },
+      ] },
+    { key: "elasticMorph",    label: "Elastic Morph",    defDur: "layer", group: "motion",
+      category: "universal", supportedLayerTypes: ["TEXT","IMG","SVG","VIDEO","SHAPE"], sustained: true,
+      paramDefs: [
+        { key: "stretchX", label: "Stretch X",  type: "range", min: 50, max: 250, step: 5, default: 130 },
+        { key: "stretchY", label: "Stretch Y",  type: "range", min: 50, max: 250, step: 5, default: 85 },
+        { key: "period",   label: "Period (sec)",type: "range", min: 0.2, max: 6, step: 0.1, default: 1.2 },
       ] },
   ];
   const FX_EVENT_KEYS = new Set(FX_EVENTS.map((f) => f.key));
@@ -358,9 +453,15 @@
   const FX_CAPABILITY = {
     // Effects predating v19.41 that historically ran on SVG geometry
     // target SHAPE + SVG.  Everything else defaults to universal.
+    // v19.43: expansionBuild REMOVED from this list — it worked
+    // correctly on IMG/VIDEO before the v19.41 capability filter
+    // classified it as vector-only.  computeExpansionDelta returns
+    // pure CSS-transform deltas (scaleSafe, opacity, rot, blur, tx,
+    // ty) that any layer kind renders identically.  Now defaults to
+    // universal so IMG + VIDEO layers can use it again.
     vectorOnly: new Set([
       "lineDraw", "trimPaths", "symbolTrans", "fillReveal", "segmentReveal",
-      "expansionBuild", "shapeMorph", "strokeWidthPulse", "fillColorFlash", "pathEnergize",
+      "shapeMorph", "strokeWidthPulse", "fillColorFlash", "pathEnergize",
     ]),
     textOnly: new Set([
       "textFlicker", "textReplace",
@@ -1879,6 +1980,123 @@
 
   // ---- DOM MUTATORS (operate on the rebuilt SVG's tspans) ----
   const TEXT_FX_DOM = {
+    // v19.43 KINETIC: character spring — each unit bounces in on a
+    // damped-spring curve using stiffness/damping over layer-local time.
+    characterSpring(layer, clip, p, sig, sceneTime) {
+      const P = clip.params || {};
+      const tspans = _getGlyphTspans(layer);
+      if (!tspans.length) return;
+      const groups = _groupTspansByUnit(tspans, P.target || "char", layer);
+      const N = groups.length;
+      const stagger = P.stagger || 40;
+      const stiffness = Math.max(20, P.stiffness || 180);
+      const damping   = Math.max(1, P.damping || 14);
+      const drop      = P.distance || 80;
+      const localMs   = Math.max(0, sceneTime - (layer.start + clip.start)) * 1000;
+      // Undamped natural frequency and damped frequency
+      const omega = Math.sqrt(stiffness);
+      const zeta  = damping / (2 * Math.sqrt(stiffness));
+      const damped = zeta < 1 ? omega * Math.sqrt(1 - zeta * zeta) : omega;
+      for (let i = 0; i < N; i++) {
+        const t = Math.max(0, (localMs - i * stagger)) / 1000;
+        // Damped spring: y = 1 - e^(-zeta*omega*t) * (cos(damped*t) + (zeta*omega/damped) * sin(damped*t))
+        let y;
+        if (zeta >= 1) {
+          y = 1 - Math.exp(-omega * t) * (1 + omega * t);   // overdamped
+        } else {
+          y = 1 - Math.exp(-zeta * omega * t) *
+            (Math.cos(damped * t) + (zeta * omega / damped) * Math.sin(damped * t));
+        }
+        const dy = -drop * (1 - y);   // starts at -drop, springs to 0
+        const op = Math.min(1, Math.max(0, y * 1.6));
+        for (const ts of groups[i]) {
+          ts.setAttribute("dy", String((ts._baseDy || 0) + dy));
+          ts.setAttribute("opacity", String(op));
+        }
+      }
+    },
+
+    // Word Stomp — words pop in with heavy overshoot and settle.
+    wordStomp(layer, clip, p, sig, sceneTime) {
+      const P = clip.params || {};
+      const tspans = _getGlyphTspans(layer);
+      if (!tspans.length) return;
+      const groups = _groupTspansByUnit(tspans, "word", layer);
+      const N = groups.length;
+      const stagger = P.stagger || 180;
+      const overshoot = (P.overshoot || 220) / 100;    // scale peak
+      const settleMs  = P.settleMs || 300;
+      const localMs   = Math.max(0, sceneTime - (layer.start + clip.start)) * 1000;
+      for (let i = 0; i < N; i++) {
+        const t = (localMs - i * stagger) / settleMs;
+        let scale, op;
+        if (t <= 0)      { scale = 0; op = 0; }
+        else if (t >= 1) { scale = 1; op = 1; }
+        else {
+          // Piecewise: 0..0.4 → 0→overshoot (impact), 0.4..1 → overshoot→1 (settle)
+          if (t < 0.4)   { scale = TEXT_EASE.easeOut(t / 0.4) * overshoot; op = t / 0.4; }
+          else           { const s = (t - 0.4) / 0.6; scale = overshoot + (1 - overshoot) * TEXT_EASE.easeOut(s); op = 1; }
+        }
+        for (const ts of groups[i]) {
+          // Approximate scaling via font-size CSS style; keeps layout stable.
+          ts.style.opacity = String(op);
+          ts.style.transform = `scale(${scale.toFixed(3)})`;
+          ts.style.transformOrigin = "center bottom";
+          ts.style.transformBox = "fill-box";
+        }
+      }
+    },
+
+    // Cascade Assemble — characters fly in from random directions and
+    // settle to their final position.  Seeded random per unit for
+    // per-character deterministic angles.
+    cascadeAssemble(layer, clip, p, sig, sceneTime) {
+      const P = clip.params || {};
+      const tspans = _getGlyphTspans(layer);
+      if (!tspans.length) return;
+      const groups = _groupTspansByUnit(tspans, P.target || "char", layer);
+      const N = groups.length;
+      const dist = P.distance || 180;
+      const stagger = P.stagger || 45;
+      const seed = P.seed || 7;
+      const localMs = Math.max(0, sceneTime - (layer.start + clip.start)) * 1000;
+      const perDur = 500;
+      for (let i = 0; i < N; i++) {
+        const t = Math.max(0, Math.min(1, (localMs - i * stagger) / perDur));
+        const eased = TEXT_EASE.easeOut(t);
+        // Random angle per unit — seeded so preview matches export.
+        const rng = _rng(seed + i * 37);
+        const angle = rng() * Math.PI * 2;
+        const startX = Math.cos(angle) * dist;
+        const startY = Math.sin(angle) * dist;
+        const dx = startX * (1 - eased);
+        const dy = startY * (1 - eased);
+        for (const ts of groups[i]) {
+          ts.setAttribute("dx", String((ts._baseDx || 0) + dx));
+          ts.setAttribute("dy", String((ts._baseDy || 0) + dy));
+          ts.setAttribute("opacity", String(eased));
+        }
+      }
+    },
+
+    // Variable Font Pulse — cycles font-variation-settings 'wght'
+    // between weightMin and weightMax at cycleSec period.  Requires
+    // a variable font to be visible; static fonts get no change.
+    variableFontPulse(layer, clip, p, sig, sceneTime) {
+      const P = clip.params || {};
+      const wMin = P.weightMin || 200;
+      const wMax = P.weightMax || 800;
+      const cycle = Math.max(0.1, P.cycleSec || 1.5);
+      // Sine oscillation, 0..1
+      const phase = (sceneTime / cycle) * Math.PI * 2;
+      const u = (Math.sin(phase) * 0.5 + 0.5);
+      const w = Math.round(wMin + (wMax - wMin) * u);
+      // Apply to the text element via font-variation-settings.
+      const textEl = layer.node && layer.node.querySelector("text");
+      if (!textEl) return;
+      textEl.style.fontVariationSettings = `"wght" ${w}`;
+      textEl.setAttribute("font-weight", String(w));
+    },
     charStagger(layer, clip, p, sig, sceneTime) {
       const P = clip.params || {};
       const tspans = _getGlyphTspans(layer);
@@ -1960,7 +2178,29 @@
         pathEl.setAttribute("fill", "none");
         defs.appendChild(pathEl);
       }
-      const d = P.pathD || "M 20 100 Q 200 20 380 100 T 740 100";
+      // v19.43: derive `d` from pathSource — built-in shapes generated
+      // in-place, custom/SVG/freehand from the pathD string.  Shape
+      // presets use layer.natW/natH so they scale with the layer size,
+      // and shapeSize controls the primary dimension.
+      const source = P.pathSource || "custom";
+      const W = Math.max(60, layer.natW || 600), H = Math.max(60, layer.natH || 300);
+      const sz = Math.max(60, Math.min(Math.max(W, H) - 40, P.shapeSize || 300));
+      let d = P.pathD || "M 20 100 Q 200 20 380 100 T 740 100";
+      if (source === "circle") {
+        const cx = W / 2, cy = H / 2;
+        const r = sz / 2;
+        // Circle as two arcs (closed).  Starting at top.
+        d = `M ${cx} ${cy - r} A ${r} ${r} 0 1 1 ${cx} ${cy + r} A ${r} ${r} 0 1 1 ${cx} ${cy - r} Z`;
+      } else if (source === "rectangle") {
+        const rw = sz, rh = sz * 0.6;
+        const x = (W - rw) / 2, y = (H - rh) / 2;
+        d = `M ${x} ${y} H ${x + rw} V ${y + rh} H ${x} Z`;
+      } else if (source === "line") {
+        const y = H / 2;
+        const x0 = (W - sz) / 2;
+        d = `M ${x0} ${y} L ${x0 + sz} ${y}`;
+      }
+      // else custom / svg / freehand — use P.pathD as-is.
       pathEl.setAttribute("d", d);
       // Wrap all text elements to use textPath.  We modify the existing <text>.
       const textEl = svg.querySelector("text");
@@ -2184,71 +2424,152 @@
 
     const chance       = (P.glitchChance   ?? 40) / 100;
     const speed        = Math.max(1, P.glitchSpeed ?? 10);
-    const density      = Math.max(1, Math.floor(P.sliceDensity  ?? 45));
-    const strengthPct  = (P.sliceStrength  ?? 40) / 100;   // 0..1 fraction of W
-    const shake        = (P.shake          ?? 0) / 100;    // 0..1 -> px
-    const chroma       = (P.chroma         ?? 0) / 100;    // 0..1
+    const densityParam = Math.max(1, Math.floor(P.sliceDensity  ?? 45));
+    const strengthPct  = (P.sliceStrength  ?? 40) / 100;
+    const shake        = (P.shake          ?? 0) / 100;
+    const chroma       = (P.chroma         ?? 0) / 100;
     const noise        = (P.noise          ?? 0) / 100;
     const flash        = (P.colorFlash     ?? 0) / 100;
     const scanDrop     = (P.scanlineDrop   ?? 0) / 100;
     const seed         = (P.seed           ?? 137) | 0;
 
-    const frame  = Math.floor(sceneTime * speed);
-    const rngG   = _rng(seed + frame * 991);
-    const isGlitching = rngG() < chance;
+    /* v19.43 BURST MODEL — matches the Efecto reference video.
+     *
+     * Behavior observed: most frames are 100% clean; occasionally
+     * (2-4 frames) intense chaos hits, then returns to clean.  So
+     * `chance` doesn't gate every frame — it gates every BURST
+     * decision.  A burst is a run of `burstLen` consecutive frames
+     * of maximum chaos.
+     *
+     * Speed sets both the burst-decision rate and the peak burst
+     * intensity refresh (state changes fast inside a burst so it
+     * feels alive).
+     */
+    const stateHz = speed;                              // state changes per second
+    const decisionEveryFrames = Math.max(2, Math.round(stateHz * 0.25));
+    const frame = Math.floor(sceneTime * stateHz);
+    // Which "burst slot" are we in?  Each slot decides once.
+    const slot  = Math.floor(frame / decisionEveryFrames);
+    const rngSlot = _rng(seed + slot * 9931 + 7);
+    const burstRoll = rngSlot();
+    // A burst fires when the roll lands under `chance`.  Its length
+    // scales 1..4 frames with roll strength so heavy chance = longer.
+    const burstLen = Math.max(1, Math.round(1 + rngSlot() * 3 * chance));
+    // How far into the current slot are we?  If we're inside burstLen
+    // of the slot's start, we're in-burst; otherwise clean.
+    const posInSlot = frame - slot * decisionEveryFrames;
+    const inBurst   = (burstRoll < chance) && (posInSlot < burstLen);
+    // Burst progress 0..1 (used to fade intensity within the burst).
+    const burstT = burstLen > 0 ? (posInSlot / burstLen) : 0;
+    const burstIntensity = inBurst ? (1 - burstT * 0.4) : 0;   // peaks at start, fades slightly
 
-    const bandH = H / density;
-    const maxDispX = strengthPct * W * 0.6;      // up to 60% of layer width
-    const shakePx  = shake * 12;                 // up to ~12px whole-layer
-
-    for (let i = 0; i < density; i++) {
-      const rB = _rng(seed + frame * 991 + i * 13 + 1);
-      const sy = i * bandH;
-      const drawH = (i === density - 1) ? (H - sy) : bandH;   // last band fills remainder
-      // Deterministic per-band displacement.  When not glitching this frame,
-      // 30% of bands still get a tiny nudge so there's visible activity
-      // (avoids "totally frozen" look at low Chance).
-      let offX = 0, offY = 0;
-      const active = isGlitching ? (rB() < 0.75) : (rB() < 0.15);
-      if (active) {
-        offX = (rB() * 2 - 1) * maxDispX;
-        offY = (rB() * 2 - 1) * shakePx * 0.3;
-      }
-
-      // Scanline drop: some bands vanish (total drop) or dim.
-      let bandAlpha = 1;
-      if (scanDrop > 0 && (isGlitching || rB() < 0.3)) {
-        const roll = rB();
-        if (roll < scanDrop * 0.35)      continue;                 // TOTAL drop
-        else if (roll < scanDrop)        bandAlpha = 0.35;         // dim
-      }
-
-      ctx.globalAlpha = bandAlpha;
-      if (chroma > 0.03 && active) {
-        // Per-slice RGB channel offsets — additive composite.
-        const chOff = chroma * Math.max(6, maxDispX * 0.15);
-        _drawTintedBand(ctx, src, 0, sy, W, drawH, offX - chOff, sy + offY, "#ff0000");
-        _drawTintedBand(ctx, src, 0, sy, W, drawH, offX,          sy + offY, "#00ff00");
-        _drawTintedBand(ctx, src, 0, sy, W, drawH, offX + chOff, sy + offY, "#0000ff");
-      } else {
-        ctx.globalCompositeOperation = "source-over";
-        ctx.drawImage(src, 0, sy, W, drawH, offX, sy + offY, W, drawH);
-      }
-      ctx.globalCompositeOperation = "source-over";
-    }
+    // --- Clean pass: always draw the untouched source.  Bursts then
+    //     overwrite bands.  Noise + scanline overlay run regardless
+    //     so the effect feels "alive" between bursts.
+    ctx.globalCompositeOperation = "source-over";
     ctx.globalAlpha = 1;
+    ctx.drawImage(src, 0, 0, W, H);
 
-    // Whole-layer shake — offset the entire composite via a translate
-    // on the canvas element (not baked into pixels so it doesn't blur).
-    const rngS = _rng(seed + frame * 7);
-    const shakeX = shake > 0 ? (rngS() * 2 - 1) * shakePx : 0;
-    const shakeY = shake > 0 ? (rngS() * 2 - 1) * shakePx * 0.6 : 0;
-    dstCanvas.style.transform = shake > 0 ? `translate(${shakeX.toFixed(2)}px, ${shakeY.toFixed(2)}px)` : "";
+    if (inBurst) {
+      // Overwrite with sliced chaos.  Variable-height bands: pick each
+      // band's height from a per-slot deterministic random walk.
+      const rngBands = _rng(seed + slot * 137 + frame * 13);
+      // Effective density scales down slightly with variable heights
+      // so we don't overflow.  Use densityParam as a hint.
+      const avgBandH = H / densityParam;
+      const maxDispX = strengthPct * W * 0.7;    // up to 70% of width (keeps text partially on-canvas)
+      let y = 0;
+      let bandIdx = 0;
+      // v19.43: Do NOT pre-fill black.  The clean source is already
+      // drawn (line above).  For displaced slices we cut out the
+      // source region (fill black) and paint the slice at the new
+      // offset — creates the classic "tear reveals void, content
+      // reappears elsewhere" look.  Non-displaced areas remain clean.
+      while (y < H) {
+        const rB = _rng(seed + slot * 991 + bandIdx * 17 + 1);
+        // Variable heights — 0.5..2.5x the average.
+        const bandH = Math.max(2, avgBandH * (0.5 + rB() * 2.0));
+        const drawH = Math.min(bandH, H - y);
+        const roll = rB();
+        // Slice categories (retuned so text stays partially readable):
+        //   0..0.12   — TOTAL DROP (band gets cut to black — sparse voids)
+        //   0.12..0.50— HEAVY DISPLACE (cut source, paint at offset X)
+        //   0.50..0.75— DUPLICATE ECHO (source stays, echo drawn at offset)
+        //   0.75..1.0 — CLEAN (source remains in place — anchors)
+        if (roll < 0.12) {
+          // Total drop — cut this band to black.
+          ctx.fillStyle = "#000";
+          ctx.fillRect(0, y, W, drawH);
+        } else if (roll < 0.50) {
+          // Heavy displace with chroma — cut the source position black,
+          // then paint the band at the offset X with RGB split.
+          const dir = rB() < 0.5 ? -1 : 1;
+          const offX = dir * (0.15 + rB() * 0.85) * maxDispX * burstIntensity;
+          ctx.fillStyle = "#000";
+          ctx.fillRect(0, y, W, drawH);
+          if (chroma > 0.05) {
+            const chOff = (4 + chroma * 20) * burstIntensity;
+            _drawTintedBand(ctx, src, 0, y, W, drawH, offX - chOff, y, "#ff0000");
+            _drawTintedBand(ctx, src, 0, y, W, drawH, offX,          y, "#00ff00");
+            _drawTintedBand(ctx, src, 0, y, W, drawH, offX + chOff, y, "#0000ff");
+            ctx.globalCompositeOperation = "source-over";
+          } else {
+            ctx.drawImage(src, 0, y, W, drawH, offX, y, W, drawH);
+          }
+        } else if (roll < 0.75) {
+          // Duplicate echo — leave source in place, paint an offset copy.
+          // Classic tearing double-image look, source stays readable.
+          const dir = rB() < 0.5 ? -1 : 1;
+          const offX = dir * (0.10 + rB() * 0.35) * maxDispX * burstIntensity;
+          ctx.globalAlpha = 0.75;
+          ctx.drawImage(src, 0, y, W, drawH, offX, y, W, drawH);
+          ctx.globalAlpha = 1;
+        }
+        // else: CLEAN anchor — source remains in place (drawn by the
+        // initial full-source pass above).  No work needed.
+        y += drawH;
+        bandIdx++;
+      }
+      // Random vertical column tears — thin colored stripes bleeding
+      // top-to-bottom.  Common signature in the reference video.
+      if (burstIntensity > 0.5 && chroma > 0.1) {
+        ctx.globalCompositeOperation = "screen";
+        const cols = ["#ff0044", "#00ffaa", "#4488ff"];
+        const nStripes = 1 + Math.floor(rngBands() * 3);
+        for (let i = 0; i < nStripes; i++) {
+          const cx = Math.floor(rngBands() * W);
+          const cw = 1 + Math.floor(rngBands() * 4);
+          ctx.fillStyle = cols[Math.floor(rngBands() * cols.length)];
+          ctx.globalAlpha = 0.3 + rngBands() * 0.4;
+          ctx.fillRect(cx, 0, cw, H);
+        }
+        ctx.globalAlpha = 1;
+        ctx.globalCompositeOperation = "source-over";
+      }
+    }
 
-    // Noise overlay — deterministic tile fill.
+    // Persistent scanline drop — darker bands that come and go
+    // regardless of burst.  Uses scanDrop param.
+    if (scanDrop > 0.02) {
+      const scanRng = _rng(seed + Math.floor(frame / 3) * 13);
+      const scanLines = 3 + Math.floor(scanDrop * 20);
+      ctx.globalCompositeOperation = "source-over";
+      for (let i = 0; i < scanLines; i++) {
+        if (scanRng() > scanDrop) continue;
+        const sy = Math.floor(scanRng() * H);
+        const sh = 1 + Math.floor(scanRng() * 4);
+        ctx.fillStyle = "#000";
+        ctx.globalAlpha = 0.35 + scanRng() * 0.4;
+        ctx.fillRect(0, sy, W, sh);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // Persistent noise overlay — deterministic tile.  Ambient at
+    // small values, aggressive during bursts (multiplied ×1.5).
     if (noise > 0.02) {
       const tile = _getWeirdNoiseTile(seed + Math.floor(frame / 4));
-      ctx.globalAlpha = Math.min(0.6, noise * 0.5);
+      ctx.globalAlpha = Math.min(0.7, noise * 0.55 * (inBurst ? 1.5 : 1));
       ctx.globalCompositeOperation = "overlay";
       for (let ty = 0; ty < H; ty += tile.height) {
         for (let tx = 0; tx < W; tx += tile.width) {
@@ -2259,18 +2580,34 @@
       ctx.globalCompositeOperation = "source-over";
     }
 
-    // Color flash — deterministic color, difference blend.
-    if (flash > 0.05 && (isGlitching || rngG() < 0.3)) {
+    // Color flash / whole-image invert — only during bursts.
+    if (inBurst && flash > 0.05) {
       const rngF = _rng(seed + frame * 3 + 77);
-      const cols = ["#ff2a2a", "#2affff", "#ffff2a", "#ff2aff", "#2aff2a", "#ffffff"];
-      const col = cols[Math.floor(rngF() * cols.length)];
-      ctx.fillStyle = col;
-      ctx.globalCompositeOperation = "difference";
-      ctx.globalAlpha = Math.min(0.5, flash * 0.35);
-      ctx.fillRect(0, 0, W, H);
-      ctx.globalCompositeOperation = "source-over";
-      ctx.globalAlpha = 1;
+      const roll = rngF();
+      if (roll < flash * 0.6) {
+        // Difference-blend a color tint (Efecto-style hue swap)
+        const cols = ["#ff0044", "#00ffff", "#ffff00", "#ff00ff", "#ffffff", "#ff8800"];
+        ctx.fillStyle = cols[Math.floor(rngF() * cols.length)];
+        ctx.globalCompositeOperation = "difference";
+        ctx.globalAlpha = Math.min(0.6, 0.15 + flash * 0.5);
+        ctx.fillRect(0, 0, W, H);
+        ctx.globalCompositeOperation = "source-over";
+        ctx.globalAlpha = 1;
+      }
     }
+
+    // Whole-layer shake — CSS transform for crispness.
+    const rngS = _rng(seed + frame * 7 + 3);
+    let shakeX = 0, shakeY = 0;
+    if (shake > 0) {
+      // Bursts get 3x shake magnitude on top of the ambient shake.
+      const mag = shake * 12 * (inBurst ? 3 : 1);
+      shakeX = (rngS() * 2 - 1) * mag;
+      shakeY = (rngS() * 2 - 1) * mag * 0.6;
+    }
+    dstCanvas.style.transform = (shake > 0)
+      ? `translate(${shakeX.toFixed(2)}px, ${shakeY.toFixed(2)}px)`
+      : "";
   }
 
   function _showWeirdCanvas(layer) {
@@ -5304,8 +5641,9 @@
     // v19.41 sustained text-fx placeholders — their real work is done
     // by applyTextFxAtTime.  Returning empty delta so the pipeline
     // doesn't warn about a missing sustained handler.
-    sineWaveText(sig, t)  { return {}; },
-    svgTextOnPath(sig, t) { return {}; },
+    sineWaveText(sig, t)      { return {}; },
+    svgTextOnPath(sig, t)     { return {}; },
+    variableFontPulse(sig, t) { return {}; },
     // v19.41 universal RGB Split (Pro) — extended params over legacy rgbOffset.
     // distance/angle project into rgb offset magnitude with per-frame jitter.
     rgbSplitPro(sig, t, params) {
@@ -5347,6 +5685,74 @@
       }
       return delta;
     },
+    // === v19.43 PHYSICS / KINETIC (universal, sustained) ===
+    // Correctly placed in EFFECTS (sustained map) — earlier they were
+    // accidentally inside EVENT_EFFECTS which returned {} for these
+    // keys (via unbound `pendulum` stub, etc.), so all these handlers
+    // silently emitted nothing.
+    pendulum(sig, t, params) {
+      const P = params || {};
+      const amp = P.amplitude || 25;
+      const period = Math.max(0.05, P.period || 1.6);
+      const decayRate = ((P.decay || 0) / 100) * (1 / 4);
+      const env = Math.exp(-decayRate * t);
+      return { rot: amp * env * Math.sin((2 * Math.PI * t) / period) };
+    },
+    orbit(sig, t, params) {
+      const P = params || {};
+      const r = P.radius || 80;
+      const period = Math.max(0.05, P.period || 3);
+      const phase = ((P.phase || 0) * Math.PI) / 180;
+      const a = (2 * Math.PI * t) / period + phase;
+      return { tx: (Math.cos(a) * r) * 0.1, ty: (Math.sin(a) * r) * 0.1 };
+    },
+    pathJitter(sig, t, params) {
+      const P = params || {};
+      const ax = P.amountX || 12;
+      const ay = P.amountY || 12;
+      const hz = Math.max(0.1, P.smoothHz || 3);
+      const seed = P.seed || 31;
+      const s1 = Math.sin(t * hz * 2.0 + seed * 0.13);
+      const s2 = Math.sin(t * hz * 3.7 + seed * 0.29);
+      const s3 = Math.sin(t * hz * 5.1 + seed * 0.51);
+      const s4 = Math.sin(t * hz * 6.8 + seed * 0.77);
+      return {
+        tx: (ax * (s1 * 0.6 + s3 * 0.4)) * 0.1,
+        ty: (ay * (s2 * 0.6 + s4 * 0.4)) * 0.1,
+      };
+    },
+    softBody(sig, t, params) {
+      const P = params || {};
+      const w = (P.wobble || 30) / 100;
+      const period = Math.max(0.05, P.period || 0.8);
+      const skewMax = P.skewMax || 6;
+      const a = (2 * Math.PI * t) / period;
+      const sx = 1 + w * 0.25 * Math.sin(a);
+      const sy = 1 - w * 0.20 * Math.sin(a);
+      return { scaleSafe: (sx + sy) * 0.5, skew: skewMax * Math.sin(a * 1.7) };
+    },
+    elasticMorph(sig, t, params) {
+      const P = params || {};
+      const sxMax = (P.stretchX || 130) / 100;
+      const syMax = (P.stretchY || 85) / 100;
+      const period = Math.max(0.05, P.period || 1.2);
+      const a = (2 * Math.PI * t) / period;
+      const u = Math.sin(a) * 0.5 + 0.5;
+      const sx = 1 + (sxMax - 1) * u;
+      const sy = 1 + (syMax - 1) * u;
+      return { scaleSafe: (sx + sy) * 0.5, skew: (sx - sy) * 8 };
+    },
+    springFollow(sig, t, params) {
+      const P = params || {};
+      const amt = (P.amount || 60) / 100;
+      const stiff = Math.max(20, P.stiffness || 120);
+      const damping = Math.max(1, P.damping || 10);
+      const omega = Math.sqrt(stiff);
+      const zeta  = damping / (2 * omega);
+      const target = Math.sin(t * 0.7) * 40 * amt;
+      const lag = Math.max(0, 1 - Math.exp(-zeta * omega * 0.3));
+      return { tx: (target * lag) * 0.1 };
+    },
   };
 
   /* ============================================================ EVENT EFFECTS
@@ -5359,11 +5765,26 @@
     // in applyTextFxAtTime.  Returning empty delta is enough for the
     // clip to be "active" in the pipeline (activeEventClipsAt) so the
     // text engine picks them up.
-    textScramble()    { return {}; },
-    bulkTyping()      { return {}; },
-    animatedCounter() { return {}; },
-    odometer()        { return {}; },
-    charStagger()     { return {}; },
+    textScramble()      { return {}; },
+    bulkTyping()        { return {}; },
+    animatedCounter()   { return {}; },
+    odometer()          { return {}; },
+    charStagger()       { return {}; },
+    // v19.43 kinetic text-fx stubs (mutation in applyTextFxAtTime).
+    characterSpring()   { return {}; },
+    wordStomp()         { return {}; },
+    cascadeAssemble()   { return {}; },
+    // v19.43 event-style physics — Elastic Stretch & Snap.
+    elasticStretch(p, sig, params) {
+      const P = params || {};
+      const stretchX = (P.stretchX || 180) / 100;
+      const stretchY = (P.stretchY || 70) / 100;
+      // Bell curve peak at p=0.4 → oversized stretch, then snaps back.
+      const peak = Math.max(0, 1 - Math.pow((p - 0.4) / 0.4, 2));
+      const sx = 1 + (stretchX - 1) * peak;
+      const sy = 1 + (stretchY - 1) * peak;
+      return { scaleSafe: (sx + sy) * 0.5, skew: (sx - sy) * 6 };
+    },
     // Focus Snap: blur ramps up then snaps sharp on release.
     focusSnap(p, sig, params) { const k = (params?.intensity ?? 50) / 50; const b = p < 0.6 ? p / 0.6 : (1 - p) / 0.4; return { blur: 6 * b * k, glow: 10 * b * k, opacity: 0.85 + 0.15 * b }; },
     // Signal Interrupt: 1-3 frame opacity dropout with brief RGB kick.
@@ -11540,6 +11961,38 @@
       if ((e.key === "d" || e.key === "D") && (e.metaKey || e.ctrlKey) && selectedLayers.length && !typing) {
         e.preventDefault();
         duplicateSelectedLayers();
+      }
+      // v19.43: C = Clear All Effects on the currently selected layer(s).
+      // No modifier (matches other single-key shortcuts).  Guarded
+      // against typing, contentEditable, and audio-only selections.
+      // Undoable via the standard layer-history mechanism (each
+      // deleted clip goes through the existing clip-deletion path).
+      if ((e.key === "c" || e.key === "C") && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !typing && !(e.target && e.target.isContentEditable)) {
+        if (selectedLayers && selectedLayers.length) {
+          let cleared = 0;
+          selectedLayers.forEach((L) => {
+            if (!L || !L.clips || !L.clips.length) return;
+            cleared += L.clips.length;
+            // Snapshot for undo — the existing clip-history hook
+            // captures each layer's clip array modification.
+            L.clips = [];
+            // Clear latent state from the removed effects so preview
+            // resets cleanly: text-fx display cache, weird canvas, etc.
+            if (L.kind === "TEXT") {
+              if (L._weirdActive) _clearWeirdCanvas(L);
+              if (L._lastDisplayedText != null && L._lastDisplayedText !== L.textStyle.text) {
+                buildTextLayerSVG(L);
+                L._lastDisplayedText = null;
+              }
+              if (L._textPathApplied) _clearTextPathIfApplied(L);
+            }
+          });
+          if (cleared > 0) {
+            e.preventDefault();
+            renderTimeline(); renderClipInspector(); renderEventButtons(); paintIfPaused();
+            toast(`Cleared ${cleared} effect${cleared === 1 ? "" : "s"} · press ⌘Z to undo`);
+          }
+        }
       }
       // v19.16: Cmd/Ctrl+G groups; Cmd/Ctrl+Shift+G ungroups.
       if ((e.key === "g" || e.key === "G") && (e.metaKey || e.ctrlKey) && !typing) {
