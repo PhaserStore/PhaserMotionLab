@@ -327,7 +327,7 @@
         { key: "scanlineDrop", label: "Scanline Drop", type: "range", min: 0, max: 100, step: 1, default: 20 },
         { key: "seed",         label: "Seed",          type: "range", min: 0, max: 1000, step: 1, default: 137 },
       ] },
-    { key: "svgTextOnPath",  label: "SVG Text on Path",defDur: "layer", group: "text",
+    { key: "svgTextOnPath",  label: "Text on Path",    defDur: "layer", group: "text",
       category: "text", supportedLayerTypes: ["TEXT","SVG"], placement: "layerStart", sustained: true, persistEnd: true,
       paramDefs: [
         // v19.44: pathSource simplified — presets + freehand only.
@@ -344,6 +344,9 @@
         { key: "renderPath",  label: "Render Path in export", type: "select", options: ["no","yes"], default: "no" },
         { key: "pathStroke",  label: "Path Color",  type: "text",  default: "#7A5CFF" },
         { key: "pathOpacity", label: "Path Opacity (%)", type: "range", min: 0, max: 100, step: 5, default: 60 },
+        // v19.45: added Path Thickness + Path Scale for full editing control.
+        { key: "pathThickness",label: "Path Thickness (px)", type: "range", min: 1, max: 20, step: 0.5, default: 2 },
+        { key: "pathScale",   label: "Path Scale (%)", type: "range", min: 10, max: 300, step: 5, default: 100 },
         { key: "pathOffsetX", label: "Path X Offset", type: "range", min: -400, max: 400, step: 5, default: 0 },
         { key: "pathOffsetY", label: "Path Y Offset", type: "range", min: -400, max: 400, step: 5, default: 0 },
         { key: "pathRotation",label: "Path Rotation", type: "range", min: -180, max: 180, step: 1, default: 0 },
@@ -2286,9 +2289,11 @@
         d = `M 20 ${y} L ${W - 20} ${y}`;
       }
       pathEl.setAttribute("d", d);
-      // Apply transform (offset + rotation around layer center) via a
-      // wrapping <g> so text picks up the same transform.
-      const gTransform = `translate(${offX}, ${offY}) rotate(${rot}, ${W/2}, ${H/2})`;
+      // Apply transform (offset + rotation + scale around layer center)
+      // via the path's own transform attribute.  Same transform applied
+      // to helper so they visually align.
+      const scaleFactor = (P.pathScale ?? 100) / 100;
+      const gTransform = `translate(${offX}, ${offY}) rotate(${rot}, ${W/2}, ${H/2}) scale(${scaleFactor})`;
       pathEl.setAttribute("transform", gTransform);
 
       // v19.44 HELPER PATH — a visible <path> stroked line drawn
@@ -2310,7 +2315,8 @@
         helper.setAttribute("d", d);
         helper.setAttribute("transform", gTransform);
         helper.setAttribute("stroke", P.pathStroke || "#7A5CFF");
-        helper.setAttribute("stroke-width", "2");
+        // v19.45: pathThickness controls the visible stroke width.
+        helper.setAttribute("stroke-width", String(P.pathThickness ?? 2));
         helper.setAttribute("stroke-dasharray", "6 4");
         helper.setAttribute("opacity", String((P.pathOpacity ?? 60) / 100));
         // Mark as editor-only so the export path can strip it
@@ -2337,6 +2343,20 @@
       textEl.appendChild(tp);
       textEl.setAttribute("text-anchor", alignMap[P.align] || "start");
       layer._textPathApplied = clip.id;
+
+      /* v19.45 FIX CLIPPING.  The text layer's SVG viewBox is sized to
+       * fit the ORIGINAL text bounds.  When a text-on-path clip
+       * attaches text to a large circle/rectangle/freehand path, the
+       * path geometry extends beyond that viewBox and gets clipped by
+       * the SVG root (browser default overflow behavior) and by the
+       * layer wrap div.  Fix: set overflow:visible on both while a
+       * text-on-path clip is active, so the entire path + text renders
+       * even when it spills outside the original text bounding box.
+       * Cleared in _clearTextPathIfApplied when the clip is removed.
+       */
+      svg.setAttribute("overflow", "visible");
+      svg.style.overflow = "visible";
+      if (layer.wrap) layer.wrap.style.overflow = "visible";
     },
   };
 
@@ -2409,6 +2429,13 @@
     // Rebuild base SVG to remove the textPath wrapper.
     buildTextLayerSVG(layer);
     layer._textPathApplied = null;
+    // v19.45: restore default clipping so the layer stops rendering
+    // outside its bounds once the path clip is gone.
+    if (layer.node) {
+      layer.node.removeAttribute("overflow");
+      layer.node.style.overflow = "";
+    }
+    if (layer.wrap) layer.wrap.style.overflow = "";
   }
 
   /* ================================================================
@@ -2992,16 +3019,21 @@
     // Find the LAST rendered glyph tspan (represents current caret
     // position); if empty, position at the text start point.
     const glyphs = svg.querySelectorAll('tspan[data-glyph="1"]');
-    let cx = 8, cy = (layer.textStyle.fontSize || 96) * 0.25 || 24;
-    let charW = (layer.textStyle.fontSize || 96) * 0.5;
-    let charH = (layer.textStyle.fontSize || 96) * 0.85;
+    const fs = layer.textStyle.fontSize || 96;
+    let cx = 8, cy = fs * 0.25 || 24;
+    // v19.45: cursor dimensions are derived from FONT SIZE, not from
+    // the last glyph's bounding box width — that way narrow glyphs
+    // like 't' or 'i' don't produce an invisibly-tiny cursor.  charW
+    // is a sane em-scaled default; charH matches the fontSize.
+    let charW = fs * 0.5;
+    let charH = fs * 0.9;
     try {
       if (glyphs.length > 0) {
         const last = glyphs[glyphs.length - 1];
         const bb = last.getBBox();
         cx = bb.x + bb.width + 2;
         cy = bb.y;
-        charW = Math.max(charW * 0.6, bb.width);
+        // Height tracks the glyph's actual line height, width stays fs-based.
         charH = bb.height;
       } else {
         // No glyphs yet — position at the text element's origin
@@ -3018,28 +3050,37 @@
       overlay.setAttribute("pointer-events", "none");
       svg.appendChild(overlay);
     }
-    // Style by cursor shape.  underscore = thin bar below baseline,
-    // bar = thin vertical line, block = solid rectangle overlaying the
-    // caret position.
+    // Style by cursor shape.
+    // v19.45: cursor renders NEXT TO the last visible character with a
+    // space gap, NEVER underneath.  cx = bb.x + bb.width + 2 is the
+    // position immediately AFTER the last glyph; we use it as the LEFT
+    // edge for every cursor style (underscore/bar/block) so the visual
+    // result matches a typewriter caret: "detroit _", "detroit |",
+    // "detroit █".  Underscore aligns with the baseline, bar/block
+    // vertically span the glyph height.  Underscore still sits at
+    // baseline height, but positioned AFTER the last glyph, not under it.
     const color = layer.textStyle.color || "#FFFFFF";
     overlay.setAttribute("fill", color);
+    // Add a visual gap between the last char and the cursor.
+    const gap = Math.max(2, charW * 0.15);
+    const cxWithGap = cx + gap;
     if (st.style === "underscore") {
       const uw = Math.max(charW * 0.85, 8);
       const uh = Math.max(charH * 0.08, 3);
-      overlay.setAttribute("x", (cx - uw).toFixed(1));
-      overlay.setAttribute("y", (cy + charH - uh).toFixed(1));
+      overlay.setAttribute("x", cxWithGap.toFixed(1));                 // LEFT edge, after glyph
+      overlay.setAttribute("y", (cy + charH - uh).toFixed(1));         // baseline
       overlay.setAttribute("width", uw.toFixed(1));
       overlay.setAttribute("height", uh.toFixed(1));
     } else if (st.style === "block") {
       const bw = charW;
-      overlay.setAttribute("x", cx.toFixed(1));
+      overlay.setAttribute("x", cxWithGap.toFixed(1));
       overlay.setAttribute("y", cy.toFixed(1));
       overlay.setAttribute("width", bw.toFixed(1));
       overlay.setAttribute("height", charH.toFixed(1));
     } else {
-      // bar (default fallback)
+      // bar (default fallback) — thin vertical line AFTER last glyph
       const bw = Math.max(charH * 0.06, 2);
-      overlay.setAttribute("x", cx.toFixed(1));
+      overlay.setAttribute("x", cxWithGap.toFixed(1));
       overlay.setAttribute("y", cy.toFixed(1));
       overlay.setAttribute("width", bw.toFixed(1));
       overlay.setAttribute("height", charH.toFixed(1));
