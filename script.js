@@ -816,7 +816,7 @@
     textWeight: $("#textWeight"),
     textColor: $("#textColor"), textColorHex: $("#textColorHex"),
     textAlignSeg: $("#textAlignSeg"),
-    textLetterSpacing: $("#textLetterSpacing"), textLineHeight: $("#textLineHeight"), textSlashedZero: $("#textSlashedZero"),
+    textLetterSpacing: $("#textLetterSpacing"), textLineHeight: $("#textLineHeight"), textSlashedZero: $("#textSlashedZero"), textFrameOverflow: $("#textFrameOverflow"),
     timecodeFrame: $("#timecodeFrame"),
     readoutFilename: $("#readoutFilename"),
     // export
@@ -1796,6 +1796,21 @@
       // Fonts without the feature leave the '0' unchanged (never
       // replaces the character or affects metrics).
       slashedZero: false,
+      // v19.46 TEXT FRAME.  Overflow defaults to "visible" so animated
+      // glyphs and wide text are never clipped by the text bounding
+      // box — matches the user-facing spec that the frame is NOT an
+      // implicit mask.  Set to "clip" to opt in to the old behavior.
+      // Auto Width / Auto Height: when true, the frame follows the
+      // text's natural size (existing behavior).  When false, the
+      // user's frameWidth / frameHeight override.  autoFit: off by
+      // default — turning it on will (in a future pass) scale the
+      // font to fit the frame.
+      frameOverflow: "visible",   // "visible" | "clip"
+      autoWidth: true,
+      autoHeight: true,
+      autoFit: false,
+      frameWidth: null,           // manual override when autoWidth=false
+      frameHeight: null,          // manual override when autoHeight=false
     };
   }
 
@@ -1867,18 +1882,43 @@
       textEl.appendChild(tspan);
     });
     layer.node.appendChild(textEl);
-    // Split characters into tspans for text-based effects (Text Flicker etc.)
-    // Note: we only split single-line text; multi-line already has one tspan per line.
-    if (lines.length === 1) {
-      textEl.textContent = "";
-      [...lines[0]].forEach((ch) => {
+    // v19.46 MULTI-LINE GLYPH SPLIT.  Previously only single-line text
+    // was split into per-character tspans (blocking char-level effects
+    // on multi-line text).  Now every line gets its own row of
+    // data-glyph tspans laid out with x + dy so downstream effects
+    // (Character Stagger, Sine Wave, Character Spring, etc.) see the
+    // full glyph list.
+    textEl.textContent = "";
+    lines.forEach((line, i) => {
+      // Anchor tspan for each line's x position and vertical advance
+      const chars = [...(line || " ")];
+      chars.forEach((ch, k) => {
         const g = document.createElementNS(svgNS, "tspan");
         g.setAttribute("data-glyph", "1");
+        g.setAttribute("data-line", String(i));
+        if (k === 0) {
+          g.setAttribute("x", String(anchorX));
+          if (i > 0) g.setAttribute("dy", String(lineH));
+        }
         g.textContent = ch;
         textEl.appendChild(g);
       });
-      textEl.dataset.split = "1";
+    });
+    textEl.dataset.split = "1";
+
+    // v19.46 FRAME OVERFLOW.  Default to visible so effects, wide
+    // wrapping text, and animated glyphs never get clipped by the
+    // text frame.  Set frameOverflow="clip" on the style to opt-in
+    // to the previous overflow:hidden behavior.
+    const ovf = (s.frameOverflow === "clip") ? "hidden" : "visible";
+    layer.node.style.overflow = ovf;
+    if (ovf === "visible") {
+      layer.node.setAttribute("overflow", "visible");
+    } else {
+      layer.node.removeAttribute("overflow");
     }
+    if (layer.wrap) layer.wrap.style.overflow = ovf;
+
     layer.natW = W;
     layer.natH = H;
     // Update layer's DOM size percentage to match the new intrinsic size,
@@ -2426,16 +2466,11 @@
   }
   function _clearTextPathIfApplied(layer) {
     if (!layer._textPathApplied) return;
-    // Rebuild base SVG to remove the textPath wrapper.
+    // Rebuild base SVG to remove the textPath wrapper.  buildTextLayerSVG
+    // also re-applies the layer's frameOverflow (v19.46) so overflow
+    // returns to the user's chosen setting rather than a hard reset.
     buildTextLayerSVG(layer);
     layer._textPathApplied = null;
-    // v19.45: restore default clipping so the layer stops rendering
-    // outside its bounds once the path clip is gone.
-    if (layer.node) {
-      layer.node.removeAttribute("overflow");
-      layer.node.style.overflow = "";
-    }
-    if (layer.wrap) layer.wrap.style.overflow = "";
   }
 
   /* ================================================================
@@ -2946,6 +2981,12 @@
       if (TEXT_FX_DOM[c.fxKey])    domMutClips.push({ c, p });
       if (c.fxKey === "svgTextOnPath") textPathClips.push({ c, p });
     }
+    // v19.46: cursor lifecycle — if no bulkTyping clip is currently
+    // active, wipe any stale cursor state so the overlay renderer
+    // removes the caret rect on the next paint pass.  Without this,
+    // deleting or shortening the clip could leave a phantom caret.
+    const hasBulkTyping = strMutClips.some(({ c }) => c.fxKey === "bulkTyping");
+    if (!hasBulkTyping && layer._typingCursor) layer._typingCursor = null;
     // 1. Compose display string by chaining string mutators (sort by clip.start for stable order)
     const original = layer.textStyle ? String(layer.textStyle.text || "") : "";
     let display = original;
@@ -4444,6 +4485,8 @@
         setIf(el.textLineHeight, s.lineHeight || 1.2);
         // v19.44: Slashed Zero toggle sync
         if (el.textSlashedZero) el.textSlashedZero.checked = !!s.slashedZero;
+        // v19.46: Frame Overflow sync
+        if (el.textFrameOverflow) el.textFrameOverflow.value = (s.frameOverflow === "clip") ? "clip" : "visible";
         if (el.textAlignSeg) {
           el.textAlignSeg.querySelectorAll("[data-align]").forEach((b) => {
             b.classList.toggle("active", b.dataset.align === s.align);
@@ -12453,12 +12496,13 @@
     wireTextInput(el.textContent, (n) => ({ text: n.value || " " }));
     wireTextInput(el.textFontFamily, (n) => ({ fontFamily: n.value }));
     wireTextInput(el.textSize, (n) => {
-      const v = clamp(+n.value || 64, 8, 800);
+      // v19.46: allow 1pt with decimals (no more 8pt floor).
+      const v = clamp(parseFloat(n.value) || 64, 1, 800);
       if (el.textSizeRange) el.textSizeRange.value = Math.min(400, v);
       return { fontSize: v };
     });
     wireTextInput(el.textSizeRange, (n) => {
-      const v = +n.value;
+      const v = Math.max(1, parseFloat(n.value) || 64);
       if (el.textSize) el.textSize.value = v;
       return { fontSize: v };
     });
@@ -12475,6 +12519,14 @@
       el.textSlashedZero.addEventListener("change", () => {
         if (selectedLayer && selectedLayer.kind === "TEXT") {
           updateTextLayer(selectedLayer, { slashedZero: !!el.textSlashedZero.checked });
+        }
+      });
+    }
+    // v19.46: Frame Overflow — visible/clip switch.
+    if (el.textFrameOverflow) {
+      el.textFrameOverflow.addEventListener("change", () => {
+        if (selectedLayer && selectedLayer.kind === "TEXT") {
+          updateTextLayer(selectedLayer, { frameOverflow: el.textFrameOverflow.value });
         }
       });
     }
