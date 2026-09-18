@@ -514,7 +514,12 @@
         { key: "fillArtboard",label: "Fill Artboard",  type: "select", options: ["no","yes"], default: "no" },
         { key: "overscan",   label: "Overscan (px)",  type: "range", min: 0, max: 500, step: 10, default: 0 },
         { key: "clipToArtboard",label: "Clip to Artboard", type: "select", options: ["no","yes"], default: "no" },
-        { key: "showSource", label: "Show Source Text (debug)", type: "select", options: ["no","yes"], default: "no" },
+        // v19.52: showSource control REMOVED.  Source <text> is
+        // always the (0,0) tile of the pattern (moved into the
+        // pattern group and rotated with it).  There is no separate
+        // "extra original" to toggle.  Old projects that still carry
+        // showSource in their params are ignored gracefully — the
+        // runtime never reads it.
         { key: "orderMode",  label: "Animation Order",type: "select",
           options: ["same","sequential","wave","reverse","center-out","random"], default: "same" },
         { key: "phaseDelayMs",label: "Phase Delay (ms)", type: "range", min: 0, max: 500, step: 10, default: 80 },
@@ -3696,29 +3701,32 @@
       return;
     }
     const P = clip.params || {};
-    // Give the source text a stable id we can <use> reference.
+    // Give the source text a stable id (used when the source is moved
+    // into the group; id is retained so any external <use> references
+    // still work, e.g. helper effects that might attach to it).
     const srcId = "pattern-src-" + (layer.id || "x");
     if (!textEl.getAttribute("id")) textEl.setAttribute("id", srcId);
-    // v19.51 SOURCE JOINS THE PATTERN GROUP.
+    // v19.52 SOURCE IS THE (0,0) TILE.
     //
-    // Previous bug: hiding the source with display:none also hid every
-    // <use> reference to it in Chromium (SVG spec: display:none on
-    // referenced element cascades to shadow-tree copies).  Pattern
-    // rotation was also applied to the group only, so an unrotated
-    // source sat inside a rotated grid.
+    // Root cause of "extra original" bug: previous versions kept the
+    // source at the SVG root while the pattern group held only
+    // copies; the source appeared as a separate unrotated element in
+    // addition to the requested grid.
     //
-    // Fix: MOVE the source <text> into the pattern group.  It becomes
-    // the (0,0) tile of the pattern.  Copies are emitted at every
-    // other grid position (skip idx that hits 0,0 exactly).  The
-    // group's transform then applies to source AND copies coherently
-    // — one rotating pattern, no double-render, no unrotated original.
+    // Fix: source <text> is MOVED into the pattern group and stands in
+    // for the (0,0) grid tile.  No copy is emitted at (0,0).  The
+    // group's transform (rotation + scale + offset) is applied to
+    // source AND copies together — one coherent pattern.  Cleanup
+    // (pattern removal) moves the source back to the SVG root.
     //
-    // showSource=yes (debug) keeps a second full-opacity source render
-    // at (0,0) using inline opacity; default is opacity untouched
-    // (source is always the (0,0) tile visually).
-    const showSource = P.showSource === "yes";
-    // Ensure display isn't blocking <use> rendering.  (Any prior
-    // display:none from an older build gets cleared here.)
+    // Root cause of "copies static" bug: <use> shadow trees don't
+    // reliably propagate per-glyph mutations across browsers or into
+    // the SVG export pipeline.  v19.52 replaces <use> with
+    // per-frame CLONES of the source's <text> subtree — clones are
+    // independent DOM trees whose glyph state was captured from the
+    // source moments ago, so all animation effects propagate 1:1.
+    // Ensure display isn't blocking rendering (any prior
+    // display:none from an older build gets cleared here).
     textEl.style.display = "";
 
     // Compute layout positions.
@@ -3806,54 +3814,82 @@
     if (textEl.parentNode !== group) {
       group.appendChild(textEl);
     }
-    // Ensure the source is the FIRST child so it renders "underneath"
-    // any late-appended <use> copies (matters if copies have partial
-    // opacity so users see the source through them at (0,0)).
+    // Ensure the source is the FIRST child so clones render on top of
+    // it in z-order; matters when copies have partial opacity.
     if (group.firstChild !== textEl) {
       group.insertBefore(textEl, group.firstChild);
     }
-    // showSource=yes → source at full opacity (debug: renders on top
-    // of the (0,0) copy — but since no copy is emitted at (0,0), it's
-    // just the source alone at that position).  showSource=no (default)
-    // → source is the ONLY tile at (0,0); still visible, still animated,
-    // still rotates with the group.
-    if (!showSource) {
-      // Keep source visible AND make it the sole (0,0) tile by NOT
-      // emitting a duplicate copy there.  Filter positions below.
-      textEl.style.opacity = "";
-    } else {
-      textEl.style.opacity = "";
-    }
+    // v19.52: source is always visible as the (0,0) tile — no toggle.
+    textEl.style.opacity = "";
+    textEl.style.display = "";
 
     // Filter positions: source stands in for (0,0), so skip it.
     // Approximate: any position within ε of origin is source's slot.
     const eps = 0.5;
     const emitPositions = positions.filter(pos => Math.abs(pos.x) > eps || Math.abs(pos.y) > eps);
 
-    // Diff pool — only <use> elements are pooled; source stays.
-    const existingUses = Array.from(group.querySelectorAll('use[data-pattern-copy="1"]'));
+    // v19.52 SYNCHRONIZED CLONES (replaces <use> from v19.51).
+    //
+    // Root cause of the "copies are static" bug: <use> shadow trees
+    // don't reliably reflect runtime DOM mutations on the source's
+    // per-glyph tspans (opacity attributes, dx/dy, visibility) across
+    // all browsers — Chromium updates, Firefox and Safari cache the
+    // shadow tree.  The export pipeline serializes SVG and re-renders
+    // into canvas; the serialized <use> may lose the animated source
+    // state entirely.
+    //
+    // Fix: on every paint, deep-clone the source <text> element into
+    // a pooled slot for each grid position.  Clones are independent
+    // <text> DOM trees whose tspans, attributes, and inline styles
+    // reflect EXACTLY the source's current animated state — because
+    // they were literally copied from it a millisecond ago.
+    //
+    // Pool: reuse clone shells across frames (avoids allocation
+    // churn); each frame wipes their children and re-clones the
+    // source's tspans.  Cost: ~1 clone per pool slot × 30-60 fps.
+    // For 50 tiles that's 3000 clones/sec — trivial for modern DOM.
     const need = emitPositions.length;
-    // Trim excess
-    for (let i = existingUses.length - 1; i >= need; i--) existingUses[i].remove();
-    // Add missing
-    while (group.querySelectorAll('use[data-pattern-copy="1"]').length < need) {
-      const u = document.createElementNS(NS, "use");
-      u.setAttribute("href", "#" + srcId);
-      u.setAttribute("data-pattern-copy", "1");
-      group.appendChild(u);
+    let clones = Array.from(group.querySelectorAll('text[data-pattern-copy="1"]'));
+    // Trim excess pool slots
+    for (let i = clones.length - 1; i >= need; i--) { clones[i].remove(); clones.splice(i, 1); }
+    // Grow pool
+    while (clones.length < need) {
+      const shell = document.createElementNS(NS, "text");
+      shell.setAttribute("data-pattern-copy", "1");
+      group.appendChild(shell);
+      clones.push(shell);
     }
-    // Update transforms on <use> children
-    const uses = group.querySelectorAll('use[data-pattern-copy="1"]');
+    // Cache attribute list once (identical across all clones per frame).
+    const srcAttrs = Array.from(textEl.attributes);
+    const srcInlineStyle = textEl.style.cssText;
+    // Deep-clone source's children (tspans) once — DOM cloneNode is
+    // fast; each clone gets a fresh subtree copy so glyph state is
+    // captured at THIS frame's mutation state.
+    const srcChildren = Array.from(textEl.children);
     for (let i = 0; i < need; i++) {
+      const c = clones[i];
+      // Copy attributes from source (skip id to avoid duplicate ids
+      // and skip transform which we'll set per-position below).
+      // First remove attrs on clone that source no longer has.
+      const cAttrNames = Array.from(c.attributes).map(a => a.name);
+      for (const n of cAttrNames) {
+        if (n === "data-pattern-copy" || n === "transform" || n === "opacity") continue;
+        c.removeAttribute(n);
+      }
+      for (const a of srcAttrs) {
+        if (a.name === "id" || a.name === "transform") continue;
+        c.setAttribute(a.name, a.value);
+      }
+      c.style.cssText = srcInlineStyle;
+      // Re-clone children (tspans with all their mutation state).
+      while (c.firstChild) c.removeChild(c.firstChild);
+      for (const child of srcChildren) c.appendChild(child.cloneNode(true));
+
+      // Compose transform for this copy: grid translate + per-copy
+      // rotate/scale about copy's own center.
       const pos = emitPositions[i];
-      const u = uses[i];
-      // Center of source text within its own viewBox — natW/natH ÷ 2.
-      // Rotation happens around the copy's own center, not (0,0).
       const cxLocal = (layer.natW || 0) / 2;
       const cyLocal = (layer.natH || 0) / 2;
-      // Compose: translate to grid position (relative to source),
-      //   then per-copy rotate + scale about copy's own center.
-      // Note: SVG applies transforms right-to-left.
       const tx = pos.x, ty = pos.y;
       let t = "";
       if (tx !== 0 || ty !== 0) t += `translate(${tx.toFixed(2)}, ${ty.toFixed(2)}) `;
@@ -3863,10 +3899,14 @@
         if (copyScl !== 1) t += `scale(${copyScl}) `;
         t += `translate(${-cxLocal}, ${-cyLocal}) `;
       }
-      u.setAttribute("transform", t.trim());
-      if (copyOp < 1) u.setAttribute("opacity", copyOp.toFixed(3));
-      else if (u.hasAttribute("opacity")) u.removeAttribute("opacity");
+      c.setAttribute("transform", t.trim());
+      if (copyOp < 1) c.setAttribute("opacity", copyOp.toFixed(3));
+      else if (c.hasAttribute("opacity")) c.removeAttribute("opacity");
+      c.setAttribute("data-pattern-copy", "1");
     }
+    // Remove any remaining <use> elements left over from a previous
+    // build (defensive — pool switched from <use> to <text>).
+    group.querySelectorAll('use[data-pattern-copy="1"]').forEach(u => u.remove());
     // Apply pattern-wide transform (rotation + scale + offset) to the group.
     // Rotation happens around the source position (viewBox center of
     // the layer's natural extents).
@@ -4281,6 +4321,23 @@
     };
     ta.addEventListener("blur", finalize, { once: true });
     ta.addEventListener("keydown", (ev) => {
+      // v19.52 CMD/CTRL+A EXPLICIT SELECT ALL — check FIRST so it
+      // fires before Enter/Escape/other branches, and use
+      // stopImmediatePropagation to guarantee no other listener on
+      // this element (nor any parent) can intercept the shortcut.
+      if ((ev.key === "a" || ev.key === "A") && (ev.ctrlKey || ev.metaKey) && !ev.shiftKey && !ev.altKey) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        // Native Ctrl+A on Chromium already handles select-all as the
+        // browser's default action; on Cmd+A (Mac) OR Ctrl+A when
+        // preventDefault was called before native handling, we must
+        // call select() ourselves.
+        try {
+          ta.select();
+          ta.setSelectionRange(0, ta.value.length);
+        } catch (e) {}
+        return;
+      }
       // Enter commits (Shift+Enter inserts newline).  Escape reverts.
       // v19.50: Cmd/Ctrl+Enter always commits (matches multi-line
       // editors like Notion/Slack).
@@ -4289,7 +4346,7 @@
         ev.preventDefault(); ta.blur();
       }
       else if (ev.key === "Escape") { ev.preventDefault(); ta.value = layer.textStyle.text; ta.blur(); }
-      // All other keys (arrows, Shift+arrow, Cmd+A, Cmd+C/V/X, Backspace,
+      // All other keys (arrows, Shift+arrow, Cmd+C/V/X, Backspace,
       // Delete, Home/End) use native textarea handling — no interception.
     });
   }
@@ -15509,7 +15566,7 @@
     requestAnimationFrame(() => fitZoom());
     setTimeout(() => { fitZoom(); renderTimeline(); }, 120);
     // Test hook: expose internals for automated verification (harmless in production).
-    window.__phaserDebug = Object.assign(window.__phaserDebug || {}, { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, FX_EVENT_DEF, fxSupportsLayer, applyTextFxAtTime, applyWeirdSlicesOnText, applyWeirdSlicesOnLayer, TEXT_FX_STRING, TEXT_FX_DOM, buildTextLayerSVG, updateTextLayer, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, paintWebCodecsLayersForExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath, runSvgRepair, collectSvgRepairOps, releaseClipPaths, removeMasks, convertShapesToPaths, audio: () => audio });
+    window.__phaserDebug = Object.assign(window.__phaserDebug || {}, { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, FX_EVENT_DEF, fxSupportsLayer, applyTextFxAtTime, applyWeirdSlicesOnText, applyWeirdSlicesOnLayer, TEXT_FX_STRING, TEXT_FX_DOM, buildTextLayerSVG, updateTextLayer, startTextEdit, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, paintWebCodecsLayersForExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath, runSvgRepair, collectSvgRepairOps, releaseClipPaths, removeMasks, convertShapesToPaths, audio: () => audio });
   }
   document.addEventListener("DOMContentLoaded", init);
 })();
