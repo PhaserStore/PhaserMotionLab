@@ -355,7 +355,18 @@
         { key: "reverse",    label: "Reverse Path",   type: "select", options: ["no","yes"], default: "no" },
         { key: "align",      label: "Text Align",     type: "select", options: ["start","middle","end"], default: "start" },
         { key: "fitToPath",  label: "Fit To Path",    type: "select", options: ["no","yes"], default: "no" },
-        { key: "animateOffset",label: "Animate Speed", type: "range", min: 0, max: 200, step: 1, default: 0 },
+        // v19.48: continuous 360° rotation controls.
+        // repeatText: how many times to repeat the phrase along the path.
+        //   auto = fill the path (path length ÷ text width, rounded up + 1).
+        //   Manual values 1..12 override.  Auto is best for looping.
+        // gap: characters worth of blank space between repeats.
+        // direction: cw (increasing startOffset) or ccw (decreasing).
+        // speed: percent-of-path per second; negative flips direction too.
+        { key: "repeatText",   label: "Repeat Text",     type: "select",
+          options: ["auto","1","2","3","4","5","6","8","10","12"], default: "auto" },
+        { key: "gapChars",     label: "Gap Between Copies", type: "range", min: 0, max: 20, step: 1, default: 3 },
+        { key: "direction",    label: "Rotation Direction", type: "select", options: ["cw","ccw"], default: "cw" },
+        { key: "animateOffset",label: "Speed (% / sec)", type: "range", min: 0, max: 200, step: 1, default: 0 },
       ] },
 
     // === v19.43 KINETIC + PHYSICS PACK ===
@@ -1837,7 +1848,76 @@
   // Called when style changes, text content changes, or on creation.
   function buildTextLayerSVG(layer) {
     const s = layer.textStyle;
-    const lines = String(s.text || "").split("\n");
+    let lines = String(s.text || "").split("\n");
+    // v19.48 SOFT WORD-WRAP for pasted / typed long content.
+    //
+    // Root cause of the paste bug: a long line of pasted text expanded
+    // natW to 2812px on a 1080 artboard — visually the layer's wrap
+    // extended far past both canvas edges, so the user saw the middle
+    // of the text with both ends cut off, and asked "why is my text
+    // cropped / distorted / wrapped wrong."
+    //
+    // Fix: cap the effective line width and re-flow long lines at
+    // word boundaries.  Manual `\n` breaks the user typed are always
+    // preserved; wrapping only kicks in when a single input line
+    // measures wider than the wrap cap.  Cap comes from (in order):
+    //   1. textStyle.frameWidth  if the user explicitly set one
+    //   2. artboard width × 0.9  (default sensible cap)
+    // Wrapping is a pure layout concern: textStyle.text stays intact
+    // (still contains the original characters and manual newlines),
+    // so the source data is preserved for editing.  This means paste
+    // now behaves like typing: text wraps within the visible frame.
+    const A = STATE.format || { w: 1080, h: 1080 };
+    const wrapCap = (s.frameWidth != null && s.frameWidth > 0)
+      ? s.frameWidth
+      : (A.w * 0.9);
+    _textMeasureCtx.font = `${s.fontWeight} ${s.fontSize}px "${s.fontFamily}", ${TEXT_FONT_STACK}`;
+    const spacingPx = (s.letterSpacing || 0) * s.fontSize;
+    const measureLine = (str) => {
+      const m = _textMeasureCtx.measureText(str || " ");
+      return m.width + Math.max(0, (str || "").length - 1) * spacingPx;
+    };
+    const wrapped = [];
+    for (const rawLine of lines) {
+      if (measureLine(rawLine) <= wrapCap) {
+        wrapped.push(rawLine);
+        continue;
+      }
+      // Break at word boundaries.  Preserve any leading whitespace so
+      // consecutive-space runs (indent, tabs) survive.  If a single
+      // word exceeds the cap, break inside that word rather than
+      // producing a runaway line.
+      const words = rawLine.split(/(\s+)/);   // keep separators
+      let current = "";
+      for (const w of words) {
+        if (!w) continue;
+        const candidate = current + w;
+        if (measureLine(candidate) <= wrapCap || current === "") {
+          // Even if candidate slightly exceeds, accept when current is
+          // empty — otherwise we'd loop forever on a single overlong
+          // token.  Fall through to intra-word split next.
+          current = candidate;
+          if (measureLine(current) > wrapCap && !/\s/.test(w)) {
+            // Intra-word split: keep adding chars until wrapCap, then
+            // emit and start a new line with the remainder.
+            let head = current, tail = "";
+            while (measureLine(head) > wrapCap && head.length > 1) {
+              tail = head.slice(-1) + tail;
+              head = head.slice(0, -1);
+            }
+            wrapped.push(head);
+            current = tail;
+          }
+        } else {
+          // Word doesn't fit on current line — commit and start new one.
+          if (current) wrapped.push(current.trimEnd());
+          current = /^\s+$/.test(w) ? "" : w;
+        }
+      }
+      if (current) wrapped.push(current);
+    }
+    // Preserve at least one line (measureTextLines expects >=1 entry).
+    lines = wrapped.length ? wrapped : [""];
     const meas = measureTextLines(lines, s);
     // Padding around measured text so descenders + letter-spacing don't clip.
     const padX = Math.max(8, s.fontSize * 0.25);
@@ -1897,15 +1977,22 @@
       // a pure offset from base).
       _textMeasureCtx.font = `${s.fontWeight} ${s.fontSize}px "${s.fontFamily}", ${TEXT_FONT_STACK}`;
       // Compute the line's total width including letter-spacing, then
-      // its origin X depending on alignment.
+      // its origin X depending on alignment.  v19.48: measure the
+      // substring UP TO each glyph (not per-char in isolation) so
+      // inter-character kerning is preserved.  Per-char isolated
+      // measurement created visible gaps between letters like "l o n g".
       const spacingPx = (s.letterSpacing || 0) * s.fontSize;
-      let cumX = 0;
       const glyphOffsets = new Array(chars.length);
       for (let k = 0; k < chars.length; k++) {
-        glyphOffsets[k] = cumX;
-        cumX += _textMeasureCtx.measureText(chars[k] || " ").width + spacingPx;
+        // Width of chars[0..k-1] with letter-spacing between each.
+        const substr = chars.slice(0, k).join("");
+        const substrW = k > 0 ? _textMeasureCtx.measureText(substr).width : 0;
+        glyphOffsets[k] = substrW + k * spacingPx;
       }
-      const lineTotalW = Math.max(0, cumX - spacingPx);
+      // Total line width = width of full string + spacing between chars.
+      const fullSubstr = chars.join("");
+      const lineTotalW = (fullSubstr ? _textMeasureCtx.measureText(fullSubstr).width : 0) +
+                         Math.max(0, chars.length - 1) * spacingPx;
       let lineOriginX;
       if (s.align === "start")      lineOriginX = padX;
       else if (s.align === "end")   lineOriginX = W - padX - lineTotalW;
@@ -2394,18 +2481,77 @@
       // Wrap text in <textPath>.
       const textEl = svg.querySelector("text");
       if (!textEl) return;
-      const currentText = textEl.textContent;
+      // v19.48 SOURCE-OF-TRUTH TEXT.
+      // Take the layer's textStyle.text directly, NOT textEl.textContent.
+      // Reading textContent from a partially-populated tspan pool
+      // (e.g. after _applyDisplayToGlyphs left a Bulk-Typing prefix)
+      // would freeze the mid-typing string into the textPath.  Using
+      // the source string keeps text-on-path independent of the effect
+      // pipeline: the phrase attached to the path is always the
+      // canonical user-entered text.
+      const sourceText = String(layer.textStyle && layer.textStyle.text || "").replace(/\n/g, " ");
+      if (!sourceText.length) {
+        // Nothing to render — clear any previous textPath.
+        while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
+        return;
+      }
+      // v19.48 REPEAT TEXT for continuous 360° loop.
+      // When a phrase is shorter than the path, animating startOffset
+      // makes the trailing edge run off the path end and the leading
+      // edge (mod 100%) wrap — but SVG textPath does NOT wrap on a
+      // closed path.  Instead we build the textPath content as the
+      // phrase repeated N times separated by `gap` spaces, so the
+      // rendered length always exceeds the path length.  Result: the
+      // "next" copy of the phrase is already positioned at the point
+      // where the "previous" copy runs off — animation looks like a
+      // seamless orbit around the closed path.
+      const gapChars = Math.max(0, P.gapChars ?? 3);
+      const separator = " ".repeat(gapChars);
+      let phraseCount;
+      if (P.repeatText && P.repeatText !== "auto") {
+        phraseCount = Math.max(1, parseInt(P.repeatText, 10) || 1);
+      } else {
+        // Auto: measure path length + approximate text width and pick
+        // enough copies so text length ≥ path length + one phrase.
+        let pathLen = 0;
+        try { pathLen = pathEl.getTotalLength() * scaleFactor; } catch (e) {}
+        // Rough text width per char: 0.55 * fontSize.  Good enough
+        // for "make sure we always overflow" — cheap and deterministic.
+        const fs = (layer.textStyle && layer.textStyle.fontSize) || 96;
+        const perChar = fs * 0.55;
+        const phraseW = Math.max(perChar, sourceText.length * perChar + gapChars * perChar);
+        phraseCount = Math.max(2, Math.ceil((pathLen + phraseW) / phraseW));
+        // Cap at a reasonable maximum so an accidental tiny gap doesn't
+        // create thousands of copies.
+        phraseCount = Math.min(20, phraseCount);
+      }
+      // Build combined content.  Trailing separator so the last copy
+      // still has spacing before the loop wraps back to the first.
+      const combined = new Array(phraseCount).fill(sourceText).join(separator) + separator;
+
+      // Rebuild children: <text> now contains ONE <textPath>.
       while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
       const tp = document.createElementNS(NS, "textPath");
       tp.setAttribute("href", "#" + pathId);
+      // v19.48 CONTINUOUS OFFSET.
+      // animateOffset is in %/sec (path length percent per second).
+      // direction (cw/ccw) flips the sign — separate from `reverse`
+      // (which swaps which SIDE of the path the text is on).
+      // Modulo 100 % 100 handles negative correctly: JS `%` is
+      // remainder, so `-30 % 100 = -30`; add 100 first.
       const animSpeed = P.animateOffset || 0;
       const baseOffset = P.startOffset || 0;
-      const dynOffset  = (baseOffset + (animSpeed * sceneTime)) % 100;
-      tp.setAttribute("startOffset", dynOffset + "%");
+      const dir = (P.direction === "ccw") ? -1 : 1;
+      let dyn = baseOffset + dir * animSpeed * sceneTime;
+      dyn = ((dyn % 100) + 100) % 100;
+      tp.setAttribute("startOffset", dyn.toFixed(3) + "%");
       tp.setAttribute("side", (P.reverse === "yes") ? "right" : "left");
       const alignMap = { start: "start", middle: "middle", end: "end" };
       tp.setAttribute("text-anchor", alignMap[P.align] || "start");
-      tp.textContent = currentText;
+      // Preserve leading / trailing whitespace visible on path so gap
+      // between repeats renders.
+      tp.setAttribute("xml:space", "preserve");
+      tp.textContent = combined;
       textEl.appendChild(tp);
       textEl.setAttribute("text-anchor", alignMap[P.align] || "start");
       layer._textPathApplied = clip.id;
@@ -3227,27 +3373,48 @@
       if (overlay) overlay.remove();
       return;
     }
-    // Find the LAST rendered glyph tspan (represents current caret
-    // position); if empty, position at the text start point.
-    const glyphs = svg.querySelectorAll('tspan[data-glyph="1"]');
+    // v19.48 CURSOR FROM CHARINDEX.
+    // Bulk Typing stashes st.charIndex = number of characters currently
+    // visible (== display.length).  Use it to pick the LAST VISIBLE
+    // glyph reliably — necessary because _applyDisplayToGlyphs hides
+    // trailing glyphs with visibility:hidden but they remain in DOM,
+    // so glyphs[glyphs.length - 1] would be a hidden tail glyph.
+    // For multi-line, the caret follows the visible position (end of
+    // the last visible glyph, wherever that lands vertically), so
+    // punctuation / spaces / newlines all advance it correctly.
+    const allGlyphs = Array.from(svg.querySelectorAll('tspan[data-glyph="1"]'));
+    // Filter to originals (skip any tail glyphs left over from
+    // Counter/Odometer effects on the same layer).
+    const originals = allGlyphs.filter(g => g.getAttribute("data-tail") !== "1");
+    const idx = Math.min((st.charIndex | 0) - 1, originals.length - 1);
     const fs = layer.textStyle.fontSize || 96;
     let cx = 8, cy = fs * 0.25 || 24;
-    // v19.45: cursor dimensions are derived from FONT SIZE, not from
-    // the last glyph's bounding box width — that way narrow glyphs
-    // like 't' or 'i' don't produce an invisibly-tiny cursor.  charW
-    // is a sane em-scaled default; charH matches the fontSize.
     let charW = fs * 0.5;
     let charH = fs * 0.9;
+    let lastVisibleGlyph = null;
+    if (idx >= 0) {
+      lastVisibleGlyph = originals[idx];
+    } else if (originals.length > 0) {
+      // Nothing typed yet — position at the start of the first glyph.
+      lastVisibleGlyph = null;
+    }
     try {
-      if (glyphs.length > 0) {
-        const last = glyphs[glyphs.length - 1];
-        const bb = last.getBBox();
-        cx = bb.x + bb.width + 2;
+      if (lastVisibleGlyph) {
+        const bb = lastVisibleGlyph.getBBox();
+        // Handle whitespace glyphs whose bbox width may be 0 in SVG:
+        // fall back to a fontSize-based advance so the cursor still
+        // moves after typing a space, comma, period, etc.
+        const bbw = bb.width > 0 ? bb.width : fs * 0.3;
+        cx = bb.x + bbw + 2;
         cy = bb.y;
-        // Height tracks the glyph's actual line height, width stays fs-based.
-        charH = bb.height;
+        charH = bb.height > 0 ? bb.height : fs * 0.9;
+      } else if (originals.length > 0) {
+        // No visible glyphs yet — anchor at the FIRST glyph's base X/Y
+        const first = originals[0];
+        cx = parseFloat(first.getAttribute("x") || "8");
+        cy = parseFloat(first.getAttribute("y") || cy) - charH * 0.85;
       } else {
-        // No glyphs yet — position at the text element's origin
+        // No glyphs at all — anchor at the textEl origin
         const textEl = svg.querySelector("text");
         if (textEl) {
           cx = parseFloat(textEl.getAttribute("x") || "8");
