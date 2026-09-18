@@ -514,7 +514,7 @@
         { key: "fillArtboard",label: "Fill Artboard",  type: "select", options: ["no","yes"], default: "no" },
         { key: "overscan",   label: "Overscan (px)",  type: "range", min: 0, max: 500, step: 10, default: 0 },
         { key: "clipToArtboard",label: "Clip to Artboard", type: "select", options: ["no","yes"], default: "no" },
-        { key: "showSource", label: "Show Source Copy",type: "select", options: ["yes","no"], default: "yes" },
+        { key: "showSource", label: "Show Source Text (debug)", type: "select", options: ["no","yes"], default: "no" },
         { key: "orderMode",  label: "Animation Order",type: "select",
           options: ["same","sequential","wave","reverse","center-out","random"], default: "same" },
         { key: "phaseDelayMs",label: "Phase Delay (ms)", type: "range", min: 0, max: 500, step: 10, default: 80 },
@@ -3682,18 +3682,44 @@
     const groupId = "pattern-copies-" + (layer.id || "x");
     let group = svg.querySelector("#" + groupId);
     if (!clip) {
-      // Inactive — remove any existing pattern group + restore visibility.
-      if (group) group.remove();
+      // Inactive — move source back to SVG root, remove group, clear
+      // any pattern-related inline style / transform on source.
+      if (group) {
+        // If source is currently a child of the group, move it back
+        // to the SVG root so the layer renders normally.
+        if (textEl.parentNode === group) svg.appendChild(textEl);
+        group.remove();
+      }
       textEl.style.display = "";
+      textEl.style.opacity = "";
+      textEl.removeAttribute("transform");
       return;
     }
     const P = clip.params || {};
     // Give the source text a stable id we can <use> reference.
     const srcId = "pattern-src-" + (layer.id || "x");
     if (!textEl.getAttribute("id")) textEl.setAttribute("id", srcId);
-    // showSource=no → hide the (0,0) source and only render copies.
-    const showSource = P.showSource !== "no";
-    textEl.style.display = showSource ? "" : "none";
+    // v19.51 SOURCE JOINS THE PATTERN GROUP.
+    //
+    // Previous bug: hiding the source with display:none also hid every
+    // <use> reference to it in Chromium (SVG spec: display:none on
+    // referenced element cascades to shadow-tree copies).  Pattern
+    // rotation was also applied to the group only, so an unrotated
+    // source sat inside a rotated grid.
+    //
+    // Fix: MOVE the source <text> into the pattern group.  It becomes
+    // the (0,0) tile of the pattern.  Copies are emitted at every
+    // other grid position (skip idx that hits 0,0 exactly).  The
+    // group's transform then applies to source AND copies coherently
+    // — one rotating pattern, no double-render, no unrotated original.
+    //
+    // showSource=yes (debug) keeps a second full-opacity source render
+    // at (0,0) using inline opacity; default is opacity untouched
+    // (source is always the (0,0) tile visually).
+    const showSource = P.showSource === "yes";
+    // Ensure display isn't blocking <use> rendering.  (Any prior
+    // display:none from an older build gets cleared here.)
+    textEl.style.display = "";
 
     // Compute layout positions.
     const layout = P.layout || "grid";
@@ -3762,34 +3788,64 @@
       }
     }
 
-    // Rebuild the pattern group.  Reuse existing <use> elements to
-    // avoid churn on scrub — pool them and resize as needed.
+    // v19.51: create the group and MOVE the source <text> into it.
+    // Source becomes the (0,0) tile of the pattern — copies are only
+    // emitted at non-(0,0) grid positions.  Group transform (rotation
+    // + scale + offset) applies to source AND copies together, so the
+    // whole pattern rotates as one coherent object.
     if (!group) {
       group = document.createElementNS(NS, "g");
       group.setAttribute("id", groupId);
-      // Insert BEFORE the source text so copies render underneath (or
-      // AFTER so they render on top?  Underneath — the source is the
-      // "cover" copy at 0,0).  Actually source is the origin; copies
-      // extend away from it.  Let copies render UNDER the source so
-      // showSource=yes gives a "front and center" original.
-      svg.insertBefore(group, textEl);
+      // Append at the SVG root; source will be moved inside on the
+      // next step.  Placement doesn't matter for z-order between
+      // group children and their references (which are inside).
+      svg.appendChild(group);
     }
-    // Diff pool
-    const existing = Array.from(group.children);
-    const need = positions.length;
+    // Move source into group (idempotent — appendChild is a no-op if
+    // already a child, but re-appending would reorder; use the check).
+    if (textEl.parentNode !== group) {
+      group.appendChild(textEl);
+    }
+    // Ensure the source is the FIRST child so it renders "underneath"
+    // any late-appended <use> copies (matters if copies have partial
+    // opacity so users see the source through them at (0,0)).
+    if (group.firstChild !== textEl) {
+      group.insertBefore(textEl, group.firstChild);
+    }
+    // showSource=yes → source at full opacity (debug: renders on top
+    // of the (0,0) copy — but since no copy is emitted at (0,0), it's
+    // just the source alone at that position).  showSource=no (default)
+    // → source is the ONLY tile at (0,0); still visible, still animated,
+    // still rotates with the group.
+    if (!showSource) {
+      // Keep source visible AND make it the sole (0,0) tile by NOT
+      // emitting a duplicate copy there.  Filter positions below.
+      textEl.style.opacity = "";
+    } else {
+      textEl.style.opacity = "";
+    }
+
+    // Filter positions: source stands in for (0,0), so skip it.
+    // Approximate: any position within ε of origin is source's slot.
+    const eps = 0.5;
+    const emitPositions = positions.filter(pos => Math.abs(pos.x) > eps || Math.abs(pos.y) > eps);
+
+    // Diff pool — only <use> elements are pooled; source stays.
+    const existingUses = Array.from(group.querySelectorAll('use[data-pattern-copy="1"]'));
+    const need = emitPositions.length;
     // Trim excess
-    for (let i = existing.length - 1; i >= need; i--) existing[i].remove();
+    for (let i = existingUses.length - 1; i >= need; i--) existingUses[i].remove();
     // Add missing
-    while (group.children.length < need) {
+    while (group.querySelectorAll('use[data-pattern-copy="1"]').length < need) {
       const u = document.createElementNS(NS, "use");
       u.setAttribute("href", "#" + srcId);
       u.setAttribute("data-pattern-copy", "1");
       group.appendChild(u);
     }
-    // Update transforms
-    const uses = group.children;
+    // Update transforms on <use> children
+    const uses = group.querySelectorAll('use[data-pattern-copy="1"]');
     for (let i = 0; i < need; i++) {
-      const pos = positions[i];
+      const pos = emitPositions[i];
       const u = uses[i];
       // Center of source text within its own viewBox — natW/natH ÷ 2.
       // Rotation happens around the copy's own center, not (0,0).
