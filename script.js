@@ -490,6 +490,37 @@
       _directional: true, _dirDefaults: { mode: "reveal", direction: "up", distance: 0, blurPx: 12, order: "random" },
       paramDefs: null },
 
+    // === v19.50 TEXT PATTERN / REPEATER ===
+    // Non-destructive layer-scoped pattern.  Instances the layer's
+    // animated text via SVG <use> so a single source's DOM mutations
+    // (from Bulk Typing, Character Stagger, etc.) propagate to every
+    // copy — one logical layer, no extra DOM per glyph×copy.
+    { key: "textPattern",     label: "Text Pattern",    defDur: "layer", group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", sustained: true, persistEnd: true,
+      paramDefs: [
+        { key: "layout",     label: "Layout",         type: "select", options: ["grid","brick","horizontal","vertical"], default: "grid" },
+        { key: "rows",       label: "Rows",           type: "range", min: 1, max: 20, step: 1, default: 3 },
+        { key: "cols",       label: "Columns",        type: "range", min: 1, max: 20, step: 1, default: 3 },
+        { key: "hSpacing",   label: "H Spacing (px)", type: "range", min: 20, max: 800, step: 10, default: 220 },
+        { key: "vSpacing",   label: "V Spacing (px)", type: "range", min: 20, max: 800, step: 10, default: 140 },
+        { key: "brickOffset",label: "Brick Offset (%)", type: "range", min: 0, max: 100, step: 5, default: 50 },
+        { key: "patternRotation", label: "Pattern Rotation (deg)", type: "range", min: -180, max: 180, step: 1, default: 0 },
+        { key: "patternScale",label: "Pattern Scale (%)", type: "range", min: 20, max: 300, step: 5, default: 100 },
+        { key: "offsetX",    label: "Offset X (px)",  type: "range", min: -800, max: 800, step: 5, default: 0 },
+        { key: "offsetY",    label: "Offset Y (px)",  type: "range", min: -800, max: 800, step: 5, default: 0 },
+        { key: "copyRotation",label: "Per-Copy Rotation (deg)", type: "range", min: -180, max: 180, step: 1, default: 0 },
+        { key: "copyScale",  label: "Per-Copy Scale (%)", type: "range", min: 20, max: 200, step: 5, default: 100 },
+        { key: "copyOpacity",label: "Per-Copy Opacity (%)", type: "range", min: 10, max: 100, step: 5, default: 100 },
+        { key: "fillArtboard",label: "Fill Artboard",  type: "select", options: ["no","yes"], default: "no" },
+        { key: "overscan",   label: "Overscan (px)",  type: "range", min: 0, max: 500, step: 10, default: 0 },
+        { key: "clipToArtboard",label: "Clip to Artboard", type: "select", options: ["no","yes"], default: "no" },
+        { key: "showSource", label: "Show Source Copy",type: "select", options: ["yes","no"], default: "yes" },
+        { key: "orderMode",  label: "Animation Order",type: "select",
+          options: ["same","sequential","wave","reverse","center-out","random"], default: "same" },
+        { key: "phaseDelayMs",label: "Phase Delay (ms)", type: "range", min: 0, max: 500, step: 10, default: 80 },
+        { key: "seed",       label: "Seed",           type: "range", min: 0, max: 999, step: 1, default: 7 },
+      ] },
+
     // Physics — universal (work on any layer via CSS transform deltas).
     { key: "springFollow",    label: "Spring Follow",    defDur: "layer", group: "motion",
       category: "universal", supportedLayerTypes: ["TEXT","IMG","SVG","VIDEO","SHAPE"], sustained: true,
@@ -925,6 +956,8 @@
     textColor: $("#textColor"), textColorHex: $("#textColorHex"),
     textAlignSeg: $("#textAlignSeg"),
     textLetterSpacing: $("#textLetterSpacing"), textLineHeight: $("#textLineHeight"), textSlashedZero: $("#textSlashedZero"), textFrameOverflow: $("#textFrameOverflow"),
+    textFrameW: $("#textFrameW"), textFrameH: $("#textFrameH"),
+    textAutoWidth: $("#textAutoWidth"), textAutoHeight: $("#textAutoHeight"), textAutoFit: $("#textAutoFit"),
     timecodeFrame: $("#timecodeFrame"),
     readoutFilename: $("#readoutFilename"),
     // export
@@ -3619,6 +3652,173 @@
     // element so the underlying text layout is never altered by blink
     // state.  When no cursor is active, remove the overlay.
     _updateTypingCursorOverlay(layer);
+    // v19.50 TEXT PATTERN — instance the animated text via <use>.
+    // The pattern renders AFTER all effect mutations so every copy
+    // reflects the current effect frame.  Copies share the source
+    // <text> element by reference, so glyph mutations from Character
+    // Stagger etc. propagate to every copy automatically.
+    const patternClip = activeAll.find(({ c }) => c.fxKey === "textPattern");
+    _applyPatternIfActive(layer, patternClip ? patternClip.c : null, sceneTime);
+  }
+
+  /* v19.50 TEXT PATTERN RENDERER.
+   *
+   * Non-destructive: source <text> stays in the SVG at its normal
+   * position; a <g id="pattern-copies-{id}"> wraps N <use> elements
+   * referencing the source.  Because <use> shares the source's live
+   * DOM, any glyph mutations (Bulk Typing, Character Stagger, Reveal
+   * effects, etc.) automatically appear in every copy — one logical
+   * layer, no per-copy re-rendering, deterministic on scrub/export.
+   *
+   * When the pattern clip is inactive, cleanup removes the copies
+   * group and restores source visibility.
+   */
+  function _applyPatternIfActive(layer, clip, sceneTime) {
+    const svg = layer.node;
+    if (!svg) return;
+    const NS = "http://www.w3.org/2000/svg";
+    const textEl = svg.querySelector("text");
+    if (!textEl) return;
+    const groupId = "pattern-copies-" + (layer.id || "x");
+    let group = svg.querySelector("#" + groupId);
+    if (!clip) {
+      // Inactive — remove any existing pattern group + restore visibility.
+      if (group) group.remove();
+      textEl.style.display = "";
+      return;
+    }
+    const P = clip.params || {};
+    // Give the source text a stable id we can <use> reference.
+    const srcId = "pattern-src-" + (layer.id || "x");
+    if (!textEl.getAttribute("id")) textEl.setAttribute("id", srcId);
+    // showSource=no → hide the (0,0) source and only render copies.
+    const showSource = P.showSource !== "no";
+    textEl.style.display = showSource ? "" : "none";
+
+    // Compute layout positions.
+    const layout = P.layout || "grid";
+    const rowsCfg = Math.max(1, P.rows | 0 || 3);
+    const colsCfg = Math.max(1, P.cols | 0 || 3);
+    const hSp = P.hSpacing != null ? P.hSpacing : 220;
+    const vSp = P.vSpacing != null ? P.vSpacing : 140;
+    const brickOff = ((P.brickOffset ?? 50) / 100) * hSp;
+    const patternRot = (P.patternRotation || 0) * Math.PI / 180;
+    const patternScl = (P.patternScale ?? 100) / 100;
+    const offX = P.offsetX || 0;
+    const offY = P.offsetY || 0;
+    const copyRot = P.copyRotation || 0;
+    const copyScl = (P.copyScale ?? 100) / 100;
+    const copyOp  = (P.copyOpacity ?? 100) / 100;
+    const fillArt = P.fillArtboard === "yes";
+    const overscan = P.overscan || 0;
+
+    // Compute row/col counts.  Fill Artboard overrides rowsCfg/colsCfg
+    // to compute enough copies to fully cover the ROTATED artboard,
+    // then the pattern group gets rotated so no empty corners.
+    let rows = rowsCfg, cols = colsCfg;
+    if (fillArt || overscan > 0) {
+      const A = STATE.format || { w: 1080, h: 1080 };
+      // Rotated bounding-box extent: |cos|+|sin| times max side.
+      const cAbs = Math.abs(Math.cos(patternRot));
+      const sAbs = Math.abs(Math.sin(patternRot));
+      const extentW = A.w * cAbs + A.h * sAbs + overscan * 2;
+      const extentH = A.w * sAbs + A.h * cAbs + overscan * 2;
+      // How many spacings fit in extent + margin for the rotated case.
+      // Account for pattern scale (a small scale packs more copies).
+      const effHSp = Math.max(1, hSp * patternScl);
+      const effVSp = Math.max(1, vSp * patternScl);
+      cols = Math.ceil(extentW / effHSp) + 2;
+      rows = Math.ceil(extentH / effVSp) + 2;
+      // Safety cap so users don't accidentally render 10000 copies.
+      cols = Math.min(cols, 40);
+      rows = Math.min(rows, 40);
+    }
+
+    // Build positions.  Origin at (0,0) — copies laid symmetrically
+    // around it so pattern rotation happens around the source.
+    const positions = [];
+    if (layout === "horizontal") {
+      const total = fillArt ? cols * rows : colsCfg;
+      for (let c = 0; c < total; c++) {
+        const x = (c - (total - 1) / 2) * hSp;
+        positions.push({ x, y: 0, idx: c });
+      }
+    } else if (layout === "vertical") {
+      const total = fillArt ? cols * rows : rowsCfg;
+      for (let r = 0; r < total; r++) {
+        const y = (r - (total - 1) / 2) * vSp;
+        positions.push({ x: 0, y, idx: r });
+      }
+    } else {
+      // grid or brick
+      const brick = layout === "brick";
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          let x = (c - (cols - 1) / 2) * hSp;
+          const y = (r - (rows - 1) / 2) * vSp;
+          if (brick && (r & 1)) x += brickOff;
+          positions.push({ x, y, idx: r * cols + c });
+        }
+      }
+    }
+
+    // Rebuild the pattern group.  Reuse existing <use> elements to
+    // avoid churn on scrub — pool them and resize as needed.
+    if (!group) {
+      group = document.createElementNS(NS, "g");
+      group.setAttribute("id", groupId);
+      // Insert BEFORE the source text so copies render underneath (or
+      // AFTER so they render on top?  Underneath — the source is the
+      // "cover" copy at 0,0).  Actually source is the origin; copies
+      // extend away from it.  Let copies render UNDER the source so
+      // showSource=yes gives a "front and center" original.
+      svg.insertBefore(group, textEl);
+    }
+    // Diff pool
+    const existing = Array.from(group.children);
+    const need = positions.length;
+    // Trim excess
+    for (let i = existing.length - 1; i >= need; i--) existing[i].remove();
+    // Add missing
+    while (group.children.length < need) {
+      const u = document.createElementNS(NS, "use");
+      u.setAttribute("href", "#" + srcId);
+      u.setAttribute("data-pattern-copy", "1");
+      group.appendChild(u);
+    }
+    // Update transforms
+    const uses = group.children;
+    for (let i = 0; i < need; i++) {
+      const pos = positions[i];
+      const u = uses[i];
+      // Center of source text within its own viewBox — natW/natH ÷ 2.
+      // Rotation happens around the copy's own center, not (0,0).
+      const cxLocal = (layer.natW || 0) / 2;
+      const cyLocal = (layer.natH || 0) / 2;
+      // Compose: translate to grid position (relative to source),
+      //   then per-copy rotate + scale about copy's own center.
+      // Note: SVG applies transforms right-to-left.
+      const tx = pos.x, ty = pos.y;
+      let t = "";
+      if (tx !== 0 || ty !== 0) t += `translate(${tx.toFixed(2)}, ${ty.toFixed(2)}) `;
+      if (copyRot !== 0 || copyScl !== 1) {
+        t += `translate(${cxLocal}, ${cyLocal}) `;
+        if (copyRot !== 0) t += `rotate(${copyRot}) `;
+        if (copyScl !== 1) t += `scale(${copyScl}) `;
+        t += `translate(${-cxLocal}, ${-cyLocal}) `;
+      }
+      u.setAttribute("transform", t.trim());
+      if (copyOp < 1) u.setAttribute("opacity", copyOp.toFixed(3));
+      else if (u.hasAttribute("opacity")) u.removeAttribute("opacity");
+    }
+    // Apply pattern-wide transform (rotation + scale + offset) to the group.
+    // Rotation happens around the source position (viewBox center of
+    // the layer's natural extents).
+    const gCx = (layer.natW || 0) / 2, gCy = (layer.natH || 0) / 2;
+    let gT = `translate(${offX}, ${offY}) `;
+    if (patternRot !== 0) gT += `rotate(${(P.patternRotation || 0)}, ${gCx}, ${gCy}) `;
+    if (patternScl !== 1) gT += `translate(${gCx}, ${gCy}) scale(${patternScl}) translate(${-gCx}, ${-gCy}) `;
+    group.setAttribute("transform", gT.trim());
   }
 
   /* Renders/updates the typing cursor SVG overlay for a text layer.
@@ -3979,25 +4179,37 @@
     // coordinate space (which is scrolled).
     const wrapRect = layer.wrap.getBoundingClientRect();
     const stageRect = el.stage.getBoundingClientRect();
+    const zoom = STATE.zoom || 1;
+    // v19.50 OVERLAY ALIGNMENT.
+    // Match the SVG text's padding-inside-viewBox so the caret and
+    // rendered glyphs sit at the same on-screen position.  Padding
+    // in buildTextLayerSVG is `Math.max(8, fontSize * 0.25)` in
+    // viewBox space; on screen it scales by (wrap.w / natW).
+    const scaleX = (wrapRect.width || 1) / (layer.natW || 1);
+    const scaleY = (wrapRect.height || 1) / (layer.natH || 1);
+    const padXvb = Math.max(8, layer.textStyle.fontSize * 0.25);
+    const padYvb = Math.max(8, layer.textStyle.fontSize * 0.25);
+    const padXpx = padXvb * scaleX;
+    const padYpx = padYvb * scaleY;
     const ta = document.createElement("textarea");
     ta.className = "text-edit-overlay";
     ta.value = layer.textStyle.text;
     ta.setAttribute("spellcheck", "false");
-    ta.style.left  = (wrapRect.left - stageRect.left + el.stage.scrollLeft) + "px";
-    ta.style.top   = (wrapRect.top  - stageRect.top  + el.stage.scrollTop) + "px";
-    ta.style.width = Math.max(80, wrapRect.width)  + "px";
-    ta.style.height = Math.max(28, wrapRect.height) + "px";
+    ta.style.left  = (wrapRect.left - stageRect.left + el.stage.scrollLeft + padXpx) + "px";
+    ta.style.top   = (wrapRect.top  - stageRect.top  + el.stage.scrollTop  + padYpx * 0.05) + "px";
+    ta.style.width = Math.max(80, wrapRect.width - padXpx * 2)  + "px";
+    ta.style.height= Math.max(28, wrapRect.height - padYpx * 0.1) + "px";
     // Match visual font metrics 1:1 with what's on-canvas.
     ta.style.fontFamily = `"${layer.textStyle.fontFamily}", ${TEXT_FONT_STACK}`;
-    // The layer wrap is already scaled by STATE.zoom for the on-canvas
-    // preview.  Since our overlay lives in stage-space (not artboard-
-    // space), we scale font-size by zoom to match visually.
-    ta.style.fontSize   = (layer.textStyle.fontSize * (STATE.zoom || 1)) + "px";
+    ta.style.fontSize   = (layer.textStyle.fontSize * scaleY) + "px";
     ta.style.fontWeight = layer.textStyle.fontWeight;
     ta.style.color      = layer.textStyle.color;
     ta.style.lineHeight = layer.textStyle.lineHeight || 1.2;
     ta.style.textAlign  = layer.textStyle.align === "start" ? "left" : layer.textStyle.align === "end" ? "right" : "center";
-    if (layer.textStyle.letterSpacing) ta.style.letterSpacing = (layer.textStyle.letterSpacing * layer.textStyle.fontSize * (STATE.zoom || 1)).toFixed(2) + "px";
+    if (layer.textStyle.letterSpacing) ta.style.letterSpacing = (layer.textStyle.letterSpacing * layer.textStyle.fontSize * scaleY).toFixed(2) + "px";
+    // v19.50: mirror the layer's rotation so overlay stays aligned
+    // when the user has rotated the text layer.
+    if (layer.transform && layer.transform.rot) ta.style.transform = `rotate(${layer.transform.rot}deg)`;
     el.stage.appendChild(ta);
     _activeTextEditor = { textarea: ta, layer };
     // Auto-select the placeholder so the user's first keypress replaces it.
@@ -4014,8 +4226,15 @@
     ta.addEventListener("blur", finalize, { once: true });
     ta.addEventListener("keydown", (ev) => {
       // Enter commits (Shift+Enter inserts newline).  Escape reverts.
-      if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); ta.blur(); }
+      // v19.50: Cmd/Ctrl+Enter always commits (matches multi-line
+      // editors like Notion/Slack).
+      if ((ev.key === "Enter" && !ev.shiftKey && !ev.ctrlKey && !ev.metaKey) ||
+          (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey))) {
+        ev.preventDefault(); ta.blur();
+      }
       else if (ev.key === "Escape") { ev.preventDefault(); ta.value = layer.textStyle.text; ta.blur(); }
+      // All other keys (arrows, Shift+arrow, Cmd+A, Cmd+C/V/X, Backspace,
+      // Delete, Home/End) use native textarea handling — no interception.
     });
   }
 
@@ -5098,6 +5317,15 @@
         if (el.textSlashedZero) el.textSlashedZero.checked = !!s.slashedZero;
         // v19.46: Frame Overflow sync
         if (el.textFrameOverflow) el.textFrameOverflow.value = (s.frameOverflow === "clip") ? "clip" : "visible";
+        // v19.50 frame numeric + auto toggles
+        const A2 = STATE.format;
+        const currFW = s.frameWidth != null ? s.frameWidth : (selectedLayer.transform.wPct / 100) * A2.w;
+        const currFH = s.frameHeight != null ? s.frameHeight : (selectedLayer.transform.hPct / 100) * A2.h;
+        if (el.textFrameW) el.textFrameW.value = Math.round(currFW);
+        if (el.textFrameH) el.textFrameH.value = Math.round(currFH);
+        if (el.textAutoWidth) el.textAutoWidth.checked = (s.autoWidth !== false);
+        if (el.textAutoHeight) el.textAutoHeight.checked = (s.autoHeight !== false);
+        if (el.textAutoFit) el.textAutoFit.checked = !!s.autoFit;
         if (el.textAlignSeg) {
           el.textAlignSeg.querySelectorAll("[data-align]").forEach((b) => {
             b.classList.toggle("active", b.dataset.align === s.align);
@@ -5429,6 +5657,84 @@
     el.selectionBox.style.transform = `rotate(${t.rot}deg)`;
     el.selectionBox.style.transformOrigin = "center center";
   }
+
+  /* v19.50 SELECTION-BOX RESIZE HANDLES.
+   *
+   * Pointer-drag on any of the 8 handles resizes the selected layer.
+   * For TEXT layers: modifies textStyle.frameWidth / frameHeight and
+   *   flips autoWidth / autoHeight to false so the frame is locked.
+   *   Font size is never changed.  Text may reflow (soft word-wrap)
+   *   when width shrinks.
+   * For other layer kinds: scales transform.wPct / hPct as before.
+   *
+   * Deferred to first invocation so DOM exists.  Attached once.
+   */
+  let _sbHandlesWired = false;
+  function _wireSelectionHandles() {
+    if (_sbHandlesWired || !el.selectionBox) return;
+    _sbHandlesWired = true;
+    const handles = el.selectionBox.querySelectorAll(".sb-handle");
+    handles.forEach((h) => {
+      h.addEventListener("pointerdown", (e) => _handleResizeStart(e, h.dataset.handle));
+    });
+  }
+  function _handleResizeStart(e, dir) {
+    if (!selectedLayer) return;
+    e.preventDefault(); e.stopPropagation();
+    const L = selectedLayer;
+    const A = STATE.format;
+    const startX = e.clientX, startY = e.clientY;
+    const startWPct = L.transform.wPct, startHPct = L.transform.hPct;
+    const startCx = L.transform.cx, startCy = L.transform.cy;
+    // For text layers: also snapshot frame dims.
+    const isText = L.kind === "TEXT";
+    const startFrameW = isText ? (L.textStyle.frameWidth || (L.transform.wPct / 100) * A.w) : null;
+    const startFrameH = isText ? (L.textStyle.frameHeight || (L.transform.hPct / 100) * A.h) : null;
+    const artboardRect = el.artboard.getBoundingClientRect();
+    const zoom = STATE.zoom || 1;
+    // artboard-pixels per screen-pixel
+    const pxScale = (A.w / artboardRect.width) * zoom;
+    const onMove = (ev) => {
+      const dxPx = (ev.clientX - startX) * pxScale;
+      const dyPx = (ev.clientY - startY) * pxScale;
+      // Adjust W/H based on direction.  E/W anchor opposite edge, so
+      // the layer's center moves half the delta.
+      let dW = 0, dH = 0, dCx = 0, dCy = 0;
+      if (dir.includes("e")) { dW = dxPx; dCx = dxPx / 2; }
+      if (dir.includes("w")) { dW = -dxPx; dCx = dxPx / 2; }
+      if (dir.includes("s")) { dH = dyPx; dCy = dyPx / 2; }
+      if (dir.includes("n")) { dH = -dyPx; dCy = dyPx / 2; }
+      // Apply visual size in wrap pct
+      const newW = Math.max(20, (startWPct / 100) * A.w + dW);
+      const newH = Math.max(20, (startHPct / 100) * A.h + dH);
+      L.transform.wPct = (newW / A.w) * 100;
+      L.transform.hPct = (newH / A.h) * 100;
+      L.transform.cx = startCx + (dCx / A.w) * 100;
+      L.transform.cy = startCy + (dCy / A.h) * 100;
+      if (isText) {
+        // Persist as manual frame size + disable auto so effects /
+        // Pattern don't overwrite it.  Text reflows via soft word-wrap
+        // (buildTextLayerSVG respects frameWidth as wrap cap).
+        L.textStyle.frameWidth  = newW;
+        L.textStyle.frameHeight = newH;
+        L.textStyle.autoWidth  = false;
+        L.textStyle.autoHeight = false;
+        // Rebuild so the wrap reflows to new frame width.
+        buildTextLayerSVG(L);
+      }
+      updateSelectionBox();
+      renderInspector();
+      paintIfPaused();
+    };
+    const onUp = () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+  }
+  // Wire on the next tick after DOM is ready.
+  setTimeout(_wireSelectionHandles, 0);
 
   /* ---------------- TIMELINE ---------------- */
   const TL = { pxPerSec: 0, dragClip: null, mode: null, startX: 0, orig: null, dragEvent: null, dragAudio: null };
@@ -6807,6 +7113,7 @@
     sineWaveText(sig, t)      { return {}; },
     svgTextOnPath(sig, t)     { return {}; },
     variableFontPulse(sig, t) { return {}; },
+    textPattern(sig, t)       { return {}; },   // v19.50 sustained pattern stub
     // v19.41 universal RGB Split (Pro) — extended params over legacy rgbOffset.
     // distance/angle project into rgb offset magnitude with per-frame jitter.
     rgbSplitPro(sig, t, params) {
@@ -13153,6 +13460,51 @@
         if (selectedLayer && selectedLayer.kind === "TEXT") {
           updateTextLayer(selectedLayer, { frameOverflow: el.textFrameOverflow.value });
         }
+      });
+    }
+    // v19.50 Frame W/H numeric + auto toggles wiring.
+    if (el.textFrameW) {
+      el.textFrameW.addEventListener("change", () => {
+        if (!(selectedLayer && selectedLayer.kind === "TEXT")) return;
+        const w = Math.max(20, parseFloat(el.textFrameW.value) || 200);
+        updateTextLayer(selectedLayer, { frameWidth: w, autoWidth: false });
+        const A = STATE.format;
+        selectedLayer.transform.wPct = (w / A.w) * 100;
+        updateSelectionBox(); paintIfPaused();
+      });
+    }
+    if (el.textFrameH) {
+      el.textFrameH.addEventListener("change", () => {
+        if (!(selectedLayer && selectedLayer.kind === "TEXT")) return;
+        const h = Math.max(20, parseFloat(el.textFrameH.value) || 60);
+        updateTextLayer(selectedLayer, { frameHeight: h, autoHeight: false });
+        const A = STATE.format;
+        selectedLayer.transform.hPct = (h / A.h) * 100;
+        updateSelectionBox(); paintIfPaused();
+      });
+    }
+    if (el.textAutoWidth) {
+      el.textAutoWidth.addEventListener("change", () => {
+        if (!(selectedLayer && selectedLayer.kind === "TEXT")) return;
+        const on = el.textAutoWidth.checked;
+        updateTextLayer(selectedLayer, {
+          autoWidth: on, frameWidth: on ? null : selectedLayer.textStyle.frameWidth,
+        });
+      });
+    }
+    if (el.textAutoHeight) {
+      el.textAutoHeight.addEventListener("change", () => {
+        if (!(selectedLayer && selectedLayer.kind === "TEXT")) return;
+        const on = el.textAutoHeight.checked;
+        updateTextLayer(selectedLayer, {
+          autoHeight: on, frameHeight: on ? null : selectedLayer.textStyle.frameHeight,
+        });
+      });
+    }
+    if (el.textAutoFit) {
+      el.textAutoFit.addEventListener("change", () => {
+        if (!(selectedLayer && selectedLayer.kind === "TEXT")) return;
+        updateTextLayer(selectedLayer, { autoFit: !!el.textAutoFit.checked });
       });
     }
     if (el.textAlignSeg) {
