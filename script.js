@@ -355,15 +355,17 @@
         { key: "reverse",    label: "Reverse Path",   type: "select", options: ["no","yes"], default: "no" },
         { key: "align",      label: "Text Align",     type: "select", options: ["start","middle","end"], default: "start" },
         { key: "fitToPath",  label: "Fit To Path",    type: "select", options: ["no","yes"], default: "no" },
-        // v19.48: continuous 360° rotation controls.
-        // repeatText: how many times to repeat the phrase along the path.
-        //   auto = fill the path (path length ÷ text width, rounded up + 1).
-        //   Manual values 1..12 override.  Auto is best for looping.
-        // gap: characters worth of blank space between repeats.
-        // direction: cw (increasing startOffset) or ccw (decreasing).
-        // speed: percent-of-path per second; negative flips direction too.
-        { key: "repeatText",   label: "Repeat Text",     type: "select",
-          options: ["auto","1","2","3","4","5","6","8","10","12"], default: "auto" },
+        // v19.49 TEXT ON PATH MODE.
+        // single = one complete phrase orbits continuously around a closed
+        //   path with no repeats; the path itself is drawn as a DOUBLE
+        //   traversal so text always has runway and never disappears
+        //   at the seam.  Recommended for a single word/sentence.
+        // manual = repeatText controls exact copies (1..12).
+        // auto   = fill path with as many copies as needed (v19.48 default).
+        { key: "mode",         label: "Path Mode",       type: "select",
+          options: ["single","manual","auto"], default: "single" },
+        { key: "repeatText",   label: "Repeat Count (manual)", type: "select",
+          options: ["1","2","3","4","5","6","8","10","12"], default: "3" },
         { key: "gapChars",     label: "Gap Between Copies", type: "range", min: 0, max: 20, step: 1, default: 3 },
         { key: "direction",    label: "Rotation Direction", type: "select", options: ["cw","ccw"], default: "cw" },
         { key: "animateOffset",label: "Speed (% / sec)", type: "range", min: 0, max: 200, step: 1, default: 0 },
@@ -409,6 +411,84 @@
         { key: "weightMax",label: "Max Weight", type: "range", min: 100, max: 900, step: 25, default: 800 },
         { key: "cycleSec", label: "Cycle (sec)",type: "range", min: 0.2, max: 6, step: 0.1, default: 1.5 },
       ] },
+
+    // === v19.49 DIRECTIONAL REVEAL/HIDE FAMILY ===
+    // All 13 effects share one runtime engine (TEXT_FX_DOM.directional).
+    // The picker entry differs only by paramDefs defaults so users see
+    // meaningful names like "Reveal From Left" while the runtime uses
+    // the same code path.  Each entry sets a `_directional` hint in
+    // the metadata so runtime dispatch can find the shared engine.
+    // Directional constants (used as defaults):
+    //   direction: "left" | "right" | "up" | "down"
+    //   mode:      "reveal" | "hide" | "both"
+    //   target:    "char" | "word" | "line" | "block"
+    { key: "revealFromLeft",  label: "Reveal From Left",  defDur: 1.20, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", persistEnd: true,
+      _directional: true,
+      paramDefs: [
+        { key: "mode",     label: "Mode",       type: "select", options: ["reveal","hide","both"], default: "reveal" },
+        { key: "direction",label: "Direction",  type: "select", options: ["left","right","up","down"], default: "left" },
+        { key: "target",   label: "Target",     type: "select", options: ["char","word","line","block"], default: "char" },
+        { key: "distance", label: "Distance (px)", type: "range", min: 0, max: 400, step: 5, default: 80 },
+        { key: "duration", label: "Per-Unit Duration (ms)", type: "range", min: 50, max: 2000, step: 10, default: 400 },
+        { key: "stagger",  label: "Stagger (ms)", type: "range", min: 0, max: 300, step: 5, default: 40 },
+        { key: "easing",   label: "Easing", type: "select", options: ["easeOut","easeIn","easeInOut","linear"], default: "easeOut" },
+        { key: "fadeOpacity", label: "Fade Opacity", type: "select", options: ["yes","no"], default: "yes" },
+        { key: "blurPx",   label: "Motion Blur (px)", type: "range", min: 0, max: 40, step: 1, default: 0 },
+        { key: "delay",    label: "Start Delay (ms)", type: "range", min: 0, max: 2000, step: 10, default: 0 },
+        { key: "hold",     label: "End Hold (ms)", type: "range", min: 0, max: 3000, step: 10, default: 0 },
+        { key: "order",    label: "Order", type: "select", options: ["forward","reverse","center-out","outside-in","random"], default: "forward" },
+        { key: "clip",     label: "Clip", type: "select", options: ["none","frame"], default: "none" },
+        { key: "seed",     label: "Seed", type: "range", min: 0, max: 999, step: 1, default: 7 },
+      ] },
+    { key: "revealFromRight", label: "Reveal From Right", defDur: 1.20, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", persistEnd: true,
+      _directional: true, _dirDefaults: { mode: "reveal", direction: "right" },
+      paramDefs: null /* copied from revealFromLeft with direction=right at runtime */ },
+    { key: "revealFromTop",   label: "Reveal From Top",   defDur: 1.20, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", persistEnd: true,
+      _directional: true, _dirDefaults: { mode: "reveal", direction: "up" },
+      paramDefs: null },
+    { key: "revealFromBottom",label: "Reveal From Bottom",defDur: 1.20, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", persistEnd: true,
+      _directional: true, _dirDefaults: { mode: "reveal", direction: "down" },
+      paramDefs: null },
+    { key: "hideToLeft",      label: "Hide To Left",      defDur: 1.20, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerEnd", persistEnd: false,
+      _directional: true, _dirDefaults: { mode: "hide", direction: "left" },
+      paramDefs: null },
+    { key: "hideToRight",     label: "Hide To Right",     defDur: 1.20, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerEnd", persistEnd: false,
+      _directional: true, _dirDefaults: { mode: "hide", direction: "right" },
+      paramDefs: null },
+    { key: "hideToTop",       label: "Hide To Top",       defDur: 1.20, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerEnd", persistEnd: false,
+      _directional: true, _dirDefaults: { mode: "hide", direction: "up" },
+      paramDefs: null },
+    { key: "hideToBottom",    label: "Hide To Bottom",    defDur: 1.20, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerEnd", persistEnd: false,
+      _directional: true, _dirDefaults: { mode: "hide", direction: "down" },
+      paramDefs: null },
+    { key: "revealAndHide",   label: "Reveal and Hide",   defDur: 2.00, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", persistEnd: false,
+      _directional: true, _dirDefaults: { mode: "both", direction: "left" },
+      paramDefs: null },
+    { key: "lineByLineReveal",label: "Line-by-Line Reveal",defDur: 1.50, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", persistEnd: true,
+      _directional: true, _dirDefaults: { mode: "reveal", direction: "left", target: "line", stagger: 180, duration: 500 },
+      paramDefs: null },
+    { key: "directionalCascade",label: "Directional Cascade",defDur: 1.80, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", persistEnd: true,
+      _directional: true, _dirDefaults: { mode: "reveal", direction: "down", target: "word", distance: 120, stagger: 90 },
+      paramDefs: null },
+    { key: "motionBlurReveal",label: "Motion Blur Reveal",defDur: 1.40, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", persistEnd: true,
+      _directional: true, _dirDefaults: { mode: "reveal", direction: "left", blurPx: 20, distance: 120 },
+      paramDefs: null },
+    { key: "directionalDissolve",label: "Directional Dissolve",defDur: 1.50, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", persistEnd: true,
+      _directional: true, _dirDefaults: { mode: "reveal", direction: "up", distance: 0, blurPx: 12, order: "random" },
+      paramDefs: null },
 
     // Physics — universal (work on any layer via CSS transform deltas).
     { key: "springFollow",    label: "Spring Follow",    defDur: "layer", group: "motion",
@@ -564,6 +644,23 @@
       if (FX_CAPABILITY.deprecatedIds.has(fx.key)) fx.deprecated = true;
       // v19.44: tag scene-scope so the inspector can label the button.
       if (FX_CAPABILITY.sceneScope.has(fx.key)) fx.sceneScope = true;
+    }
+    // v19.49 DIRECTIONAL FAMILY HYDRATION.
+    // Sibling directional effects (revealFromRight ... directionalDissolve)
+    // declare paramDefs: null and rely on the master (revealFromLeft)
+    // schema.  Clone the master's paramDefs and overlay any _dirDefaults
+    // so each sibling exposes the same controls with sensible defaults.
+    const master = FX_EVENTS.find(f => f.key === "revealFromLeft");
+    if (master && master.paramDefs) {
+      for (const fx of FX_EVENTS) {
+        if (!fx._directional || fx.paramDefs) continue;
+        const overrides = fx._dirDefaults || {};
+        fx.paramDefs = master.paramDefs.map(pd => {
+          const clone = { ...pd };
+          if (overrides.hasOwnProperty(pd.key)) clone.default = overrides[pd.key];
+          return clone;
+        });
+      }
     }
   })();
   function fxSupportsLayer(fx, layer) {
@@ -1943,7 +2040,16 @@
     const textEl = document.createElementNS(svgNS, "text");
     textEl.setAttribute("x", String(anchorX));
     textEl.setAttribute("y", String(firstBaselineY));
-    textEl.setAttribute("text-anchor", s.align);
+    // v19.49 ALIGNMENT FIX.
+    // Root cause: text-anchor="middle" or "end" propagates to every
+    // child tspan.  Because our glyph split writes an ABSOLUTE x per
+    // tspan (v19.47 layout-once), each glyph then re-anchored ITSELF
+    // around its own x — for center alignment it centered each glyph
+    // on its own point, so multi-line text collapsed to garbage.
+    // Since per-line alignment is already baked into the per-glyph x
+    // (via lineOriginX offset in the glyph split below), force
+    // text-anchor="start" so glyphs render AT their own x.
+    textEl.setAttribute("text-anchor", "start");
     textEl.setAttribute("font-family", `"${s.fontFamily}", ${TEXT_FONT_STACK}`);
     textEl.setAttribute("font-size", String(s.fontSize));
     textEl.setAttribute("font-weight", String(s.fontWeight));
@@ -2329,6 +2435,128 @@
       textEl.style.fontVariationSettings = `"wght" ${w}`;
       textEl.setAttribute("font-weight", String(w));
     },
+
+    // === v19.49 SHARED DIRECTIONAL ENGINE ===
+    // Powers Reveal From Left/Right/Top/Bottom, Hide To Left/.../Bottom,
+    // Reveal and Hide, Line-by-Line Reveal, Directional Cascade,
+    // Motion Blur Reveal, Directional Dissolve — 13 total keys, one
+    // implementation.  Mutates each glyph tspan in place using its
+    // cached _baseX/_baseY (from v19.47 layout-once), never rebuilds
+    // SVG, never touches viewBox or natW/natH.
+    //
+    // Timeline per glyph:
+    //   0 ────── delay ────── stagger×idx ────── duration ────── hold ──── clipEnd
+    //     hidden               animating          settled          settled
+    //
+    // Mode:
+    //   reveal → animate from OFFSET position (opacity 0) to base (opacity 1)
+    //   hide   → animate from base (opacity 1) to OFFSET (opacity 0)
+    //   both   → reveal in first half of duration+stagger*N, hide in last
+    directional(layer, clip, p, sig, sceneTime) {
+      const P = clip.params || {};
+      const tspans = _getGlyphTspans(layer);
+      if (!tspans.length) return;
+      const target = P.target || "char";
+      const mode   = P.mode   || "reveal";
+      const direction = P.direction || "left";
+      const distance = P.distance != null ? P.distance : 80;
+      const durMs    = Math.max(1, P.duration || 400);
+      const staggerMs= P.stagger != null ? P.stagger : 40;
+      const easingFn = TEXT_EASE[P.easing] || TEXT_EASE.easeOut;
+      const fadeOp   = P.fadeOpacity !== "no";
+      const blurPx   = P.blurPx || 0;
+      const delayMs  = P.delay || 0;
+      const holdMs   = P.hold || 0;
+      const order    = P.order || "forward";
+      const seed     = P.seed || 7;
+
+      const groups = _groupTspansByUnit(tspans, target, layer);
+      const N = groups.length;
+      const orderIdx = _computeOrderIndices(N, order, seed + (clip.id || 0) * 13);
+
+      const localMs = Math.max(0, sceneTime - (layer.start + clip.start)) * 1000;
+      // Total time budget for the reveal (or hide) pass — used for
+      // "both" mode to know when to switch from reveal → hide.
+      const totalRevealMs = delayMs + (N - 1) * staggerMs + durMs;
+
+      // Helper: convert 0..1 local progress + direction to dx/dy offsets.
+      const offsetFor = (localP) => {
+        const fade = 1 - easingFn(localP);       // 0 when settled, 1 when far away
+        let dx = 0, dy = 0;
+        if (direction === "left")  dx = -distance * fade;
+        else if (direction === "right") dx = distance * fade;
+        else if (direction === "up")    dy = -distance * fade;
+        else if (direction === "down")  dy = distance * fade;
+        const op = fadeOp ? easingFn(localP) : 1;
+        const bl = blurPx * fade;
+        return { dx, dy, op, bl };
+      };
+
+      for (let i = 0; i < N; i++) {
+        const oIdx = orderIdx[i];
+        const startAt = delayMs + oIdx * staggerMs;
+        let dx = 0, dy = 0, op = 1, bl = 0, hidden = false;
+        if (mode === "reveal") {
+          const t = clamp01((localMs - startAt) / durMs);
+          if (localMs < startAt) { hidden = true; }
+          const o = offsetFor(t);
+          dx = o.dx; dy = o.dy; op = hidden ? 0 : o.op; bl = o.bl;
+        } else if (mode === "hide") {
+          const t = clamp01((localMs - startAt) / durMs);
+          // Hide inverts: at t=0 fully visible, at t=1 fully offset+faded
+          const o = offsetFor(1 - t);
+          dx = o.dx; dy = o.dy; op = o.op; bl = o.bl;
+        } else {
+          // both: reveal first, hold, then hide
+          const revealEnd = totalRevealMs;
+          const holdEnd   = revealEnd + holdMs;
+          if (localMs <= revealEnd) {
+            const t = clamp01((localMs - startAt) / durMs);
+            if (localMs < startAt) hidden = true;
+            const o = offsetFor(t);
+            dx = o.dx; dy = o.dy; op = hidden ? 0 : o.op; bl = o.bl;
+          } else if (localMs <= holdEnd) {
+            op = 1; bl = 0;                     // fully visible during hold
+          } else {
+            // Hide phase — offset by same distance but on the opposite
+            // side (glyphs exit toward the SAME direction they arrived
+            // from, matching typical reveal/hide symmetry).
+            const hideStartAt = holdEnd + oIdx * staggerMs;
+            const t = clamp01((localMs - hideStartAt) / durMs);
+            const o = offsetFor(1 - t);
+            dx = o.dx; dy = o.dy; op = o.op; bl = o.bl;
+          }
+        }
+        for (const ts of groups[i]) {
+          // Additive on top of base (never overwrite base positions).
+          if (dx || dy) {
+            ts.setAttribute("dx", String(dx));
+            ts.setAttribute("dy", String(dy));
+          }
+          if (op < 1) ts.setAttribute("opacity", String(op));
+          if (bl > 0.1) ts.style.filter = `blur(${bl.toFixed(1)}px)`;
+          else if (ts.style.filter) ts.style.filter = "";
+        }
+      }
+    },
+
+    // v19.49: aliases so each user-visible key dispatches into the
+    // shared engine.  Direct-reference dispatch (not `this.directional`)
+    // because TEXT_FX_DOM[fxKey] is called as a standalone function
+    // from applyTextFxAtTime — `this` isn't bound.
+    revealFromLeft(l,c,p,s,t)   { return TEXT_FX_DOM.directional(l,c,p,s,t); },
+    revealFromRight(l,c,p,s,t)  { return TEXT_FX_DOM.directional(l,c,p,s,t); },
+    revealFromTop(l,c,p,s,t)    { return TEXT_FX_DOM.directional(l,c,p,s,t); },
+    revealFromBottom(l,c,p,s,t) { return TEXT_FX_DOM.directional(l,c,p,s,t); },
+    hideToLeft(l,c,p,s,t)       { return TEXT_FX_DOM.directional(l,c,p,s,t); },
+    hideToRight(l,c,p,s,t)      { return TEXT_FX_DOM.directional(l,c,p,s,t); },
+    hideToTop(l,c,p,s,t)        { return TEXT_FX_DOM.directional(l,c,p,s,t); },
+    hideToBottom(l,c,p,s,t)     { return TEXT_FX_DOM.directional(l,c,p,s,t); },
+    revealAndHide(l,c,p,s,t)    { return TEXT_FX_DOM.directional(l,c,p,s,t); },
+    lineByLineReveal(l,c,p,s,t) { return TEXT_FX_DOM.directional(l,c,p,s,t); },
+    directionalCascade(l,c,p,s,t){ return TEXT_FX_DOM.directional(l,c,p,s,t); },
+    motionBlurReveal(l,c,p,s,t) { return TEXT_FX_DOM.directional(l,c,p,s,t); },
+    directionalDissolve(l,c,p,s,t){ return TEXT_FX_DOM.directional(l,c,p,s,t); },
     charStagger(layer, clip, p, sig, sceneTime) {
       const P = clip.params || {};
       const tspans = _getGlyphTspans(layer);
@@ -2417,29 +2645,60 @@
       const sz = Math.max(60, Math.min(Math.max(W, H) - 40, P.shapeSize || 300));
       const offX = P.pathOffsetX || 0, offY = P.pathOffsetY || 0;
       const rot  = P.pathRotation || 0;
-      let d;
+      // v19.49 PATH MODE.
+      // single = draw the path traversed TWICE (a "double path") so a
+      //   single phrase always has runway ahead of its trailing edge
+      //   at every startOffset value.  Animation range is limited to
+      //   0..50% of the double path — one full revolution around the
+      //   original geometry.  The text never disappears at the seam.
+      // manual/auto = single-traversal path + repeated text (v19.48).
+      const mode = P.mode || "single";
+      const doubleTraverse = (mode === "single");
+      // Helper — visible geometry (single traversal).
+      let dHelper;
       if (source === "freehand" && P.freehandPath) {
-        // Freehand path stored as SVG `d` string (produced by the
-        // freehand drawing tool below).  Coords already in the layer's
-        // local space.
-        d = P.freehandPath;
+        dHelper = P.freehandPath;
       } else if (source === "circle") {
         const cx = W / 2, cy = H / 2;
         const r = sz / 2;
-        d = `M ${cx} ${cy - r} A ${r} ${r} 0 1 1 ${cx} ${cy + r} A ${r} ${r} 0 1 1 ${cx} ${cy - r} Z`;
+        dHelper = `M ${cx} ${cy - r} A ${r} ${r} 0 1 1 ${cx} ${cy + r} A ${r} ${r} 0 1 1 ${cx} ${cy - r} Z`;
       } else if (source === "rectangle") {
         const rw = sz, rh = sz * 0.6;
         const x = (W - rw) / 2, y = (H - rh) / 2;
-        d = `M ${x} ${y} H ${x + rw} V ${y + rh} H ${x} Z`;
+        dHelper = `M ${x} ${y} H ${x + rw} V ${y + rh} H ${x} Z`;
       } else if (source === "line") {
         const y = H / 2;
         const x0 = (W - sz) / 2;
-        d = `M ${x0} ${y} L ${x0 + sz} ${y}`;
+        dHelper = `M ${x0} ${y} L ${x0 + sz} ${y}`;
       } else {
-        // freehand with no path drawn yet — fallback to a small line
-        // so textPath has SOMETHING to render on.
         const y = H / 2;
-        d = `M 20 ${y} L ${W - 20} ${y}`;
+        dHelper = `M 20 ${y} L ${W - 20} ${y}`;
+      }
+      // textPath geometry — either single or double traversal.
+      let d;
+      if (doubleTraverse) {
+        if (source === "circle") {
+          const cx = W / 2, cy = H / 2;
+          const r = sz / 2;
+          // Two consecutive circle traversals sharing the same start
+          // point.  Total path length = 2 × circumference; startOffset
+          // 0..50% corresponds to one full circle of visual travel.
+          d = `M ${cx} ${cy - r} `
+            + `A ${r} ${r} 0 1 1 ${cx} ${cy + r} A ${r} ${r} 0 1 1 ${cx} ${cy - r} `
+            + `A ${r} ${r} 0 1 1 ${cx} ${cy + r} A ${r} ${r} 0 1 1 ${cx} ${cy - r}`;
+        } else if (source === "rectangle") {
+          const rw = sz, rh = sz * 0.6;
+          const x = (W - rw) / 2, y = (H - rh) / 2;
+          d = `M ${x} ${y} H ${x + rw} V ${y + rh} H ${x} V ${y} `
+            + `H ${x + rw} V ${y + rh} H ${x} V ${y}`;
+        } else {
+          // Line / freehand: doubling doesn't apply the same way.
+          // Fallback to the helper (single) — Single Phrase mode on
+          // an open path just means "don't repeat text".
+          d = dHelper;
+        }
+      } else {
+        d = dHelper;
       }
       pathEl.setAttribute("d", d);
       // Apply transform (offset + rotation + scale around layer center)
@@ -2465,7 +2724,7 @@
           helper.setAttribute("data-editor-helper", renderInExport ? "0" : "1");
           svg.appendChild(helper);
         }
-        helper.setAttribute("d", d);
+        helper.setAttribute("d", dHelper);
         helper.setAttribute("transform", gTransform);
         helper.setAttribute("stroke", P.pathStroke || "#7A5CFF");
         // v19.45: pathThickness controls the visible stroke width.
@@ -2495,39 +2754,29 @@
         while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
         return;
       }
-      // v19.48 REPEAT TEXT for continuous 360° loop.
-      // When a phrase is shorter than the path, animating startOffset
-      // makes the trailing edge run off the path end and the leading
-      // edge (mod 100%) wrap — but SVG textPath does NOT wrap on a
-      // closed path.  Instead we build the textPath content as the
-      // phrase repeated N times separated by `gap` spaces, so the
-      // rendered length always exceeds the path length.  Result: the
-      // "next" copy of the phrase is already positioned at the point
-      // where the "previous" copy runs off — animation looks like a
-      // seamless orbit around the closed path.
+      // v19.49 BUILD TEXT CONTENT PER MODE.
       const gapChars = Math.max(0, P.gapChars ?? 3);
       const separator = " ".repeat(gapChars);
-      let phraseCount;
-      if (P.repeatText && P.repeatText !== "auto") {
-        phraseCount = Math.max(1, parseInt(P.repeatText, 10) || 1);
+      let combined;
+      if (mode === "single") {
+        // Single phrase — no repeats.  On a double-traversed closed
+        // path this still orbits seamlessly because the phrase has
+        // continuous path underneath it as it moves.
+        combined = sourceText;
+      } else if (mode === "manual") {
+        const n = Math.max(1, parseInt(P.repeatText || "3", 10) || 3);
+        combined = new Array(n).fill(sourceText).join(separator) + separator;
       } else {
-        // Auto: measure path length + approximate text width and pick
-        // enough copies so text length ≥ path length + one phrase.
+        // auto — fill path
         let pathLen = 0;
         try { pathLen = pathEl.getTotalLength() * scaleFactor; } catch (e) {}
-        // Rough text width per char: 0.55 * fontSize.  Good enough
-        // for "make sure we always overflow" — cheap and deterministic.
         const fs = (layer.textStyle && layer.textStyle.fontSize) || 96;
         const perChar = fs * 0.55;
         const phraseW = Math.max(perChar, sourceText.length * perChar + gapChars * perChar);
-        phraseCount = Math.max(2, Math.ceil((pathLen + phraseW) / phraseW));
-        // Cap at a reasonable maximum so an accidental tiny gap doesn't
-        // create thousands of copies.
-        phraseCount = Math.min(20, phraseCount);
+        let n = Math.max(2, Math.ceil((pathLen + phraseW) / phraseW));
+        n = Math.min(20, n);
+        combined = new Array(n).fill(sourceText).join(separator) + separator;
       }
-      // Build combined content.  Trailing separator so the last copy
-      // still has spacing before the loop wraps back to the first.
-      const combined = new Array(phraseCount).fill(sourceText).join(separator) + separator;
 
       // Rebuild children: <text> now contains ONE <textPath>.
       while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
@@ -2535,16 +2784,29 @@
       tp.setAttribute("href", "#" + pathId);
       // v19.48 CONTINUOUS OFFSET.
       // animateOffset is in %/sec (path length percent per second).
-      // direction (cw/ccw) flips the sign — separate from `reverse`
-      // (which swaps which SIDE of the path the text is on).
-      // Modulo 100 % 100 handles negative correctly: JS `%` is
-      // remainder, so `-30 % 100 = -30`; add 100 first.
+      // direction (cw/ccw) flips the sign.
+      // v19.49: in Single Phrase mode, path is doubled — we halve the
+      // effective startOffset so 0..50% covers one full visual loop
+      // (matches the user's intuition that 1 %-second = 1 % of one
+      // full revolution).  So multiply user-facing speed by 0.5 when
+      // doubleTraverse and mod by 50 % of path length instead of 100.
       const animSpeed = P.animateOffset || 0;
       const baseOffset = P.startOffset || 0;
       const dir = (P.direction === "ccw") ? -1 : 1;
       let dyn = baseOffset + dir * animSpeed * sceneTime;
-      dyn = ((dyn % 100) + 100) % 100;
-      tp.setAttribute("startOffset", dyn.toFixed(3) + "%");
+      const wrapMax = doubleTraverse ? 50 : 100;
+      // Halve the offset scale in single mode so user-visible "50%" =
+      // half the path visually.  In double-path terms, 0..50% covers
+      // the first traversal, but visual meaning matches user intuition.
+      const displayed = doubleTraverse ? (((dyn % wrapMax) + wrapMax) % wrapMax) * 0.5 : (((dyn % 100) + 100) % 100);
+      // Actually: since path is 2× circumference, startOffset in path
+      // space needs to be a percentage of TOTAL path length.  For a
+      // full visual revolution: 0 → 50% of path.  So the raw dyn (in
+      // user-facing 0..100) maps to (dyn × 0.5)% in single mode.
+      const actualPct = doubleTraverse
+        ? (((dyn % 100) + 100) % 100) * 0.5   // 0..100 user → 0..50 path
+        : (((dyn % 100) + 100) % 100);
+      tp.setAttribute("startOffset", actualPct.toFixed(3) + "%");
       tp.setAttribute("side", (P.reverse === "yes") ? "right" : "left");
       const alignMap = { start: "start", middle: "middle", end: "end" };
       tp.setAttribute("text-anchor", alignMap[P.align] || "start");
@@ -3326,9 +3588,10 @@
         if (ts.hasAttribute("dy")) ts.removeAttribute("dy");
         if (ts.hasAttribute("opacity")) ts.removeAttribute("opacity");
         // Also clear inline style effects that Word Stomp / Variable
-        // Font Pulse may have written last frame.
+        // Font Pulse / Directional (blur) may have written last frame.
         if (ts.style.opacity) ts.style.opacity = "";
         if (ts.style.transform) ts.style.transform = "";
+        if (ts.style.filter) ts.style.filter = "";
       }
     }
     for (const { c, p } of domMutClips) {
@@ -3439,29 +3702,40 @@
     // baseline height, but positioned AFTER the last glyph, not under it.
     const color = layer.textStyle.color || "#FFFFFF";
     overlay.setAttribute("fill", color);
-    // Add a visual gap between the last char and the cursor.
-    const gap = Math.max(2, charW * 0.15);
+    // v19.49 CURSOR STYLING per user spec.
+    // Cursor gap: a soft space between last glyph and the caret so
+    // "detroit _" reads as a typewriter caret rather than sitting on
+    // top of the final glyph.
+    const fsz = layer.textStyle.fontSize || 96;
+    const lineH = fsz * (layer.textStyle.lineHeight || 1.2);
+    const gap = Math.max(2, fsz * 0.12);
     const cxWithGap = cx + gap;
     if (st.style === "underscore") {
-      const uw = Math.max(charW * 0.85, 8);
-      const uh = Math.max(charH * 0.08, 3);
-      overlay.setAttribute("x", cxWithGap.toFixed(1));                 // LEFT edge, after glyph
-      overlay.setAttribute("y", (cy + charH - uh).toFixed(1));         // baseline
+      // Underscore = thin horizontal line similar to the font's hyphen.
+      const uw = Math.max(fsz * 0.5, 8);
+      const uh = Math.max(fsz * 0.06, 2);
+      const baselineY = cy + charH * 0.98;
+      overlay.setAttribute("x", cxWithGap.toFixed(1));
+      overlay.setAttribute("y", baselineY.toFixed(1));
       overlay.setAttribute("width", uw.toFixed(1));
       overlay.setAttribute("height", uh.toFixed(1));
     } else if (st.style === "block") {
-      const bw = charW;
+      // Block = solid rectangle whose height matches the cap height
+      // (never exceeds line height).  Width ~ 0.55 em.
+      const bw = Math.max(fsz * 0.55, 8);
+      const bh = Math.min(charH, lineH);
       overlay.setAttribute("x", cxWithGap.toFixed(1));
       overlay.setAttribute("y", cy.toFixed(1));
       overlay.setAttribute("width", bw.toFixed(1));
-      overlay.setAttribute("height", charH.toFixed(1));
+      overlay.setAttribute("height", bh.toFixed(1));
     } else {
-      // bar (default fallback) — thin vertical line AFTER last glyph
-      const bw = Math.max(charH * 0.06, 2);
+      // Bar = thin vertical line matching the glyph height.
+      const bw = Math.max(fsz * 0.08, 2);
+      const bh = charH;
       overlay.setAttribute("x", cxWithGap.toFixed(1));
       overlay.setAttribute("y", cy.toFixed(1));
       overlay.setAttribute("width", bw.toFixed(1));
-      overlay.setAttribute("height", charH.toFixed(1));
+      overlay.setAttribute("height", bh.toFixed(1));
     }
   }
 
@@ -6690,6 +6964,20 @@
     characterSpring()   { return {}; },
     wordStomp()         { return {}; },
     cascadeAssemble()   { return {}; },
+    // v19.49 directional-family stubs (mutation in applyTextFxAtTime).
+    revealFromLeft()    { return {}; },
+    revealFromRight()   { return {}; },
+    revealFromTop()     { return {}; },
+    revealFromBottom()  { return {}; },
+    hideToLeft()        { return {}; },
+    hideToRight()       { return {}; },
+    hideToTop()         { return {}; },
+    hideToBottom()      { return {}; },
+    revealAndHide()     { return {}; },
+    lineByLineReveal()  { return {}; },
+    directionalCascade(){ return {}; },
+    motionBlurReveal()  { return {}; },
+    directionalDissolve(){ return {}; },
     // v19.43 event-style physics — Elastic Stretch & Snap.
     elasticStretch(p, sig, params) {
       const P = params || {};
