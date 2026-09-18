@@ -1882,24 +1882,50 @@
       textEl.appendChild(tspan);
     });
     layer.node.appendChild(textEl);
-    // v19.46 MULTI-LINE GLYPH SPLIT.  Previously only single-line text
-    // was split into per-character tspans (blocking char-level effects
-    // on multi-line text).  Now every line gets its own row of
-    // data-glyph tspans laid out with x + dy so downstream effects
-    // (Character Stagger, Sine Wave, Character Spring, etc.) see the
-    // full glyph list.
+    // v19.47 STRUCTURAL LAYOUT PASS.  Every glyph gets an ABSOLUTE
+    // (x, y) so line advance is baked into the initial layout and
+    // effects that write to dx/dy can never destroy line spacing.
+    // Base positions are cached on the tspan (_baseX/_baseY) so
+    // effects can offset from them without losing the original.
     textEl.textContent = "";
     lines.forEach((line, i) => {
-      // Anchor tspan for each line's x position and vertical advance
+      const lineBaselineY = firstBaselineY + i * lineH;
       const chars = [...(line || " ")];
+      // Measure per-glyph x offsets for THIS line so each glyph carries
+      // its absolute anchor.  Using a canvas measurement avoids relying
+      // on natural tspan advance (which we want to disable so dx can be
+      // a pure offset from base).
+      _textMeasureCtx.font = `${s.fontWeight} ${s.fontSize}px "${s.fontFamily}", ${TEXT_FONT_STACK}`;
+      // Compute the line's total width including letter-spacing, then
+      // its origin X depending on alignment.
+      const spacingPx = (s.letterSpacing || 0) * s.fontSize;
+      let cumX = 0;
+      const glyphOffsets = new Array(chars.length);
+      for (let k = 0; k < chars.length; k++) {
+        glyphOffsets[k] = cumX;
+        cumX += _textMeasureCtx.measureText(chars[k] || " ").width + spacingPx;
+      }
+      const lineTotalW = Math.max(0, cumX - spacingPx);
+      let lineOriginX;
+      if (s.align === "start")      lineOriginX = padX;
+      else if (s.align === "end")   lineOriginX = W - padX - lineTotalW;
+      else                          lineOriginX = (W - lineTotalW) / 2;
       chars.forEach((ch, k) => {
         const g = document.createElementNS(svgNS, "tspan");
         g.setAttribute("data-glyph", "1");
         g.setAttribute("data-line", String(i));
-        if (k === 0) {
-          g.setAttribute("x", String(anchorX));
-          if (i > 0) g.setAttribute("dy", String(lineH));
-        }
+        const gx = lineOriginX + glyphOffsets[k];
+        // ABSOLUTE per-glyph anchor.  Setting BOTH x and y on every
+        // tspan means it becomes its own positioned character in SVG
+        // spec terms — dx/dy then apply purely as offsets, never
+        // destroying line advance.
+        g.setAttribute("x", String(gx));
+        g.setAttribute("y", String(lineBaselineY));
+        // Cache base positions for effects
+        g._baseX = gx;
+        g._baseY = lineBaselineY;
+        g._baseDx = 0;
+        g._baseDy = 0;
         g.textContent = ch;
         textEl.appendChild(g);
       });
@@ -2971,6 +2997,125 @@
      Runs all active text-affecting clips (including persist-past-end
      ones for reveal-style effects).  Rebuilds SVG only when the
      composed display string changes, then applies DOM mutators. */
+  /* v19.47 helper — apply a display string to the layer's existing
+     glyph tspans WITHOUT rebuilding the SVG.  Keeps natW/natH,
+     viewBox and wrap size 100% stable across every effect frame.
+     Cases handled:
+      - display === original  → show all glyphs
+      - display shorter, is a prefix of original → show first N, hide the rest
+      - display same length as original → replace .textContent per glyph
+      - display longer or non-prefix       → extend the glyph pool by
+        adding tail tspans in the same textEl (so viewBox is unaffected
+        even though content is wider); layer.frameOverflow=visible
+        prevents any clipping.  Original glyph slots keep their
+        _baseX/_baseY so effects still animate over the original grid.
+     A stale glyph pool (from a previous longer display) is trimmed by
+     hiding trailing glyphs; we never delete tspans mid-effect because
+     that would invalidate cached _baseX/_baseY. */
+  function _applyDisplayToGlyphs(layer, original, display) {
+    if (!layer || !layer.node) return;
+    const textEl = layer.node.querySelector("text");
+    if (!textEl) return;
+    const glyphs = Array.from(textEl.querySelectorAll('tspan[data-glyph="1"]'));
+    if (!glyphs.length) return;
+    const originalGlyphs = glyphs.filter(g => g._baseX != null);
+    // If the display string is identical to the original text, restore
+    // every glyph to its base state.
+    if (display === original) {
+      for (const g of originalGlyphs) {
+        g.textContent = g._origChar != null ? g._origChar : g.textContent;
+        g.style.visibility = "";
+      }
+      // Remove any tail glyphs we may have added for extended-length
+      // displays (Counter/Odometer, etc.) — they don't belong to the
+      // original text.
+      const tail = glyphs.filter(g => g._baseX == null);
+      for (const t of tail) t.remove();
+      return;
+    }
+    // Remember original char for each glyph the first time we mutate it.
+    for (const g of originalGlyphs) {
+      if (g._origChar == null) g._origChar = g.textContent;
+    }
+    const dispChars = [...display];
+    const origChars = [...original];
+    // Case A: display is prefix of original — reveal-style effects
+    // (Bulk Typing).  Show first dispChars.length glyphs, hide rest.
+    let isPrefix = dispChars.length <= origChars.length;
+    if (isPrefix) {
+      for (let i = 0; i < dispChars.length; i++) {
+        if (dispChars[i] !== origChars[i]) { isPrefix = false; break; }
+      }
+    }
+    if (isPrefix) {
+      for (let i = 0; i < originalGlyphs.length; i++) {
+        const g = originalGlyphs[i];
+        g.textContent = g._origChar;
+        g.style.visibility = (i < dispChars.length) ? "" : "hidden";
+      }
+      // Trim tail glyphs
+      const tail = glyphs.filter(g => g._baseX == null);
+      for (const t of tail) t.remove();
+      return;
+    }
+    // Case B: same length, character replacement (Scramble).  Mutate
+    // textContent of each glyph in place.
+    if (dispChars.length === origChars.length) {
+      for (let i = 0; i < originalGlyphs.length; i++) {
+        originalGlyphs[i].textContent = dispChars[i];
+        originalGlyphs[i].style.visibility = "";
+      }
+      const tail = glyphs.filter(g => g._baseX == null);
+      for (const t of tail) t.remove();
+      return;
+    }
+    // Case C: length changed and not a prefix (Counter/Odometer, etc).
+    // Rewrite the tspans' textContent up to the shorter of the two
+    // pools and grow/shrink the tail as needed WITHOUT touching the
+    // original slots' _baseX/_baseY.  Tail glyphs are laid out
+    // relative to the last original glyph's baseline so multi-line
+    // Counter/Odometer stays vertically aligned.
+    const NS = "http://www.w3.org/2000/svg";
+    // Mutate/hide original slots
+    for (let i = 0; i < originalGlyphs.length; i++) {
+      if (i < dispChars.length) {
+        originalGlyphs[i].textContent = dispChars[i];
+        originalGlyphs[i].style.visibility = "";
+      } else {
+        originalGlyphs[i].textContent = originalGlyphs[i]._origChar;
+        originalGlyphs[i].style.visibility = "hidden";
+      }
+    }
+    // Manage tail: current tail count = glyphs.length - originalGlyphs.length
+    const currentTail = glyphs.filter(g => g._baseX == null);
+    const neededTail = Math.max(0, dispChars.length - originalGlyphs.length);
+    // Remove extras
+    for (let i = currentTail.length - 1; i >= neededTail; i--) currentTail[i].remove();
+    // Add missing — laid out on the last original glyph's baseline with
+    // natural glyph advance (no absolute x, so SVG advances them).
+    if (neededTail > currentTail.length) {
+      // Anchor for the first tail glyph: end of last visible original glyph.
+      const lastOrig = originalGlyphs[originalGlyphs.length - 1];
+      for (let i = currentTail.length; i < neededTail; i++) {
+        const g = document.createElementNS(NS, "tspan");
+        g.setAttribute("data-glyph", "1");
+        g.setAttribute("data-tail", "1");
+        // Only the first tail glyph anchors after last original; rest
+        // advance naturally.
+        if (i === 0 && lastOrig) g.setAttribute("y", lastOrig._baseY);
+        textEl.appendChild(g);
+      }
+    }
+    // Fill tail contents from display[originalGlyphs.length..]
+    const freshTail = Array.from(textEl.querySelectorAll('tspan[data-tail="1"]'));
+    for (let i = 0; i < freshTail.length; i++) {
+      const idx = originalGlyphs.length + i;
+      freshTail[i].textContent = dispChars[idx] || "";
+      freshTail[i].style.visibility = "";
+    }
+  }
+
+
   function applyTextFxAtTime(layer, sceneTime, sig) {
     if (!layer || layer.kind !== "TEXT") return;
     const activeAll = activeEventClipsAt(layer, sceneTime);
@@ -2995,24 +3140,49 @@
       const fn = TEXT_FX_STRING[c.fxKey];
       try { display = fn(layer, c, p, sig, sceneTime, display); } catch (e) {}
     }
-    // 2. Rebuild SVG only if display string differs from what's currently rendered.
-    if (display !== (layer._lastDisplayedText ?? original) || (!strMutClips.length && layer._lastDisplayedText != null && layer._lastDisplayedText !== original)) {
-      const backup = layer.textStyle.text;
-      // Temporarily swap in the display text so buildTextLayerSVG uses it.
-      layer.textStyle.text = display;
-      buildTextLayerSVG(layer);
-      layer.textStyle.text = backup;
-      layer._lastDisplayedText = display;
-    }
-    // 3. Apply DOM mutators (position/opacity/textPath).
-    // Reset dx/dy attributes on all glyph tspans first so mutators
-    // compose from a clean base each frame.
+    // v19.47 APPLY DISPLAY WITHOUT REBUILD.
+    //
+    // Previous behavior called buildTextLayerSVG(layer) each frame the
+    // display string changed.  buildTextLayerSVG re-measures the text
+    // — natW/natH shrink for short mid-typing strings like "H",
+    // "He", "Hel"… — and since the wrap's on-screen size is fixed
+    // (via transform.wPct/hPct), the SVG's `preserveAspectRatio: meet`
+    // scaled the smaller viewBox UP inside the wrap, growing "H" to
+    // several times its original size.  Users saw text "shrinking"
+    // (relative to the completed frame) or "ballooning" (relative to
+    // the starting frame).  Multi-line effects also lost line advance
+    // because rebuild regenerated tspans from scratch.
+    //
+    // v19.47 rule: NEVER call buildTextLayerSVG in the effect path.
+    // Structural layout is owned by buildTextLayerSVG at layer create
+    // and on user-driven textStyle changes only.  Here we apply the
+    // display string as a glyph-level mutation of the ORIGINAL layout:
+    //   - display === original   → show every glyph, no text change
+    //   - display is a prefix    → hide (visibility:hidden) glyphs beyond len
+    //   - same length, char swap → mutate each glyph's textContent
+    //   - different length + non-prefix (Counter/Odometer): also
+    //     mutate textContent per glyph, allow overflow via
+    //     frameOverflow="visible" (viewBox stays original)
+    // In every case: viewBox, natW, natH, wrap size — completely stable.
+    _applyDisplayToGlyphs(layer, original, display);
+    layer._lastDisplayedText = display;
+    // 3. Apply DOM mutators (position/opacity/textPath).  Reset each
+    // glyph tspan back to its BASE (x, y, no dx/dy, opacity=1) before
+    // running mutators so each frame composes from the original
+    // layout — critical for multi-line where dy could otherwise
+    // accumulate and collapse lines.
     if (domMutClips.length || textPathClips.length) {
       const tspans = _getGlyphTspans(layer);
       for (const ts of tspans) {
+        if (ts._baseX != null) ts.setAttribute("x", String(ts._baseX));
+        if (ts._baseY != null) ts.setAttribute("y", String(ts._baseY));
         if (ts.hasAttribute("dx")) ts.removeAttribute("dx");
-        if (ts.hasAttribute("dy") && !ts.getAttribute("dy").match(/^\d/)) ts.removeAttribute("dy");
+        if (ts.hasAttribute("dy")) ts.removeAttribute("dy");
         if (ts.hasAttribute("opacity")) ts.removeAttribute("opacity");
+        // Also clear inline style effects that Word Stomp / Variable
+        // Font Pulse may have written last frame.
+        if (ts.style.opacity) ts.style.opacity = "";
+        if (ts.style.transform) ts.style.transform = "";
       }
     }
     for (const { c, p } of domMutClips) {
@@ -14476,7 +14646,7 @@
     requestAnimationFrame(() => fitZoom());
     setTimeout(() => { fitZoom(); renderTimeline(); }, 120);
     // Test hook: expose internals for automated verification (harmless in production).
-    window.__phaserDebug = Object.assign(window.__phaserDebug || {}, { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, FX_EVENT_DEF, fxSupportsLayer, applyTextFxAtTime, applyWeirdSlicesOnText, applyWeirdSlicesOnLayer, TEXT_FX_STRING, TEXT_FX_DOM, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, paintWebCodecsLayersForExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath, runSvgRepair, collectSvgRepairOps, releaseClipPaths, removeMasks, convertShapesToPaths, audio: () => audio });
+    window.__phaserDebug = Object.assign(window.__phaserDebug || {}, { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, FX_EVENT_DEF, fxSupportsLayer, applyTextFxAtTime, applyWeirdSlicesOnText, applyWeirdSlicesOnLayer, TEXT_FX_STRING, TEXT_FX_DOM, buildTextLayerSVG, updateTextLayer, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, paintWebCodecsLayersForExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath, runSvgRepair, collectSvgRepairOps, releaseClipPaths, removeMasks, convertShapesToPaths, audio: () => audio });
   }
   document.addEventListener("DOMContentLoaded", init);
 })();
