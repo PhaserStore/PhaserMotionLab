@@ -584,6 +584,40 @@
       category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", sustained: true, persistEnd: true,
       _mirror: true, _mirrorDefaults: { mirrorMode: "fourWay" }, paramDefs: null },
 
+    // === v19.54 WEIGHT TRAIL REVEAL ===
+    // Progressive character reveal with a moving face-weight sequence:
+    // the newest character wears the leading face (Bold Italic), the
+    // previous character wears the next face (Bold), and so on, with
+    // older characters settling to the trailing face (Regular).
+    //
+    // Uses REAL font faces registered with document.fonts.  Detects
+    // available faces in the selected family via document.fonts.check()
+    // and skips unavailable steps rather than synthesizing missing
+    // faces (no browser fake-bold, no fake-italic).  For variable
+    // fonts, uses font-variation-settings on `wght`/`ital`/`slnt`.
+    //
+    // Face sequence is CSV of "weight[:style]" pairs, newest first:
+    //   default: "700:italic, 700, 500, 400"
+    // Runtime resolves each entry against the family's real faces;
+    // missing faces are skipped in-order.
+    { key: "weightTrailReveal", label: "Weight Trail Reveal", defDur: 2.00, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", persistEnd: true,
+      paramDefs: [
+        { key: "sequence",    label: "Face Sequence (csv, newest first)", type: "text",
+          default: "700:italic, 700, 500, 400" },
+        { key: "revealDirection",  label: "Reveal Direction", type: "select",
+          options: ["forward","reverse"], default: "forward" },
+        { key: "propagation", label: "Propagation Direction", type: "select",
+          options: ["forward","reverse"], default: "forward" },
+        { key: "charDelay",   label: "Character Delay (ms)", type: "range", min: 20, max: 500, step: 10, default: 90 },
+        { key: "faceHold",    label: "Face Hold (ms)",       type: "range", min: 0, max: 500, step: 10, default: 0 },
+        { key: "transition",  label: "Transition (ms)",      type: "range", min: 0, max: 500, step: 10, default: 60 },
+        { key: "easing",      label: "Easing",               type: "select", options: ["easeOut","easeIn","easeInOut","linear"], default: "easeOut" },
+        { key: "cursor",      label: "Cursor",               type: "select", options: ["none","underscore","bar","block"], default: "underscore" },
+        { key: "loop",        label: "Loop",                 type: "select", options: ["no","yes"], default: "no" },
+        { key: "pingPong",    label: "Ping-Pong",            type: "select", options: ["no","yes"], default: "no" },
+      ] },
+
     // === v19.50 TEXT PATTERN / REPEATER ===
     // Non-destructive layer-scoped pattern.  Instances the layer's
     // animated text via SVG <use> so a single source's DOM mutations
@@ -2417,6 +2451,51 @@
       return _joinUnits(out, target);
     },
 
+    // v19.54 WEIGHT TRAIL REVEAL — string mutator.  Drives progressive
+    // character reveal (like Bulk Typing).  The per-glyph weight/style
+    // is applied by the matching DOM mutator (see TEXT_FX_DOM).
+    weightTrailReveal(layer, clip, p, sig, sceneTime, inputText) {
+      const P = clip.params || {};
+      const src = String(inputText || "");
+      if (!src.length) return "";
+      const charDelay = Math.max(20, P.charDelay || 90);
+      const localT = Math.max(0, sceneTime - (layer.start + clip.start));
+      // Normalize local time via loop / ping-pong.
+      const oneCycleMs = src.length * charDelay + 200;
+      let normMs = localT * 1000;
+      if (P.pingPong === "yes") {
+        const cycle = oneCycleMs * 2;
+        const t = normMs % cycle;
+        normMs = t <= oneCycleMs ? t : (cycle - t);
+      } else if (P.loop === "yes") {
+        normMs = normMs % oneCycleMs;
+      }
+      let visibleChars = Math.floor(normMs / charDelay);
+      visibleChars = Math.max(0, Math.min(visibleChars, src.length));
+      // Reveal Direction reverse → visible chars come from the END.
+      let display;
+      if (P.revealDirection === "reverse") {
+        // Show LAST visibleChars — from right to left.
+        display = src.slice(src.length - visibleChars);
+      } else {
+        display = src.slice(0, visibleChars);
+      }
+      // Stash trail state for the DOM mutator to consume.
+      layer._weightTrail = {
+        visibleChars, totalChars: src.length,
+        revealDirection: P.revealDirection || "forward",
+        propagation: P.propagation || "forward",
+      };
+      // Optional cursor via existing mechanism.
+      const cursor = P.cursor || "none";
+      if (cursor !== "none" && p < 1.02) {
+        layer._typingCursor = { style: cursor, visible: true, charIndex: display.length, blinkHz: 0 };
+      } else if (layer._typingCursor && !layer.clips.some(c => c.fxKey === "bulkTyping")) {
+        layer._typingCursor = null;
+      }
+      return display;
+    },
+
     bulkTyping(layer, clip, p, sig, sceneTime, inputText) {
       const P = clip.params || {};
       const src = String(inputText);
@@ -2731,6 +2810,77 @@
     directionalCascade(l,c,p,s,t){ return TEXT_FX_DOM.directional(l,c,p,s,t); },
     motionBlurReveal(l,c,p,s,t) { return TEXT_FX_DOM.directional(l,c,p,s,t); },
     directionalDissolve(l,c,p,s,t){ return TEXT_FX_DOM.directional(l,c,p,s,t); },
+
+    // === v19.54 WEIGHT TRAIL REVEAL DOM MUTATOR ===
+    // Applies REAL font faces to individual glyphs based on the trail
+    // sequence.  Detects available faces via document.fonts.check()
+    // and skips missing ones — no synthesized bold/italic.
+    weightTrailReveal(layer, clip, p, sig, sceneTime) {
+      const P = clip.params || {};
+      const tspans = _getGlyphTspans(layer);
+      if (!tspans.length) return;
+      const trail = layer._weightTrail;
+      if (!trail) return;
+      // Parse the face sequence "weight[:style]" tokens, newest first.
+      const seqStr = P.sequence || "700:italic, 700, 500, 400";
+      const requested = seqStr.split(",").map(s => s.trim()).filter(Boolean).map(tok => {
+        const [w, st] = tok.split(":").map(x => x.trim());
+        return { weight: w || "400", style: st || "normal" };
+      });
+      // Filter to REAL available faces.  document.fonts.check() returns
+      // true only when a matching face is actually registered (never
+      // synthesizes).  Include the primary family + our stack fallback
+      // so variable fonts and system faces both pass.
+      const fam = layer.textStyle && layer.textStyle.fontFamily || "Inter";
+      const fontSize = layer.textStyle && layer.textStyle.fontSize || 40;
+      const available = requested.filter(f => {
+        const spec = `${f.style} ${f.weight} ${fontSize}px "${fam}"`;
+        try { return document.fonts.check(spec); } catch (e) { return false; }
+      });
+      // Fallback: if no requested face is available, force a single
+      // Regular so text still renders.
+      const seq = available.length ? available : [{ weight: "400", style: "normal" }];
+      const settled = seq[seq.length - 1];
+      // Determine per-visible-glyph face.  Newest visible char at
+      // sequence position 0 (Bold Italic), previous at position 1, etc.
+      // If revealDirection is reverse, the "newest" is the leftmost
+      // visible char (visible chars appear from the end).
+      // If propagation is reverse, index runs the other way.
+      const N = trail.visibleChars;
+      // Compute the index positions for the trail head:
+      //  - revealDirection forward: newest is index (N-1); older is 0.
+      //  - revealDirection reverse: newest is (totalChars - N); older
+      //    is (totalChars - 1) i.e. the end.
+      // Propagation is a mirror of that.
+      const isForward = trail.revealDirection === "forward";
+      const propForward = trail.propagation === "forward";
+      // Apply per glyph.
+      for (let i = 0; i < tspans.length; i++) {
+        const ts = tspans[i];
+        // Is this glyph visible?
+        const visible = isForward ? (i < N) : (i >= tspans.length - N);
+        if (!visible) {
+          // Hidden by string mutator via visibility attribute already;
+          // reset any weight/style overrides we set previously.
+          if (ts.hasAttribute("font-weight")) ts.removeAttribute("font-weight");
+          if (ts.hasAttribute("font-style"))  ts.removeAttribute("font-style");
+          continue;
+        }
+        // Compute sequence position: distance from the "newest" visible glyph.
+        let dist;
+        if (isForward) {
+          // Newest = last visible = index (N-1) offset from start.
+          dist = propForward ? (N - 1 - i) : i;
+        } else {
+          // Newest = first visible = index (totalChars - N)
+          const firstVisible = tspans.length - N;
+          dist = propForward ? (i - firstVisible) : (tspans.length - 1 - i);
+        }
+        const face = seq[Math.min(dist, seq.length - 1)] || settled;
+        ts.setAttribute("font-weight", face.weight);
+        ts.setAttribute("font-style", face.style);
+      }
+    },
 
     // === v19.53 CONTRACTION / SHRINK ENGINE ===
     // Animates each grouped unit (char/word/line/block) from
@@ -4007,6 +4157,9 @@
         if (ts.hasAttribute("opacity")) ts.removeAttribute("opacity");
         // v19.53: contraction / shrink write a per-glyph SVG transform.
         if (ts.hasAttribute("transform")) ts.removeAttribute("transform");
+        // v19.54: weight trail writes font-weight / font-style per glyph.
+        if (ts.hasAttribute("font-weight")) ts.removeAttribute("font-weight");
+        if (ts.hasAttribute("font-style"))  ts.removeAttribute("font-style");
         // Also clear inline style effects that Word Stomp / Variable
         // Font Pulse / Directional (blur) may have written last frame.
         if (ts.style.opacity) ts.style.opacity = "";
@@ -5820,6 +5973,12 @@
         setIf(el.textLineHeight, s.lineHeight || 1.2);
         // v19.44: Slashed Zero toggle sync
         if (el.textSlashedZero) el.textSlashedZero.checked = !!s.slashedZero;
+        // v19.54: sync Zero Style dropdown from layer state.
+        const zd = document.getElementById("textZeroStyle");
+        if (zd) zd.value = s.slashedZero ? "slashed" : "default";
+        if (typeof window.__updateZeroSupportNote === "function") {
+          setTimeout(window.__updateZeroSupportNote, 0);
+        }
         // v19.46: Frame Overflow sync
         if (el.textFrameOverflow) el.textFrameOverflow.value = (s.frameOverflow === "clip") ? "clip" : "visible";
         // v19.50 frame numeric + auto toggles
@@ -7790,6 +7949,7 @@
     directionalCascade(){ return {}; },
     motionBlurReveal()  { return {}; },
     directionalDissolve(){ return {}; },
+    weightTrailReveal(){ return {}; },   // v19.54 stub — mutation runs in applyTextFxAtTime
     // v19.53 contraction + mirror family stubs (mutation in applyTextFxAtTime).
     contractionBuild(){ return {}; },
     collapseIn(){ return {}; },
@@ -13945,19 +14105,139 @@
       elmt.addEventListener("change", handler);
     }
     wireTextInput(el.textContent, (n) => ({ text: n.value || " " }));
-    wireTextInput(el.textFontFamily, (n) => ({ fontFamily: n.value }));
-    // v19.53 FONT UPLOAD.
+    // v19.54 FONT CHANGE STABILITY.
     //
-    // Reads user-selected TTF/OTF/WOFF/WOFF2 files, creates a FontFace
-    // per file with the file's basename as the family name, loads it,
-    // registers with document.fonts so all SVG text elements (and
-    // Pattern clones + Mirror clones + Text-on-Path) can render with
-    // it.  Registered families are added to the Font dropdown under
-    // "Project (Uploaded)".  Persists in memory only — export
-    // includes any active layer's rendered text via the normal SVG
-    // pipeline, so exported files show the uploaded font correctly
-    // as long as the browser has it registered when export runs.
-    const uploadedFontNames = new Set();
+    // Root cause of "rendering errors when switching fonts": setting
+    // fontFamily immediately triggered buildTextLayerSVG before the
+    // browser had loaded the requested font.  Canvas measurement fell
+    // back to a system default, layouts were computed against wrong
+    // metrics, and once the real font arrived asynchronously the
+    // glyphs no longer matched the cached positions.
+    //
+    // Fix: await document.fonts.load() for the target family before
+    // rebuilding.  Then rebuild ONCE, which recalculates wrapping,
+    // line widths, and glyph X/Y under stable metrics.  Effects and
+    // Pattern re-render on the next paint using the settled layout.
+    const _requestFontChange = async (patch) => {
+      if (!selectedLayer || selectedLayer.kind !== "TEXT") return;
+      // If patch changes the family, wait for it to load first.
+      if (patch.fontFamily) {
+        try {
+          // Match the same specifier we use when building — includes
+          // fallback stack, but load only requires the primary family.
+          const size = selectedLayer.textStyle.fontSize || 96;
+          const weight = selectedLayer.textStyle.fontWeight || 400;
+          await document.fonts.load(`${weight} ${size}px "${patch.fontFamily}"`);
+        } catch (e) { /* fonts.load rejects on invalid family — proceed */ }
+      }
+      updateTextLayer(selectedLayer, patch);
+      paintIfPaused();
+    };
+    if (el.textFontFamily) {
+      el.textFontFamily.addEventListener("change", () => {
+        _requestFontChange({ fontFamily: el.textFontFamily.value });
+      });
+    }
+    // v19.54 FONT UPLOAD with real metadata parsing.
+    //
+    // Reads user-selected TTF/OTF/WOFF/WOFF2 files.  Parses the OpenType
+    // 'name' table (TrueType/OpenType format) to extract the REAL font
+    // family name and subfamily (Regular/Bold/Italic/Bold Italic/etc.)
+    // stored in the font itself — not guessed from filename.
+    //
+    // Multiple files with the SAME name-table family are registered
+    // as one family with distinct FontFace weight/style descriptors,
+    // so browser picks the correct real face for a given weight+style
+    // combo (never synthesizes).  Font dropdown shows one entry per
+    // family; subfamilies appear as available weights in the Weight
+    // control (already handles numeric weights) and italic toggle.
+    //
+    // Format table:
+    //   Regular      → 400 / normal
+    //   Medium       → 500 / normal
+    //   Semibold     → 600 / normal
+    //   Bold         → 700 / normal
+    //   Italic       → 400 / italic
+    //   Bold Italic  → 700 / italic
+    //   Black        → 900 / normal
+    //   etc.
+    const uploadedFontFamilies = new Map();   // family → { faces: [{weight, style, face, subfamily}] }
+    // Parse OpenType name table for real family + subfamily.
+    // TTF/OTF: SFNT container starting with 0x00010000 or 'OTTO'.
+    // WOFF: starts with 'wOFF'; WOFF2: 'wOF2'.  For WOFF/WOFF2 we
+    // fall back to filename because parsing them requires decoding
+    // TableDirectory + Brotli (WOFF2).  For TTF/OTF we parse directly.
+    function parseFontName(buf) {
+      const dv = new DataView(buf);
+      const magic = dv.getUint32(0);
+      // Only parse plain TTF/OTF here.  WOFF/WOFF2 fall back to filename.
+      if (magic !== 0x00010000 && magic !== 0x4F54544F /* 'OTTO' */ && magic !== 0x74727565 /* 'true' */) {
+        return null;
+      }
+      try {
+        const numTables = dv.getUint16(4);
+        let nameOffset = 0, nameLength = 0;
+        for (let i = 0; i < numTables; i++) {
+          const rec = 12 + i * 16;
+          const tag = String.fromCharCode(dv.getUint8(rec), dv.getUint8(rec + 1), dv.getUint8(rec + 2), dv.getUint8(rec + 3));
+          if (tag === "name") {
+            nameOffset = dv.getUint32(rec + 8);
+            nameLength = dv.getUint32(rec + 12);
+            break;
+          }
+        }
+        if (!nameOffset) return null;
+        // name table: format(2), count(2), stringOffset(2), records[count]
+        const count = dv.getUint16(nameOffset + 2);
+        const stringOffset = nameOffset + dv.getUint16(nameOffset + 4);
+        const results = { family: null, subfamily: null };
+        for (let i = 0; i < count; i++) {
+          const r = nameOffset + 6 + i * 12;
+          const platformID = dv.getUint16(r);
+          const encodingID = dv.getUint16(r + 2);
+          const nameID = dv.getUint16(r + 6);
+          const length = dv.getUint16(r + 8);
+          const offset = dv.getUint16(r + 10);
+          if (nameID !== 1 && nameID !== 2 && nameID !== 16 && nameID !== 17) continue;
+          // Read string.  Windows platform (3) with encoding 1 = UTF-16BE.
+          // Mac platform (1) with encoding 0 = MacRoman (ASCII subset OK).
+          let str = "";
+          if (platformID === 3 && encodingID === 1) {
+            // UTF-16BE
+            for (let j = 0; j < length; j += 2) {
+              str += String.fromCharCode(dv.getUint16(stringOffset + offset + j));
+            }
+          } else if (platformID === 1 && encodingID === 0) {
+            for (let j = 0; j < length; j++) {
+              str += String.fromCharCode(dv.getUint8(stringOffset + offset + j));
+            }
+          } else continue;
+          // Prefer typographic family (nameID 16) over legacy family (1);
+          // typographic subfamily (17) over legacy subfamily (2).
+          if (nameID === 16 || (nameID === 1 && !results.family)) results.family = str;
+          if (nameID === 17 || (nameID === 2 && !results.subfamily)) results.subfamily = str;
+        }
+        return results;
+      } catch (e) {
+        return null;
+      }
+    }
+    // Map subfamily string → { weight, style } for CSS.
+    function subfamilyToCSSDescriptors(subfamily) {
+      if (!subfamily) return { weight: "400", style: "normal" };
+      const s = subfamily.toLowerCase();
+      let weight = "400", style = "normal";
+      if (s.includes("italic") || s.includes("oblique")) style = "italic";
+      if (s.includes("thin"))         weight = "100";
+      else if (s.includes("extralight") || s.includes("ultralight")) weight = "200";
+      else if (s.includes("light"))   weight = "300";
+      else if (s.includes("medium"))  weight = "500";
+      else if (s.includes("semibold") || s.includes("demibold")) weight = "600";
+      else if (s.includes("extrabold") || s.includes("ultrabold")) weight = "800";
+      else if (s.includes("black") || s.includes("heavy")) weight = "900";
+      else if (s.includes("bold"))    weight = "700";
+      return { weight, style };
+    }
     const fontUploadInput = document.getElementById("fontUploadInput");
     const fontUploadStatus = document.getElementById("fontUploadStatus");
     const fontProjectGroup = document.getElementById("fontProjectGroup");
@@ -13969,42 +14249,151 @@
         for (const file of files) {
           try {
             const buf = await file.arrayBuffer();
-            // Derive family name from filename (strip extension).
-            const family = file.name.replace(/\.(ttf|otf|woff2?|font\/\w+)$/i, "").replace(/[^A-Za-z0-9 _-]/g, "").trim() || "Uploaded";
-            // Register with FontFace API.  Descriptors left default —
-            // the file's own weight/style/stretch metadata (embedded
-            // in the font) apply automatically.  We do NOT synthesize
-            // missing faces; each file is registered as its own family
-            // so users select the specific face they uploaded.
-            const face = new FontFace(family, buf);
+            // Parse font metadata for real family + subfamily.
+            const meta = parseFontName(buf) || {};
+            // Fallback: derive family from filename with subfamily stripped.
+            let family = meta.family;
+            let subfamily = meta.subfamily;
+            if (!family) {
+              // Strip extension + common face suffixes
+              family = file.name
+                .replace(/\.(ttf|otf|woff2?)$/i, "")
+                .replace(/[-_ ](Regular|Medium|Semibold|SemiBold|DemiBold|Bold|Black|Light|Thin|Italic|Oblique|BoldItalic|MediumItalic|SemiBoldItalic|LightItalic|ThinItalic)$/i, "")
+                .trim() || "Uploaded Font";
+              // Guess subfamily from filename if not in metadata.
+              const sfMatch = file.name.match(/(BoldItalic|MediumItalic|SemiBoldItalic|LightItalic|ThinItalic|Regular|Medium|Semibold|SemiBold|DemiBold|Bold|Black|Light|Thin|Italic|Oblique)/i);
+              if (sfMatch) subfamily = sfMatch[1];
+            }
+            family = family.replace(/[^A-Za-z0-9 _-]/g, "").trim() || "Uploaded";
+            const { weight, style } = subfamilyToCSSDescriptors(subfamily);
+            // Register with FontFace API using REAL descriptors so the
+            // browser picks the correct file for each weight/style
+            // combination — no synthesized bold/italic.
+            const face = new FontFace(family, buf, { weight, style });
             await face.load();
             document.fonts.add(face);
-            uploadedFontNames.add(family);
-            // Append to the "Project" optgroup if not already present.
-            if (fontProjectGroup && !fontProjectGroup.querySelector(`option[value="${family}"]`)) {
-              const opt = document.createElement("option");
-              opt.value = family; opt.textContent = family;
-              fontProjectGroup.appendChild(opt);
-            }
-            results.push({ ok: true, family });
+            // Track for the family-face registry.
+            if (!uploadedFontFamilies.has(family)) uploadedFontFamilies.set(family, { faces: [] });
+            uploadedFontFamilies.get(family).faces.push({ weight, style, subfamily: subfamily || "Regular", filename: file.name });
+            results.push({ ok: true, family, subfamily: subfamily || "Regular", weight, style });
           } catch (err) {
             results.push({ ok: false, error: String(err && err.message || err), name: file.name });
           }
         }
-        if (fontUploadStatus) {
-          const okCount = results.filter(r => r.ok).length;
-          const failCount = results.length - okCount;
-          fontUploadStatus.textContent = `${okCount} loaded${failCount ? ` · ${failCount} failed` : ""}`;
-          setTimeout(() => { fontUploadStatus.textContent = ""; }, 4000);
+        // Update the dropdown: one option per family (browser picks
+        // correct face at render time from weight+style).
+        if (fontProjectGroup) {
+          fontProjectGroup.innerHTML = "";
+          for (const [family, info] of uploadedFontFamilies.entries()) {
+            const opt = document.createElement("option");
+            opt.value = family;
+            opt.textContent = `${family} (${info.faces.length} face${info.faces.length === 1 ? "" : "s"})`;
+            fontProjectGroup.appendChild(opt);
+          }
         }
-        // Force re-render if the selected layer is text — the newly
-        // loaded font may be currently referenced.
+        if (fontUploadStatus) {
+          const ok = results.filter(r => r.ok);
+          const fail = results.filter(r => !r.ok);
+          const familiesLoaded = new Set(ok.map(r => r.family));
+          fontUploadStatus.textContent = ok.length
+            ? `✓ ${ok.length} face${ok.length === 1 ? "" : "s"} loaded into ${familiesLoaded.size} famil${familiesLoaded.size === 1 ? "y" : "ies"}${fail.length ? ` · ${fail.length} failed` : ""}`
+            : `✗ ${fail.length} failed`;
+          setTimeout(() => { fontUploadStatus.textContent = ""; }, 6000);
+        }
+        // Expose registry for debug/testing.
+        window.__uploadedFontFamilies = uploadedFontFamilies;
+        // Force re-render if the selected layer is text.
         if (selectedLayer && selectedLayer.kind === "TEXT") {
           buildTextLayerSVG(selectedLayer);
           paintIfPaused();
         }
-        // Clear the input so re-uploading the same file works.
         fontUploadInput.value = "";
+      });
+    }
+    // v19.54 ZERO STYLE dropdown wiring + support probe.
+    // The probe measures a rendered '0' with and without the "zero"
+    // feature; if the widths / bounding boxes are IDENTICAL, the font
+    // ignores the feature (no true slashed zero) and we surface a
+    // note.  Uses an offscreen canvas measurement.
+    const zeroSupportNote = document.getElementById("zeroSupportNote");
+    function probeSlashedZeroSupport(family, weight) {
+      try {
+        const ctx = (window._zeroProbeCtx ||= document.createElement("canvas").getContext("2d"));
+        const size = 200;
+        ctx.font = `${weight || 400} ${size}px "${family}"`;
+        ctx.textBaseline = "top";
+        // Measure baseline
+        const wNorm = ctx.measureText("0").width;
+        // Now try with the "zero" feature via canvas font-feature-settings.
+        // Canvas 2D doesn't natively support font-feature-settings; use
+        // a hidden DOM element approach instead.
+        const probe = document.createElement("span");
+        probe.style.cssText = `position:absolute;visibility:hidden;font:${weight || 400} ${size}px "${family}";white-space:pre`;
+        document.body.appendChild(probe);
+        probe.textContent = "0";
+        probe.style.fontFeatureSettings = 'normal';
+        const bbNorm = probe.getBoundingClientRect();
+        probe.style.fontFeatureSettings = '"zero" 1';
+        // Force recompute
+        void probe.offsetWidth;
+        const bbSlash = probe.getBoundingClientRect();
+        // Compare rendered PIXEL DATA — width often stays same but
+        // glyph shape changes.  Rasterize both and check bytes differ.
+        const canvasN = document.createElement("canvas");
+        canvasN.width = 32; canvasN.height = 32;
+        const cn = canvasN.getContext("2d");
+        cn.font = `${weight || 400} 28px "${family}"`;
+        cn.fillStyle = "#fff"; cn.textBaseline = "top";
+        cn.fillText("0", 0, 0);
+        const dataN = cn.getImageData(0, 0, 32, 32).data;
+        const canvasS = document.createElement("canvas");
+        canvasS.width = 32; canvasS.height = 32;
+        const cs = canvasS.getContext("2d");
+        // Chromium/Safari canvas 2D honors font-feature-settings via
+        // CSS font shorthand only in some builds.  Use an inline SVG
+        // rasterization as a fallback:
+        const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><text x='0' y='24' font-family='${family}' font-size='28' font-weight='${weight || 400}' fill='white' style='font-feature-settings:"zero" 1;font-variant-numeric:slashed-zero'>0</text></svg>`;
+        const img = new Image();
+        return new Promise((resolve) => {
+          img.onload = () => {
+            cs.drawImage(img, 0, 0);
+            const dataS = cs.getImageData(0, 0, 32, 32).data;
+            let diff = 0;
+            for (let i = 0; i < dataN.length; i += 4) {
+              if (Math.abs(dataN[i] - dataS[i]) > 20) diff++;
+            }
+            document.body.removeChild(probe);
+            // > 8 pixels differ → glyph rendered differently → supported.
+            resolve({ supported: diff > 8, diffPixels: diff });
+          };
+          img.onerror = () => { document.body.removeChild(probe); resolve({ supported: false, diffPixels: 0 }); };
+          img.src = "data:image/svg+xml;utf8," + encodeURIComponent(svg);
+        });
+      } catch (e) {
+        return Promise.resolve({ supported: null, error: String(e) });
+      }
+    }
+    async function updateZeroSupportNote() {
+      if (!zeroSupportNote || !selectedLayer || selectedLayer.kind !== "TEXT") {
+        if (zeroSupportNote) zeroSupportNote.textContent = "";
+        return;
+      }
+      const s = selectedLayer.textStyle;
+      if (!s.slashedZero) { zeroSupportNote.textContent = ""; return; }
+      const r = await probeSlashedZeroSupport(s.fontFamily, s.fontWeight);
+      if (r.supported === true)  zeroSupportNote.textContent = "✓ Font supports slashed zero";
+      else if (r.supported === false) zeroSupportNote.textContent = "⚠ Font ignores 'zero' feature — '0' unchanged";
+      else zeroSupportNote.textContent = "";
+    }
+    window.__updateZeroSupportNote = updateZeroSupportNote;
+    const zeroDropdown = document.getElementById("textZeroStyle");
+    if (zeroDropdown) {
+      zeroDropdown.addEventListener("change", () => {
+        if (!(selectedLayer && selectedLayer.kind === "TEXT")) return;
+        const on = zeroDropdown.value === "slashed";
+        updateTextLayer(selectedLayer, { slashedZero: on });
+        if (el.textSlashedZero) el.textSlashedZero.checked = on;   // keep legacy in sync
+        updateZeroSupportNote();
       });
     }
     wireTextInput(el.textSize, (n) => {
