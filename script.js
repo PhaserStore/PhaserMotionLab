@@ -2257,44 +2257,25 @@
     // feature ignore it silently — the character '0' remains
     // unchanged, metrics unchanged, no text-content substitution.
     // v19.53 SLASHED ZERO — both properties for max browser coverage.
-//  font-variant-numeric: slashed-zero — preferred CSS form.
-//  font-feature-settings: "zero" 1 — OpenType fallback.
-//  Applied both to the parent <text> and every glyph/tspan so
-//  Pattern, Weight Trail, Mirror and cloned renderers inherit it.
-//  Never substitutes "0" with "Ø".
-
-const applySlashedZero = !!s.slashedZero;
-
-if (applySlashedZero) {
-  textEl.style.fontVariantNumeric = "slashed-zero";
-  textEl.style.fontFeatureSettings = '"zero" 1';
-
-  // SVG attribute fallback
-  textEl.setAttribute("font-feature-settings", '"zero" 1');
-} else {
-  textEl.style.fontVariantNumeric = "";
-  textEl.style.fontFeatureSettings = "";
-  textEl.removeAttribute("font-feature-settings");
-}
-
-lines.forEach((line, i) => {
-  const tspan = document.createElementNS(svgNS, "tspan");
-
-  tspan.setAttribute("x", String(anchorX));
-  if (i > 0) tspan.setAttribute("dy", String(lineH));
-
-  // propagate OpenType settings to tspans as well
-  if (applySlashedZero) {
-    tspan.style.fontVariantNumeric = "slashed-zero";
-    tspan.style.fontFeatureSettings = '"zero" 1';
-    tspan.setAttribute("font-feature-settings", '"zero" 1');
-  }
-
-  tspan.textContent = line || " "; // preserve blank lines
-  textEl.appendChild(tspan);
-});
-
-layer.node.appendChild(textEl);
+    //  font-variant-numeric: slashed-zero — the CSS-preferred form.
+    //  font-feature-settings: "zero" 1 — OpenType feature fallback.
+    // Fonts without the feature ignore both silently; the character
+    // '0' stays as '0' (never replaced by 'Ø'), metrics unchanged.
+    if (s.slashedZero) {
+      textEl.style.fontVariantNumeric = "slashed-zero";
+      textEl.style.fontFeatureSettings = `"zero" 1`;
+    } else {
+      textEl.style.fontVariantNumeric = "";
+      textEl.style.fontFeatureSettings = "";
+    }
+    lines.forEach((line, i) => {
+      const tspan = document.createElementNS(svgNS, "tspan");
+      tspan.setAttribute("x", String(anchorX));
+      if (i > 0) tspan.setAttribute("dy", String(lineH));
+      tspan.textContent = line || " ";  // preserve blank lines
+      textEl.appendChild(tspan);
+    });
+    layer.node.appendChild(textEl);
     // v19.47 STRUCTURAL LAYOUT PASS.  Every glyph gets an ABSOLUTE
     // (x, y) so line advance is baked into the initial layout and
     // effects that write to dx/dy can never destroy line spacing.
@@ -4228,7 +4209,106 @@ layer.node.appendChild(textEl);
       const mgrp = layer.node && layer.node.querySelector('g[id^="mirror-clones-"]');
       if (mgrp) mgrp.remove();
     }
+    // v19.55 SLASHED ZERO OVERLAY — runs after every other mutation so
+    // Pattern clones, Mirror clones, Bulk Typing, Weight Trail etc.
+    // have all settled their glyph state.  See _applyZeroSlashOverlay
+    // for the rendering contract.
+    _applyZeroSlashOverlay(layer);
   }
+
+  /* v19.55 SLASHED ZERO OVERLAY
+   *
+   * Extends the existing OpenType approach (v19.53) with a reliable
+   * fallback: when Slashed Zero is enabled, ALSO draw a thin diagonal
+   * <line> over every visible `0` glyph in the layer's SVG.  Works for:
+   *   - source text
+   *   - every Pattern <text data-pattern-copy> clone
+   *   - every Mirror <text data-mirror-copy> clone
+   *   - multiline / wrapped text
+   *   - Bulk Typing (skips hidden glyphs via visibility check)
+   *   - Weight Trail Reveal (per-glyph weight preserved)
+   *   - preview, scrubbing, export (deterministic on each paint)
+   *
+   * Never modifies text width, spacing, alignment or viewBox — the
+   * slash <line>s live in dedicated <g data-slash-overlay="1"> groups
+   * that are siblings of each rendered <text> element, sharing the
+   * text's parent transform so they scale/rotate/flip identically.
+   *
+   * Rebuild strategy: on every call, remove ALL existing overlay
+   * groups and rebuild fresh from current glyph positions.  This
+   * prevents duplicates from repeated updates and guarantees positions
+   * stay in sync with animation.  Cost: getBBox()×N zero-glyphs per
+   * frame — negligible.
+   *
+   * Text on Path is intentionally skipped: <textPath> content has no
+   * per-glyph tspan structure, so there are no `0` tspans to overlay.
+   * The native OpenType feature still applies to path-mounted text.
+   */
+  function _applyZeroSlashOverlay(layer) {
+    const svg = layer && layer.node;
+    if (!svg) return;
+    const NS = "http://www.w3.org/2000/svg";
+    // Always start by removing any existing overlays — prevents
+    // duplicates across repeated calls and handles the disable case.
+    svg.querySelectorAll('g[data-slash-overlay="1"]').forEach(g => g.remove());
+    if (!layer.textStyle || !layer.textStyle.slashedZero) return;
+    // Scan every <text> element in the layer's SVG.  Source text
+    // renders alongside any Pattern / Mirror clones; treat all
+    // uniformly so slashes appear on every visible copy.
+    const textEls = svg.querySelectorAll("text");
+    for (const textEl of textEls) {
+      // If this text hosts a <textPath>, skip — no tspan glyphs to
+      // measure.  (Text on Path uses raw text content along the path.)
+      if (textEl.querySelector("textPath")) continue;
+      const zeros = Array.from(textEl.querySelectorAll('tspan[data-glyph="1"]'))
+        .filter(g => g.textContent === "0" && g.style.visibility !== "hidden");
+      if (!zeros.length) continue;
+      // Overlay group sits as a SIBLING of the <text> so it shares
+      // the same parent coordinate space AND parent transforms
+      // (crucial for Pattern group rotation + Mirror flip).
+      // Slash <line>s use text-local coords (from tspan.getBBox()).
+      // For Mirror clones whose <text> element carries its own
+      // transform (scale(-1,1) etc.), we mirror that transform on
+      // the overlay group so slashes flip identically.
+      const overlay = document.createElementNS(NS, "g");
+      overlay.setAttribute("data-slash-overlay", "1");
+      overlay.setAttribute("pointer-events", "none");
+      const textT = textEl.getAttribute("transform");
+      if (textT) overlay.setAttribute("transform", textT);
+      // Copy opacity so the slash fades with the text (Reveal/Hide
+      // effects, per-copy opacity from Pattern, etc.).
+      const textOp = textEl.getAttribute("opacity");
+      if (textOp != null) overlay.setAttribute("opacity", textOp);
+      textEl.parentNode.insertBefore(overlay, textEl.nextSibling);
+      // Determine stroke color from the text fill.
+      const color = textEl.getAttribute("fill")
+        || (layer.textStyle && layer.textStyle.color)
+        || "#FFFFFF";
+      for (const zero of zeros) {
+        try {
+          const bb = zero.getBBox();
+          if (!(bb.width > 0 && bb.height > 0)) continue;
+          // Diagonal from lower-left to upper-right, standard slashed-zero
+          // orientation.  Inset a fraction of glyph width so the slash
+          // stays within the glyph body (looks intentional, not overlaid).
+          const insetX = bb.width * 0.12;
+          const insetY = bb.height * 0.08;
+          const line = document.createElementNS(NS, "line");
+          line.setAttribute("x1", (bb.x + insetX).toFixed(2));
+          line.setAttribute("y1", (bb.y + bb.height - insetY).toFixed(2));
+          line.setAttribute("x2", (bb.x + bb.width - insetX).toFixed(2));
+          line.setAttribute("y2", (bb.y + insetY).toFixed(2));
+          line.setAttribute("stroke", color);
+          // Stroke width scales with glyph height so it stays
+          // proportional at every font size / weight.
+          line.setAttribute("stroke-width", Math.max(1, bb.height * 0.055).toFixed(2));
+          line.setAttribute("stroke-linecap", "round");
+          overlay.appendChild(line);
+        } catch (e) { /* getBBox may fail on non-rendered glyphs */ }
+      }
+    }
+  }
+
 
   /* v19.50 TEXT PATTERN RENDERER.
    *
@@ -14412,6 +14492,10 @@ layer.node.appendChild(textEl);
         const on = zeroDropdown.value === "slashed";
         updateTextLayer(selectedLayer, { slashedZero: on });
         if (el.textSlashedZero) el.textSlashedZero.checked = on;   // keep legacy in sync
+        // v19.55: force applyTextFxAtTime to run so slash overlay
+        // appears/disappears immediately.
+        applyTextFxAtTime(selectedLayer, STATE.time, audio && audio.getSignal ? audio.getSignal() : {level:0,low:0,mid:0,high:0});
+        paintIfPaused();
         updateZeroSupportNote();
       });
     }
