@@ -2257,25 +2257,44 @@
     // feature ignore it silently — the character '0' remains
     // unchanged, metrics unchanged, no text-content substitution.
     // v19.53 SLASHED ZERO — both properties for max browser coverage.
-    //  font-variant-numeric: slashed-zero — the CSS-preferred form.
-    //  font-feature-settings: "zero" 1 — OpenType feature fallback.
-    // Fonts without the feature ignore both silently; the character
-    // '0' stays as '0' (never replaced by 'Ø'), metrics unchanged.
-    if (s.slashedZero) {
-      textEl.style.fontVariantNumeric = "slashed-zero";
-      textEl.style.fontFeatureSettings = `"zero" 1`;
-    } else {
-      textEl.style.fontVariantNumeric = "";
-      textEl.style.fontFeatureSettings = "";
-    }
-    lines.forEach((line, i) => {
-      const tspan = document.createElementNS(svgNS, "tspan");
-      tspan.setAttribute("x", String(anchorX));
-      if (i > 0) tspan.setAttribute("dy", String(lineH));
-      tspan.textContent = line || " ";  // preserve blank lines
-      textEl.appendChild(tspan);
-    });
-    layer.node.appendChild(textEl);
+//  font-variant-numeric: slashed-zero — preferred CSS form.
+//  font-feature-settings: "zero" 1 — OpenType fallback.
+//  Applied both to the parent <text> and every glyph/tspan so
+//  Pattern, Weight Trail, Mirror and cloned renderers inherit it.
+//  Never substitutes "0" with "Ø".
+
+const applySlashedZero = !!s.slashedZero;
+
+if (applySlashedZero) {
+  textEl.style.fontVariantNumeric = "slashed-zero";
+  textEl.style.fontFeatureSettings = '"zero" 1';
+
+  // SVG attribute fallback
+  textEl.setAttribute("font-feature-settings", '"zero" 1');
+} else {
+  textEl.style.fontVariantNumeric = "";
+  textEl.style.fontFeatureSettings = "";
+  textEl.removeAttribute("font-feature-settings");
+}
+
+lines.forEach((line, i) => {
+  const tspan = document.createElementNS(svgNS, "tspan");
+
+  tspan.setAttribute("x", String(anchorX));
+  if (i > 0) tspan.setAttribute("dy", String(lineH));
+
+  // propagate OpenType settings to tspans as well
+  if (applySlashedZero) {
+    tspan.style.fontVariantNumeric = "slashed-zero";
+    tspan.style.fontFeatureSettings = '"zero" 1';
+    tspan.setAttribute("font-feature-settings", '"zero" 1');
+  }
+
+  tspan.textContent = line || " "; // preserve blank lines
+  textEl.appendChild(tspan);
+});
+
+layer.node.appendChild(textEl);
     // v19.47 STRUCTURAL LAYOUT PASS.  Every glyph gets an ABSOLUTE
     // (x, y) so line advance is baked into the initial layout and
     // effects that write to dx/dy can never destroy line spacing.
