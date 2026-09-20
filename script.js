@@ -490,6 +490,100 @@
       _directional: true, _dirDefaults: { mode: "reveal", direction: "up", distance: 0, blurPx: 12, order: "random" },
       paramDefs: null },
 
+    // === v19.53 CONTRACTION / SHRINK FAMILY ===
+    // Reveal-family engine + a scale channel.  Each preset differs
+    // only by defaults (anchor + direction + start/end scale).  The
+    // shared runtime is TEXT_FX_DOM.contraction (added below in the
+    // TEXT_FX_DOM block).  All 8 keys route to it.
+    //
+    // Never touches textStyle.fontSize or layer.natW/natH; animates
+    // via glyph-level scale transform (SVG transform attribute) so
+    // the source layout stays stable.
+    { key: "contractionBuild", label: "Contraction Build", defDur: 1.20, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", persistEnd: true,
+      _contraction: true,
+      paramDefs: [
+        { key: "mode",       label: "Mode",           type: "select", options: ["reveal","hide","both"], default: "hide" },
+        { key: "target",     label: "Target",         type: "select", options: ["char","word","line","block"], default: "char" },
+        { key: "anchor",     label: "Anchor",         type: "select", options: ["center","left","right","top","bottom"], default: "center" },
+        { key: "startScale", label: "Start Scale (%)",type: "range", min: 0, max: 200, step: 5, default: 100 },
+        { key: "endScale",   label: "End Scale (%)",  type: "range", min: 0, max: 200, step: 5, default: 0 },
+        { key: "distance",   label: "Distance (px)",  type: "range", min: 0, max: 400, step: 5, default: 0 },
+        { key: "direction",  label: "Direction",      type: "select", options: ["center","left","right","up","down"], default: "center" },
+        { key: "duration",   label: "Per-Unit Duration (ms)", type: "range", min: 50, max: 2000, step: 10, default: 400 },
+        { key: "stagger",    label: "Stagger (ms)",   type: "range", min: 0, max: 300, step: 5, default: 40 },
+        { key: "easing",     label: "Easing",         type: "select", options: ["easeOut","easeIn","easeInOut","linear"], default: "easeOut" },
+        { key: "fadeOpacity",label: "Fade Opacity",   type: "select", options: ["yes","no"], default: "yes" },
+        { key: "blurPx",     label: "Blur (px)",      type: "range", min: 0, max: 40, step: 1, default: 0 },
+        { key: "rotationDeg",label: "Rotation (deg)", type: "range", min: -360, max: 360, step: 5, default: 0 },
+        { key: "delay",      label: "Delay (ms)",     type: "range", min: 0, max: 2000, step: 10, default: 0 },
+        { key: "order",      label: "Order",          type: "select", options: ["forward","reverse","center-out","outside-in","random"], default: "forward" },
+        { key: "seed",       label: "Seed",           type: "range", min: 0, max: 999, step: 1, default: 7 },
+      ] },
+    { key: "collapseIn",     label: "Collapse In",     defDur: 1.20, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerEnd", persistEnd: false,
+      _contraction: true, _contractionDefaults: { mode: "hide", anchor: "center", startScale: 100, endScale: 0, distance: 100, direction: "center" },
+      paramDefs: null },
+    { key: "shrinkToCenter", label: "Shrink to Center",defDur: 1.00, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerEnd", persistEnd: false,
+      _contraction: true, _contractionDefaults: { mode: "hide", anchor: "center", startScale: 100, endScale: 0, direction: "center" },
+      paramDefs: null },
+    { key: "shrinkToLeft",   label: "Shrink to Left",  defDur: 1.00, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerEnd", persistEnd: false,
+      _contraction: true, _contractionDefaults: { mode: "hide", anchor: "left", startScale: 100, endScale: 0, direction: "left", distance: 80 },
+      paramDefs: null },
+    { key: "shrinkToRight",  label: "Shrink to Right", defDur: 1.00, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerEnd", persistEnd: false,
+      _contraction: true, _contractionDefaults: { mode: "hide", anchor: "right", startScale: 100, endScale: 0, direction: "right", distance: 80 },
+      paramDefs: null },
+    { key: "shrinkToTop",    label: "Shrink to Top",   defDur: 1.00, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerEnd", persistEnd: false,
+      _contraction: true, _contractionDefaults: { mode: "hide", anchor: "top", startScale: 100, endScale: 0, direction: "up", distance: 80 },
+      paramDefs: null },
+    { key: "shrinkToBottom", label: "Shrink to Bottom",defDur: 1.00, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerEnd", persistEnd: false,
+      _contraction: true, _contractionDefaults: { mode: "hide", anchor: "bottom", startScale: 100, endScale: 0, direction: "down", distance: 80 },
+      paramDefs: null },
+    { key: "blockCollapse",  label: "Block Collapse",  defDur: 1.20, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerEnd", persistEnd: false,
+      _contraction: true, _contractionDefaults: { mode: "hide", target: "line", anchor: "center", startScale: 100, endScale: 0, stagger: 120 },
+      paramDefs: null },
+
+    // === v19.53 MIRROR TEXT FAMILY ===
+    // Draws mirrored copies of the source glyphs at reflection axes.
+    // No new source is created; all mirroring happens in the layer's
+    // SVG via cloned text elements with scale(-1,1) or scale(1,-1)
+    // transforms.  Preserves multi-line, alignment, animation state
+    // (clones are refreshed per frame with the source's current glyph
+    // state, same architecture as Text Pattern).
+    { key: "mirrorHorizontal", label: "Mirror — Horizontal", defDur: "layer", group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", sustained: true, persistEnd: true,
+      _mirror: true,
+      paramDefs: [
+        { key: "mirrorMode", label: "Mirror Mode", type: "select",
+          options: ["horizontal","vertical","reflectionAbove","reflectionBelow","fourWay"], default: "horizontal" },
+        { key: "gap",        label: "Gap (px)",     type: "range", min: 0, max: 400, step: 5, default: 20 },
+        { key: "opacity",    label: "Mirror Opacity (%)", type: "range", min: 0, max: 100, step: 5, default: 60 },
+        { key: "fade",       label: "Edge Fade (%)", type: "range", min: 0, max: 100, step: 5, default: 30 },
+        { key: "blurPx",     label: "Blur (px)",    type: "range", min: 0, max: 20, step: 0.5, default: 0 },
+        { key: "mirrorScale",label: "Mirror Scale (%)", type: "range", min: 20, max: 200, step: 5, default: 100 },
+        { key: "offsetX",    label: "Offset X (px)", type: "range", min: -400, max: 400, step: 5, default: 0 },
+        { key: "offsetY",    label: "Offset Y (px)", type: "range", min: -400, max: 400, step: 5, default: 0 },
+        { key: "rotationDeg",label: "Rotation (deg)", type: "range", min: -180, max: 180, step: 1, default: 0 },
+      ] },
+    { key: "mirrorVertical",   label: "Mirror — Vertical",   defDur: "layer", group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", sustained: true, persistEnd: true,
+      _mirror: true, _mirrorDefaults: { mirrorMode: "vertical" }, paramDefs: null },
+    { key: "mirrorReflectionAbove", label: "Mirror — Reflection Above", defDur: "layer", group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", sustained: true, persistEnd: true,
+      _mirror: true, _mirrorDefaults: { mirrorMode: "reflectionAbove", opacity: 40, fade: 60, gap: 10 }, paramDefs: null },
+    { key: "mirrorReflectionBelow", label: "Mirror — Reflection Below", defDur: "layer", group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", sustained: true, persistEnd: true,
+      _mirror: true, _mirrorDefaults: { mirrorMode: "reflectionBelow", opacity: 40, fade: 60, gap: 10 }, paramDefs: null },
+    { key: "mirrorFourWay",   label: "Mirror — Four-Way", defDur: "layer", group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", sustained: true, persistEnd: true,
+      _mirror: true, _mirrorDefaults: { mirrorMode: "fourWay" }, paramDefs: null },
+
     // === v19.50 TEXT PATTERN / REPEATER ===
     // Non-destructive layer-scoped pattern.  Instances the layer's
     // animated text via SVG <use> so a single source's DOM mutations
@@ -692,6 +786,37 @@
         if (!fx._directional || fx.paramDefs) continue;
         const overrides = fx._dirDefaults || {};
         fx.paramDefs = master.paramDefs.map(pd => {
+          const clone = { ...pd };
+          if (overrides.hasOwnProperty(pd.key)) clone.default = overrides[pd.key];
+          return clone;
+        });
+      }
+    }
+    // v19.53 CONTRACTION FAMILY HYDRATION.
+    // Same pattern: contractionBuild is the master; collapseIn,
+    // shrinkToCenter, shrinkTo{Left,Right,Top,Bottom}, blockCollapse
+    // are siblings that override defaults.
+    const cMaster = FX_EVENTS.find(f => f.key === "contractionBuild");
+    if (cMaster && cMaster.paramDefs) {
+      for (const fx of FX_EVENTS) {
+        if (!fx._contraction || fx.paramDefs) continue;
+        const overrides = fx._contractionDefaults || {};
+        fx.paramDefs = cMaster.paramDefs.map(pd => {
+          const clone = { ...pd };
+          if (overrides.hasOwnProperty(pd.key)) clone.default = overrides[pd.key];
+          return clone;
+        });
+      }
+    }
+    // v19.53 MIRROR FAMILY HYDRATION.
+    // mirrorHorizontal is master; mirrorVertical, mirrorReflectionAbove,
+    // mirrorReflectionBelow, mirrorFourWay are siblings.
+    const mMaster = FX_EVENTS.find(f => f.key === "mirrorHorizontal");
+    if (mMaster && mMaster.paramDefs) {
+      for (const fx of FX_EVENTS) {
+        if (!fx._mirror || fx.paramDefs) continue;
+        const overrides = fx._mirrorDefaults || {};
+        fx.paramDefs = mMaster.paramDefs.map(pd => {
           const clone = { ...pd };
           if (overrides.hasOwnProperty(pd.key)) clone.default = overrides[pd.key];
           return clone;
@@ -2097,7 +2222,18 @@
     // uses `font-feature-settings: "zero" 1`.  Fonts without the
     // feature ignore it silently — the character '0' remains
     // unchanged, metrics unchanged, no text-content substitution.
-    if (s.slashedZero) textEl.style.fontFeatureSettings = `"zero" 1`;
+    // v19.53 SLASHED ZERO — both properties for max browser coverage.
+    //  font-variant-numeric: slashed-zero — the CSS-preferred form.
+    //  font-feature-settings: "zero" 1 — OpenType feature fallback.
+    // Fonts without the feature ignore both silently; the character
+    // '0' stays as '0' (never replaced by 'Ø'), metrics unchanged.
+    if (s.slashedZero) {
+      textEl.style.fontVariantNumeric = "slashed-zero";
+      textEl.style.fontFeatureSettings = `"zero" 1`;
+    } else {
+      textEl.style.fontVariantNumeric = "";
+      textEl.style.fontFeatureSettings = "";
+    }
     lines.forEach((line, i) => {
       const tspan = document.createElementNS(svgNS, "tspan");
       tspan.setAttribute("x", String(anchorX));
@@ -2595,6 +2731,246 @@
     directionalCascade(l,c,p,s,t){ return TEXT_FX_DOM.directional(l,c,p,s,t); },
     motionBlurReveal(l,c,p,s,t) { return TEXT_FX_DOM.directional(l,c,p,s,t); },
     directionalDissolve(l,c,p,s,t){ return TEXT_FX_DOM.directional(l,c,p,s,t); },
+
+    // === v19.53 CONTRACTION / SHRINK ENGINE ===
+    // Animates each grouped unit (char/word/line/block) from
+    // startScale → endScale over the clip time.  Scale + rotation are
+    // applied as a per-glyph SVG transform, anchored at the specified
+    // anchor point (center/left/right/top/bottom).  Also honors the
+    // shared directional parameters (distance + direction) so units
+    // can slide + shrink simultaneously (e.g. Shrink to Left = slide
+    // left while shrinking to 0).  Never touches fontSize or natW/natH.
+    contraction(layer, clip, p, sig, sceneTime) {
+      const P = clip.params || {};
+      const tspans = _getGlyphTspans(layer);
+      if (!tspans.length) return;
+      const mode = P.mode || "hide";
+      const target = P.target || "char";
+      const anchor = P.anchor || "center";
+      const startSc = (P.startScale != null ? P.startScale : 100) / 100;
+      const endSc   = (P.endScale   != null ? P.endScale   : 0) / 100;
+      const distance = P.distance != null ? P.distance : 0;
+      const direction = P.direction || "center";
+      const durMs = Math.max(1, P.duration || 400);
+      const staggerMs = P.stagger != null ? P.stagger : 40;
+      const easingFn = TEXT_EASE[P.easing] || TEXT_EASE.easeOut;
+      const fadeOp = P.fadeOpacity !== "no";
+      const blurPx = P.blurPx || 0;
+      const rotDeg = P.rotationDeg || 0;
+      const delayMs = P.delay || 0;
+      const order = P.order || "forward";
+      const seed = P.seed || 7;
+      const groups = _groupTspansByUnit(tspans, target, layer);
+      const N = groups.length;
+      const orderIdx = _computeOrderIndices(N, order, seed + (clip.id || 0) * 13);
+      const localMs = Math.max(0, sceneTime - (layer.start + clip.start)) * 1000;
+      const totalMs = delayMs + (N - 1) * staggerMs + durMs;
+
+      const bbCache = new Map();   // glyph → BBox (once per frame)
+      const getBB = (ts) => {
+        if (bbCache.has(ts)) return bbCache.get(ts);
+        let bb; try { bb = ts.getBBox(); } catch (e) { bb = { x: 0, y: 0, width: 0, height: 0 }; }
+        bbCache.set(ts, bb);
+        return bb;
+      };
+
+      for (let i = 0; i < N; i++) {
+        const oIdx = orderIdx[i];
+        const startAt = delayMs + oIdx * staggerMs;
+        // localP: 0 → 1 across the unit's individual duration.
+        let localP;
+        if (mode === "reveal") {
+          localP = clamp01((localMs - startAt) / durMs);
+        } else if (mode === "hide") {
+          // Hide: at time 0 we're at startScale, at time end we're at endScale.
+          // Direct time-progression (no invert).
+          localP = clamp01((localMs - startAt) / durMs);
+        } else {
+          // both: reveal in first half, hide in second (uses the whole clip duration)
+          const revealEnd = totalMs;
+          if (localMs <= revealEnd) localP = clamp01((localMs - startAt) / durMs);
+          else localP = 1 - clamp01((localMs - revealEnd - oIdx * staggerMs) / durMs);
+        }
+        const eased = easingFn(localP);
+        // Interpolate scale from start → end for hide;
+        // reveal goes start → 100% end → START (inverted)
+        let currScale;
+        if (mode === "reveal") {
+          // From (startScale, endScale) — reveal grows FROM small to
+          // normal: at localP=0 we're at endScale (small), at 1 we're
+          // at startScale (normal 100%).  So invert.
+          currScale = endSc + (startSc - endSc) * eased;
+        } else {
+          // hide/both: normal → shrunk
+          currScale = startSc + (endSc - startSc) * eased;
+        }
+        // Position offset from distance × direction × progress.
+        let dx = 0, dy = 0;
+        const dp = (mode === "reveal") ? (1 - eased) : eased;
+        if (direction === "left")  dx = -distance * dp;
+        else if (direction === "right") dx = distance * dp;
+        else if (direction === "up")    dy = -distance * dp;
+        else if (direction === "down")  dy = distance * dp;
+        const op = fadeOp ? (mode === "reveal" ? eased : 1 - eased) : 1;
+        const bl = blurPx * (mode === "reveal" ? (1 - eased) : eased);
+        const rot = rotDeg * (mode === "reveal" ? (1 - eased) : eased);
+
+        for (const ts of groups[i]) {
+          // Anchor selection: scale about center/left/right/top/bottom
+          // of the glyph's bounding box.
+          const bb = getBB(ts);
+          let ax = bb.x + bb.width / 2, ay = bb.y + bb.height / 2;
+          if (anchor === "left")   ax = bb.x;
+          if (anchor === "right")  ax = bb.x + bb.width;
+          if (anchor === "top")    ay = bb.y;
+          if (anchor === "bottom") ay = bb.y + bb.height;
+          // Compose per-glyph transform: translate to anchor, apply
+          // scale + rotate, translate back, then apply positional offset.
+          // dx/dy: expressed via svg dx/dy attributes (not transform)
+          // so they compose with layout-once positioning.
+          if (dx || dy) {
+            ts.setAttribute("dx", String(dx));
+            ts.setAttribute("dy", String(dy));
+          }
+          if (currScale !== 1 || rot !== 0) {
+            const parts = [];
+            parts.push(`translate(${ax}, ${ay})`);
+            if (rot !== 0) parts.push(`rotate(${rot})`);
+            if (currScale !== 1) parts.push(`scale(${currScale})`);
+            parts.push(`translate(${-ax}, ${-ay})`);
+            ts.setAttribute("transform", parts.join(" "));
+          } else if (ts.hasAttribute("transform")) {
+            ts.removeAttribute("transform");
+          }
+          if (op < 1) ts.setAttribute("opacity", String(op));
+          if (bl > 0.1) ts.style.filter = `blur(${bl.toFixed(1)}px)`;
+          else if (ts.style.filter) ts.style.filter = "";
+        }
+      }
+    },
+    contractionBuild(l,c,p,s,t){ return TEXT_FX_DOM.contraction(l,c,p,s,t); },
+    collapseIn(l,c,p,s,t)      { return TEXT_FX_DOM.contraction(l,c,p,s,t); },
+    shrinkToCenter(l,c,p,s,t)  { return TEXT_FX_DOM.contraction(l,c,p,s,t); },
+    shrinkToLeft(l,c,p,s,t)    { return TEXT_FX_DOM.contraction(l,c,p,s,t); },
+    shrinkToRight(l,c,p,s,t)   { return TEXT_FX_DOM.contraction(l,c,p,s,t); },
+    shrinkToTop(l,c,p,s,t)     { return TEXT_FX_DOM.contraction(l,c,p,s,t); },
+    shrinkToBottom(l,c,p,s,t)  { return TEXT_FX_DOM.contraction(l,c,p,s,t); },
+    blockCollapse(l,c,p,s,t)   { return TEXT_FX_DOM.contraction(l,c,p,s,t); },
+
+    // === v19.53 MIRROR ENGINE ===
+    // Draws mirrored clones of the source <text> element inside the
+    // same SVG.  Clones are refreshed per frame (same architecture as
+    // Text Pattern) so animated glyph state propagates 1:1 to every
+    // mirror.  Clones live in a wrapping group so their transforms
+    // don't interfere with the source's absolute glyph positioning.
+    mirror(layer, clip, p, sig, sceneTime) {
+      const svg = layer.node;
+      if (!svg) return;
+      const NS = "http://www.w3.org/2000/svg";
+      const textEl = svg.querySelector("text");
+      if (!textEl) return;
+      const P = clip.params || {};
+      const mode = P.mirrorMode || "horizontal";
+      const gap = P.gap || 0;
+      const op = (P.opacity != null ? P.opacity : 60) / 100;
+      const fade = (P.fade != null ? P.fade : 30) / 100;
+      const blurPx = P.blurPx || 0;
+      const scl = (P.mirrorScale != null ? P.mirrorScale : 100) / 100;
+      const offX = P.offsetX || 0;
+      const offY = P.offsetY || 0;
+      const rot = P.rotationDeg || 0;
+      const groupId = "mirror-clones-" + (layer.id || "x");
+      let group = svg.querySelector("#" + groupId);
+      if (!group) {
+        group = document.createElementNS(NS, "g");
+        group.setAttribute("id", groupId);
+        // Insert BEFORE source so mirrors render underneath the
+        // original (mirrors are decoration; source is the main).
+        svg.insertBefore(group, textEl);
+      }
+      // Determine mirror axes needed.  Mirror translations are 2W+gap
+      // and 2H+gap because scale(-1,1) flips content around the local
+      // origin (0,0): a glyph at x=180 becomes -180, so to land it at
+      // x=(natW+gap)+width we translate by 2*natW+gap.  Same logic for
+      // vertical flip about y.
+      const mirrors = [];
+      const W = layer.natW || 300;
+      const H = layer.natH || 100;
+      if (mode === "horizontal") {
+        // Right mirror: flip about x=0 then translate 2W+gap to the right.
+        mirrors.push({ sx: -1, sy: 1, tx: 2 * W + gap, ty: 0, id: "h-right" });
+        // Left mirror: flip then translate -gap so it lands touching source's left edge.
+        mirrors.push({ sx: -1, sy: 1, tx: -gap, ty: 0, id: "h-left" });
+      } else if (mode === "vertical") {
+        mirrors.push({ sx: 1, sy: -1, tx: 0, ty: 2 * H + gap, id: "v-below" });
+        mirrors.push({ sx: 1, sy: -1, tx: 0, ty: -gap, id: "v-above" });
+      } else if (mode === "reflectionAbove") {
+        mirrors.push({ sx: 1, sy: -1, tx: 0, ty: -gap, id: "refl-above" });
+      } else if (mode === "reflectionBelow") {
+        mirrors.push({ sx: 1, sy: -1, tx: 0, ty: 2 * H + gap, id: "refl-below" });
+      } else if (mode === "fourWay") {
+        mirrors.push({ sx: -1, sy: 1,  tx: 2 * W + gap,  ty: 0,             id: "4w-r" });
+        mirrors.push({ sx: -1, sy: 1,  tx: -gap,         ty: 0,             id: "4w-l" });
+        mirrors.push({ sx: 1,  sy: -1, tx: 0,            ty: 2 * H + gap,   id: "4w-b" });
+        mirrors.push({ sx: 1,  sy: -1, tx: 0,            ty: -gap,          id: "4w-t" });
+        // Diagonals — both axes flipped.
+        mirrors.push({ sx: -1, sy: -1, tx: 2 * W + gap,  ty: 2 * H + gap,   id: "4w-br" });
+        mirrors.push({ sx: -1, sy: -1, tx: -gap,         ty: 2 * H + gap,   id: "4w-bl" });
+        mirrors.push({ sx: -1, sy: -1, tx: 2 * W + gap,  ty: -gap,          id: "4w-tr" });
+        mirrors.push({ sx: -1, sy: -1, tx: -gap,         ty: -gap,          id: "4w-tl" });
+      }
+      // Diff pool: reuse clone <text> shells.
+      const need = mirrors.length;
+      let clones = Array.from(group.querySelectorAll('text[data-mirror-copy="1"]'));
+      for (let i = clones.length - 1; i >= need; i--) { clones[i].remove(); clones.splice(i, 1); }
+      while (clones.length < need) {
+        const shell = document.createElementNS(NS, "text");
+        shell.setAttribute("data-mirror-copy", "1");
+        group.appendChild(shell);
+        clones.push(shell);
+      }
+      const srcAttrs = Array.from(textEl.attributes);
+      const srcInlineStyle = textEl.style.cssText;
+      const srcChildren = Array.from(textEl.children);
+      for (let i = 0; i < need; i++) {
+        const c = clones[i];
+        const m = mirrors[i];
+        // Copy attrs (skip id/transform).
+        const cAttrNames = Array.from(c.attributes).map(a => a.name);
+        for (const n of cAttrNames) {
+          if (n === "data-mirror-copy" || n === "transform" || n === "opacity") continue;
+          c.removeAttribute(n);
+        }
+        for (const a of srcAttrs) {
+          if (a.name === "id" || a.name === "transform") continue;
+          c.setAttribute(a.name, a.value);
+        }
+        c.style.cssText = srcInlineStyle;
+        while (c.firstChild) c.removeChild(c.firstChild);
+        for (const child of srcChildren) c.appendChild(child.cloneNode(true));
+        // Transform: translate to mirror position, then flip about the
+        // source's local origin.  Compose scale(sx*scl, sy*scl) so the
+        // Mirror Scale param applies uniformly.
+        const cx = W / 2, cy = H / 2;
+        let t = "";
+        if (offX || offY) t += `translate(${offX}, ${offY}) `;
+        t += `translate(${m.tx}, ${m.ty}) `;
+        if (rot !== 0) t += `rotate(${rot}, ${cx}, ${cy}) `;
+        // Flip transform around the source's origin (0,0) — the mirror
+        // rendering flips the glyphs in place at their laid-out pos.
+        // scale(-1,1) mirrors horizontally; scale(1,-1) vertically.
+        t += `scale(${(m.sx * scl).toFixed(3)}, ${(m.sy * scl).toFixed(3)}) `;
+        c.setAttribute("transform", t.trim());
+        c.setAttribute("opacity", op.toFixed(3));
+        if (blurPx > 0.1) c.style.filter = `blur(${blurPx.toFixed(1)}px)`;
+        else c.style.filter = "";
+      }
+    },
+    mirrorHorizontal(l,c,p,s,t)         { return TEXT_FX_DOM.mirror(l,c,p,s,t); },
+    mirrorVertical(l,c,p,s,t)           { return TEXT_FX_DOM.mirror(l,c,p,s,t); },
+    mirrorReflectionAbove(l,c,p,s,t)    { return TEXT_FX_DOM.mirror(l,c,p,s,t); },
+    mirrorReflectionBelow(l,c,p,s,t)    { return TEXT_FX_DOM.mirror(l,c,p,s,t); },
+    mirrorFourWay(l,c,p,s,t)            { return TEXT_FX_DOM.mirror(l,c,p,s,t); },
     charStagger(layer, clip, p, sig, sceneTime) {
       const P = clip.params || {};
       const tspans = _getGlyphTspans(layer);
@@ -3616,8 +3992,12 @@
     // glyph tspan back to its BASE (x, y, no dx/dy, opacity=1) before
     // running mutators so each frame composes from the original
     // layout — critical for multi-line where dy could otherwise
-    // accumulate and collapse lines.
-    if (domMutClips.length || textPathClips.length) {
+    // accumulate and collapse lines.  v19.53: reset runs
+    // UNCONDITIONALLY so removing an effect clears its residue on the
+    // next paint (previously reset only ran when clips were active,
+    // leaving stale transform/opacity attributes on tspans after
+    // clip removal).  Cheap: just attribute clears.
+    {
       const tspans = _getGlyphTspans(layer);
       for (const ts of tspans) {
         if (ts._baseX != null) ts.setAttribute("x", String(ts._baseX));
@@ -3625,6 +4005,8 @@
         if (ts.hasAttribute("dx")) ts.removeAttribute("dx");
         if (ts.hasAttribute("dy")) ts.removeAttribute("dy");
         if (ts.hasAttribute("opacity")) ts.removeAttribute("opacity");
+        // v19.53: contraction / shrink write a per-glyph SVG transform.
+        if (ts.hasAttribute("transform")) ts.removeAttribute("transform");
         // Also clear inline style effects that Word Stomp / Variable
         // Font Pulse / Directional (blur) may have written last frame.
         if (ts.style.opacity) ts.style.opacity = "";
@@ -3664,6 +4046,16 @@
     // Stagger etc. propagate to every copy automatically.
     const patternClip = activeAll.find(({ c }) => c.fxKey === "textPattern");
     _applyPatternIfActive(layer, patternClip ? patternClip.c : null, sceneTime);
+    // v19.53 MIRROR CLEANUP.  When no mirror clip is active, remove
+    // the mirror-clones group so stale clones don't linger.
+    const mirrorActive = activeAll.some(({ c }) =>
+      c.fxKey === "mirrorHorizontal" || c.fxKey === "mirrorVertical" ||
+      c.fxKey === "mirrorReflectionAbove" || c.fxKey === "mirrorReflectionBelow" ||
+      c.fxKey === "mirrorFourWay");
+    if (!mirrorActive) {
+      const mgrp = layer.node && layer.node.querySelector('g[id^="mirror-clones-"]');
+      if (mgrp) mgrp.remove();
+    }
   }
 
   /* v19.50 TEXT PATTERN RENDERER.
@@ -7398,6 +7790,20 @@
     directionalCascade(){ return {}; },
     motionBlurReveal()  { return {}; },
     directionalDissolve(){ return {}; },
+    // v19.53 contraction + mirror family stubs (mutation in applyTextFxAtTime).
+    contractionBuild(){ return {}; },
+    collapseIn(){ return {}; },
+    shrinkToCenter(){ return {}; },
+    shrinkToLeft(){ return {}; },
+    shrinkToRight(){ return {}; },
+    shrinkToTop(){ return {}; },
+    shrinkToBottom(){ return {}; },
+    blockCollapse(){ return {}; },
+    mirrorHorizontal(){ return {}; },
+    mirrorVertical(){ return {}; },
+    mirrorReflectionAbove(){ return {}; },
+    mirrorReflectionBelow(){ return {}; },
+    mirrorFourWay(){ return {}; },
     // v19.43 event-style physics — Elastic Stretch & Snap.
     elasticStretch(p, sig, params) {
       const P = params || {};
@@ -13540,6 +13946,67 @@
     }
     wireTextInput(el.textContent, (n) => ({ text: n.value || " " }));
     wireTextInput(el.textFontFamily, (n) => ({ fontFamily: n.value }));
+    // v19.53 FONT UPLOAD.
+    //
+    // Reads user-selected TTF/OTF/WOFF/WOFF2 files, creates a FontFace
+    // per file with the file's basename as the family name, loads it,
+    // registers with document.fonts so all SVG text elements (and
+    // Pattern clones + Mirror clones + Text-on-Path) can render with
+    // it.  Registered families are added to the Font dropdown under
+    // "Project (Uploaded)".  Persists in memory only — export
+    // includes any active layer's rendered text via the normal SVG
+    // pipeline, so exported files show the uploaded font correctly
+    // as long as the browser has it registered when export runs.
+    const uploadedFontNames = new Set();
+    const fontUploadInput = document.getElementById("fontUploadInput");
+    const fontUploadStatus = document.getElementById("fontUploadStatus");
+    const fontProjectGroup = document.getElementById("fontProjectGroup");
+    if (fontUploadInput) {
+      fontUploadInput.addEventListener("change", async () => {
+        const files = Array.from(fontUploadInput.files || []);
+        if (!files.length) return;
+        const results = [];
+        for (const file of files) {
+          try {
+            const buf = await file.arrayBuffer();
+            // Derive family name from filename (strip extension).
+            const family = file.name.replace(/\.(ttf|otf|woff2?|font\/\w+)$/i, "").replace(/[^A-Za-z0-9 _-]/g, "").trim() || "Uploaded";
+            // Register with FontFace API.  Descriptors left default —
+            // the file's own weight/style/stretch metadata (embedded
+            // in the font) apply automatically.  We do NOT synthesize
+            // missing faces; each file is registered as its own family
+            // so users select the specific face they uploaded.
+            const face = new FontFace(family, buf);
+            await face.load();
+            document.fonts.add(face);
+            uploadedFontNames.add(family);
+            // Append to the "Project" optgroup if not already present.
+            if (fontProjectGroup && !fontProjectGroup.querySelector(`option[value="${family}"]`)) {
+              const opt = document.createElement("option");
+              opt.value = family; opt.textContent = family;
+              fontProjectGroup.appendChild(opt);
+            }
+            results.push({ ok: true, family });
+          } catch (err) {
+            results.push({ ok: false, error: String(err && err.message || err), name: file.name });
+          }
+        }
+        if (fontUploadStatus) {
+          const okCount = results.filter(r => r.ok).length;
+          const failCount = results.length - okCount;
+          fontUploadStatus.textContent = `${okCount} loaded${failCount ? ` · ${failCount} failed` : ""}`;
+          setTimeout(() => { fontUploadStatus.textContent = ""; }, 4000);
+        }
+        // Force re-render if the selected layer is text — the newly
+        // loaded font may be currently referenced.
+        if (selectedLayer && selectedLayer.kind === "TEXT") {
+          buildTextLayerSVG(selectedLayer);
+          paintIfPaused();
+        }
+        // Clear the input so re-uploading the same file works.
+        fontUploadInput.value = "";
+      });
+    }
     wireTextInput(el.textSize, (n) => {
       // v19.46: allow 1pt with decimals (no more 8pt floor).
       const v = clamp(parseFloat(n.value) || 64, 1, 800);
