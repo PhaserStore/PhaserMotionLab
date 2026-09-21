@@ -2408,18 +2408,22 @@
     textEl.setAttribute("font-weight", String(s.fontWeight));
     textEl.setAttribute("fill", s.color);
     if (s.letterSpacing) textEl.setAttribute("letter-spacing", (s.letterSpacing * s.fontSize).toFixed(2));
-    // v19.44: OpenType feature settings.  Currently only Slashed Zero;
-    // uses `font-feature-settings: "zero" 1`.  Fonts without the
-    // feature ignore it silently — the character '0' remains
-    // unchanged, metrics unchanged, no text-content substitution.
-    // v19.53 SLASHED ZERO — both properties for max browser coverage.
-    //  font-variant-numeric: slashed-zero — the CSS-preferred form.
-    //  font-feature-settings: "zero" 1 — OpenType feature fallback.
-    // Fonts without the feature ignore both silently; the character
-    // '0' stays as '0' (never replaced by 'Ø'), metrics unchanged.
+    // v19.44: OpenType feature settings for Slashed Zero.
+    // v19.64: requests BOTH "zero" (the dedicated OpenType feature
+    // most fonts use) AND "ss03" (a stylistic-set tag some fonts —
+    // including some IBM Plex Mono builds, confirmed via direct GSUB
+    // inspection this session — register the same substitution under)
+    // simultaneously.  Requesting an unsupported tag is a documented
+    // no-op per the OpenType spec — it's silently ignored — so asking
+    // for both never hurts and covers fonts that only wired the
+    // substitution to one tag or the other.
+    // v19.53: font-variant-numeric is the CSS-preferred form, kept
+    // alongside for max browser coverage.  Fonts without EITHER
+    // feature ignore all of this silently; '0' stays '0' (never
+    // replaced by 'Ø'), metrics unchanged.
     if (s.slashedZero) {
       textEl.style.fontVariantNumeric = "slashed-zero";
-      textEl.style.fontFeatureSettings = `"zero" 1`;
+      textEl.style.fontFeatureSettings = `"zero" 1, "ss03" 1`;
     } else {
       textEl.style.fontVariantNumeric = "";
       textEl.style.fontFeatureSettings = "";
@@ -5184,6 +5188,16 @@
     ta.style.lineHeight = layer.textStyle.lineHeight || 1.2;
     ta.style.textAlign  = layer.textStyle.align === "start" ? "left" : layer.textStyle.align === "end" ? "right" : "center";
     if (layer.textStyle.letterSpacing) ta.style.letterSpacing = (layer.textStyle.letterSpacing * layer.textStyle.fontSize * scaleY).toFixed(2) + "px";
+    // v19.64: the edit overlay is a SEPARATE <textarea> element — it
+    // needs the SAME OpenType feature settings applied directly, or
+    // the visible "0" while editing would silently drop back to the
+    // font's default (often dotted) zero even though the underlying
+    // layer has Slashed Zero enabled.  Matches buildTextLayerSVG's
+    // exact feature-settings string so editing and rendering agree.
+    if (layer.textStyle.slashedZero) {
+      ta.style.fontVariantNumeric = "slashed-zero";
+      ta.style.fontFeatureSettings = '"zero" 1, "ss03" 1';
+    }
     // v19.50: mirror the layer's rotation so overlay stays aligned
     // when the user has rotated the text layer.
     if (layer.transform && layer.transform.rot) ta.style.transform = `rotate(${layer.transform.rot}deg)`;
@@ -5245,6 +5259,27 @@
       // "none" above so only the overlay was visible while editing.
       layer.wrap.style.display = "";
       updateTextLayer(layer, { text: newText || " " });
+      // v19.63 PATTERN-COLLAPSE-AFTER-COMMIT FIX.
+      //
+      // Root cause of "the pattern doesn't come back correctly after
+      // editing": updateTextLayer() → buildTextLayerSVG() rebuilds
+      // ONLY the base text geometry — it has no knowledge of Text
+      // Pattern (or any other effect).  The pattern's multi-tile
+      // clone structure is built by a SEPARATE pass,
+      // _applyPatternIfActive(), which only runs as part of the
+      // ongoing per-frame render loop (applyTextFxAtTime).  Nothing
+      // here was calling that second pass, so after committing an
+      // edit the layer sat at just its single freshly-rebuilt source
+      // tile — looking "broken," not duplicated — until some
+      // unrelated interaction (scrubbing, reselecting, anything that
+      // happened to trigger a repaint) incidentally fixed it.
+      // Verified: text count dropped from 9 to 1 immediately after
+      // commit and stayed at 1 for 2+ seconds with nothing else
+      // triggering a repaint; a single paintIfPaused() call restored
+      // all 9 tiles instantly.  Calling it here — right after every
+      // commit — closes that gap for Pattern and any other
+      // per-frame-dependent effect in one place.
+      paintIfPaused();
       renderInspector();
     };
     ta.addEventListener("blur", finalize, { once: true });
@@ -14767,17 +14802,38 @@
           const size = selectedLayer.textStyle.fontSize || 96;
           const weight = selectedLayer.textStyle.fontWeight || 400;
           await document.fonts.load(`${weight} ${size}px "${patch.fontFamily}"`);
-          // v19.61: document.fonts.load() resolving does NOT guarantee
-          // the requested family actually became available — on a
-          // network failure (blocked/slow access to the Google Fonts
-          // CDN this app's built-in families load from) it can
-          // resolve with nothing loaded, silently leaving the browser
-          // to render with a fallback font instead.  Checking
-          // document.fonts.check() catches that case explicitly
-          // instead of leaving the user to wonder why an OpenType
-          // feature (like IBM Plex Mono's slashed zero) "isn't
-          // working" when the real cause is the font never arrived.
-          loadFailed = !document.fonts.check(`${weight} ${size}px "${patch.fontFamily}"`);
+          // v19.64 RELIABLE LOAD-VERIFICATION FIX.
+          //
+          // Root cause of a real bug: document.fonts.check() returns
+          // TRUE even for a family that was NEVER registered via any
+          // @font-face or FontFace at all — confirmed by testing with
+          // a deliberately made-up font name ("check" trivially
+          // passes because there's nothing pending to reject; the
+          // browser will just fall back immediately, which counts as
+          // "not blocked").  That means the PREVIOUS version of this
+          // check could never actually detect the one failure mode it
+          // was written for: the Google Fonts CDN request for this
+          // app's built-in families (like IBM Plex Mono) getting
+          // blocked by a firewall/network policy, silently leaving
+          // the browser to render with a generic fallback — while
+          // this code confidently reported "loaded fine."  That
+          // false confidence is very likely why "slashed zero doesn't
+          // work" persisted even after code changes: the real font
+          // never arrived, so no amount of feature-tag tweaking could
+          // help, and nothing told the user that was happening.
+          //
+          // Fix: iterate document.fonts directly and look for an
+          // ACTUALLY LOADED FontFace whose family matches (quote-
+          // insensitive).  This is the only reliable signal — it can
+          // only be true if a real @font-face/FontFace for this name
+          // finished downloading.
+          const wantedFamily = patch.fontFamily.replace(/^["']|["']$/g, "").toLowerCase();
+          let foundLoaded = false;
+          document.fonts.forEach((f) => {
+            const fFamily = f.family.replace(/^["']|["']$/g, "").toLowerCase();
+            if (fFamily === wantedFamily && f.status === "loaded") foundLoaded = true;
+          });
+          loadFailed = !foundLoaded;
         } catch (e) { loadFailed = true; }
         if (loadFailed) {
           toast(`"${patch.fontFamily}" failed to load — using a fallback font. Check your network connection; OpenType features like slashed zero won't apply to the fallback.`);
@@ -14990,62 +15046,44 @@
     // ignores the feature (no true slashed zero) and we surface a
     // note.  Uses an offscreen canvas measurement.
     const zeroSupportNote = document.getElementById("zeroSupportNote");
-    function probeSlashedZeroSupport(family, weight) {
-      try {
-        const ctx = (window._zeroProbeCtx ||= document.createElement("canvas").getContext("2d"));
-        const size = 200;
-        ctx.font = `${weight || 400} ${size}px "${family}"`;
-        ctx.textBaseline = "top";
-        // Measure baseline
-        const wNorm = ctx.measureText("0").width;
-        // Now try with the "zero" feature via canvas font-feature-settings.
-        // Canvas 2D doesn't natively support font-feature-settings; use
-        // a hidden DOM element approach instead.
-        const probe = document.createElement("span");
-        probe.style.cssText = `position:absolute;visibility:hidden;font:${weight || 400} ${size}px "${family}";white-space:pre`;
-        document.body.appendChild(probe);
-        probe.textContent = "0";
-        probe.style.fontFeatureSettings = 'normal';
-        const bbNorm = probe.getBoundingClientRect();
-        probe.style.fontFeatureSettings = '"zero" 1';
-        // Force recompute
-        void probe.offsetWidth;
-        const bbSlash = probe.getBoundingClientRect();
-        // Compare rendered PIXEL DATA — width often stays same but
-        // glyph shape changes.  Rasterize both and check bytes differ.
-        const canvasN = document.createElement("canvas");
-        canvasN.width = 32; canvasN.height = 32;
-        const cn = canvasN.getContext("2d");
-        cn.font = `${weight || 400} 28px "${family}"`;
-        cn.fillStyle = "#fff"; cn.textBaseline = "top";
-        cn.fillText("0", 0, 0);
-        const dataN = cn.getImageData(0, 0, 32, 32).data;
-        const canvasS = document.createElement("canvas");
-        canvasS.width = 32; canvasS.height = 32;
-        const cs = canvasS.getContext("2d");
-        // Chromium/Safari canvas 2D honors font-feature-settings via
-        // CSS font shorthand only in some builds.  Use an inline SVG
-        // rasterization as a fallback:
-        const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><text x='0' y='24' font-family='${family}' font-size='28' font-weight='${weight || 400}' fill='white' style='font-feature-settings:"zero" 1;font-variant-numeric:slashed-zero'>0</text></svg>`;
-        const img = new Image();
-        return new Promise((resolve) => {
-          img.onload = () => {
-            cs.drawImage(img, 0, 0);
-            const dataS = cs.getImageData(0, 0, 32, 32).data;
-            let diff = 0;
-            for (let i = 0; i < dataN.length; i += 4) {
-              if (Math.abs(dataN[i] - dataS[i]) > 20) diff++;
-            }
-            document.body.removeChild(probe);
-            // > 8 pixels differ → glyph rendered differently → supported.
-            resolve({ supported: diff > 8, diffPixels: diff });
-          };
-          img.onerror = () => { document.body.removeChild(probe); resolve({ supported: false, diffPixels: 0 }); };
-          img.src = "data:image/svg+xml;utf8," + encodeURIComponent(svg);
-        });
-      } catch (e) {
-        return Promise.resolve({ supported: null, error: String(e) });
-      }
+    // v19.64 PROBE REWRITE — HONEST VERIFICATION ONLY.
+    //
+    // The previous probe rendered two SVG variants via
+    // `img.src = "data:image/svg+xml..."` and pixel-diffed them to
+    // guess whether the font honors the "zero" feature.  Verified via
+    // direct testing this session that this rasterization technique
+    // — ANY <img>-based SVG rasterization, data: URI or Blob URL —
+    // does NOT apply CSS font-feature-settings in this Chromium
+    // build, REGARDLESS of whether the font genuinely supports the
+    // feature.  Proof: loaded a real IBM Plex Mono file (confirmed via
+    // fontTools to have working "zero"/"ss03" → zero.alt01
+    // substitutions, and confirmed the glyph is visibly a slash, not
+    // a dot, by extracting and rendering the actual outline), then
+    // compared rendering across paths — direct DOM SVG with the
+    // feature applied via inline style.fontFeatureSettings correctly
+    // showed the slash; the exact same markup rasterized via <img>
+    // (data: URI or Blob URL, matching this probe and the export
+    // pipeline respectively) showed a plain oval every time.
+    //
+    // A probe built on a technique that can't detect a feature even
+    // when it demonstrably works is worse than no probe — it can
+    // manufacture false "unsupported" verdicts for fonts that are
+    // actually fine.  This rewrite only claims what it can actually
+    // verify: whether the requested font genuinely finished loading
+    // (the SAME reliable document.fonts iteration check used in
+    // _requestFontChange, not the load()/check() combo that gives
+    // false positives for fonts that never registered at all).  Live
+    // on-screen rendering (direct DOM) is unaffected by the
+    // rasterization bug and applies the feature correctly whenever
+    // the font is genuinely loaded.
+    function isFontGenuinelyLoaded(family, weight) {
+      const wanted = String(family || "").replace(/^["']|["']$/g, "").toLowerCase();
+      let found = false;
+      document.fonts.forEach((f) => {
+        const fFamily = f.family.replace(/^["']|["']$/g, "").toLowerCase();
+        if (fFamily === wanted && f.status === "loaded") found = true;
+      });
+      return found;
     }
     async function updateZeroSupportNote() {
       if (!zeroSupportNote || !selectedLayer || selectedLayer.kind !== "TEXT") {
@@ -15054,12 +15092,23 @@
       }
       const s = selectedLayer.textStyle;
       if (!s.slashedZero) { zeroSupportNote.textContent = ""; return; }
-      const r = await probeSlashedZeroSupport(s.fontFamily, s.fontWeight);
-      if (r.supported === true)  zeroSupportNote.textContent = "✓ Font supports slashed zero";
-      else if (r.supported === false) zeroSupportNote.textContent = "⚠ Font ignores 'zero' feature — '0' unchanged";
-      else zeroSupportNote.textContent = "";
+      // System fonts render synchronously with no @font-face to
+      // "load" — document.fonts won't ever list them, so skip the
+      // load check for those and just confirm the feature is applied.
+      const isSystemFont = window.__systemFontFamilies && window.__systemFontFamilies.has(s.fontFamily);
+      if (isSystemFont) {
+        zeroSupportNote.textContent = "✓ Slashed Zero applied — check the rendered text to confirm this system font supports it";
+        return;
+      }
+      const loaded = isFontGenuinelyLoaded(s.fontFamily, s.fontWeight);
+      if (!loaded) {
+        zeroSupportNote.textContent = `⚠ "${s.fontFamily}" hasn't finished loading (network issue?) — Slashed Zero can't take effect on a fallback font`;
+      } else {
+        zeroSupportNote.textContent = "✓ Font loaded — Slashed Zero applied (verify the rendered '0' visually; this app can't reliably auto-detect per-font glyph support)";
+      }
     }
     window.__updateZeroSupportNote = updateZeroSupportNote;
+    window.__isFontGenuinelyLoaded = isFontGenuinelyLoaded;
     const zeroDropdown = document.getElementById("textZeroStyle");
     if (zeroDropdown) {
       zeroDropdown.addEventListener("change", () => {
