@@ -5181,6 +5181,23 @@
     if (layer.transform && layer.transform.rot) ta.style.transform = `rotate(${layer.transform.rot}deg)`;
     el.stage.appendChild(ta);
     _activeTextEditor = { textarea: ta, layer };
+    // v19.61 DUPLICATE-TEXT FIX.
+    //
+    // Root cause: nothing ever hid the ORIGINAL rendered SVG text
+    // while the edit overlay was showing.  The previous session's fix
+    // only reduced the overlay's own background opacity (0.9 → 0.35)
+    // to address a DIFFERENT complaint (the overlay itself looking
+    // like a heavy "second rectangle") — but that same opacity
+    // reduction made the still-fully-rendered text underneath show
+    // through MORE clearly, not less, producing visibly duplicated
+    // text (e.g. "Text" + "Text" overlapping into "TexText").
+    //
+    // Fix: hide the layer's rendered wrap via visibility (not
+    // display:none, which would zero its layout box and break the
+    // wrapRect-based math already captured above) for the duration of
+    // editing, and restore it in finalize() below.  Only ONE visible
+    // representation of the text exists at a time now.
+    layer.wrap.style.visibility = "hidden";
     // v19.60: hide the outer selection box + resize handles while
     // editing — matches Figma/Canva/AE (handles disappear in text-
     // edit mode) and also removes the dead click-zone the north
@@ -5212,6 +5229,9 @@
       _activeTextEditor = null;
       ta.remove();
       document.body.classList.remove("text-editing");
+      // v19.61: restore the original layer's visibility — it was
+      // hidden above so only the overlay was visible while editing.
+      layer.wrap.style.visibility = "";
       updateTextLayer(layer, { text: newText || " " });
       renderInspector();
     };
@@ -14709,17 +14729,40 @@
     const _requestFontChange = async (patch) => {
       if (!selectedLayer || selectedLayer.kind !== "TEXT") return;
       // If patch changes the family, wait for it to load first.
-      if (patch.fontFamily) {
+      let loadFailed = false;
+      const isSystemFont = patch.fontFamily && window.__systemFontFamilies && window.__systemFontFamilies.has(patch.fontFamily);
+      if (patch.fontFamily && !isSystemFont) {
         try {
           // Match the same specifier we use when building — includes
           // fallback stack, but load only requires the primary family.
           const size = selectedLayer.textStyle.fontSize || 96;
           const weight = selectedLayer.textStyle.fontWeight || 400;
           await document.fonts.load(`${weight} ${size}px "${patch.fontFamily}"`);
-        } catch (e) { /* fonts.load rejects on invalid family — proceed */ }
+          // v19.61: document.fonts.load() resolving does NOT guarantee
+          // the requested family actually became available — on a
+          // network failure (blocked/slow access to the Google Fonts
+          // CDN this app's built-in families load from) it can
+          // resolve with nothing loaded, silently leaving the browser
+          // to render with a fallback font instead.  Checking
+          // document.fonts.check() catches that case explicitly
+          // instead of leaving the user to wonder why an OpenType
+          // feature (like IBM Plex Mono's slashed zero) "isn't
+          // working" when the real cause is the font never arrived.
+          loadFailed = !document.fonts.check(`${weight} ${size}px "${patch.fontFamily}"`);
+        } catch (e) { loadFailed = true; }
+        if (loadFailed) {
+          toast(`"${patch.fontFamily}" failed to load — using a fallback font. Check your network connection; OpenType features like slashed zero won't apply to the fallback.`);
+        }
       }
       updateTextLayer(selectedLayer, patch);
       paintIfPaused();
+      // v19.61: refresh the zero-support note too — previously this
+      // only ran from the Zero Style dropdown's OWN change handler,
+      // so if a user picked a new font family AFTER already having
+      // Slashed Zero enabled, the note stayed stale (reflecting
+      // whatever the PREVIOUS font supported) even though the newly
+      // loaded font might behave differently.
+      if (typeof window.__updateZeroSupportNote === "function") window.__updateZeroSupportNote();
     };
     if (el.textFontFamily) {
       el.textFontFamily.addEventListener("change", () => {
@@ -16763,6 +16806,90 @@
       paintIfPaused();
     });
 
+    // v19.61 SYSTEM FONTS — real Local Font Access API integration.
+    //
+    // Self-injected (script-only constraint) next to the existing
+    // Upload Fonts button.  Uses window.queryLocalFonts() — the real
+    // browser API for reading locally-installed fonts — available in
+    // Chromium-based browsers (Chrome/Edge 103+) behind an explicit
+    // permission prompt; NOT available in Firefox/Safari.  Every
+    // outcome (unsupported browser, permission denied, success) gets
+    // a clear, specific message — this is exactly the "fallback
+    // behavior should be clear if a font is unavailable" requirement.
+    const SYSTEM_FONT_FAMILIES = new Set();   // tracks which selected fonts are system fonts, so _requestFontChange can skip the web-font load/check path for them (system fonts render synchronously — no @font-face, nothing to "load")
+    window.__systemFontFamilies = SYSTEM_FONT_FAMILIES;   // exposed for the font-change logic below, which lives in a different closure
+    (function _injectSystemFontsButtonHTML() {
+      if (document.getElementById("systemFontsBtn")) return;
+      const uploadBtn = document.getElementById("fontUploadBtn");
+      if (!uploadBtn || !uploadBtn.parentNode) return;
+      const btn = document.createElement("button");
+      btn.id = "systemFontsBtn";
+      btn.type = "button";
+      btn.style.cssText = "display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:var(--text);background:transparent;border:1px solid var(--border-strong);cursor:pointer;padding:4px 8px;border-radius:4px;margin-left:6px;white-space:nowrap";
+      btn.title = "Use fonts installed on your operating system (Chrome/Edge only — requires permission)";
+      btn.textContent = "🖥 System Fonts";
+      uploadBtn.parentNode.insertBefore(btn, uploadBtn.nextSibling);
+      const statusRow = document.createElement("div");
+      statusRow.className = "control";
+      statusRow.innerHTML = `<span class="ctl-label" style="opacity:0.6">&nbsp;</span><span id="systemFontsStatus" style="font-size:11px;color:var(--ink-3);flex:1"></span>`;
+      // Insert after the existing fontUploadStatus row if present, else after uploadBtn's own control row.
+      const uploadStatusRow = document.getElementById("fontUploadStatus") && document.getElementById("fontUploadStatus").closest(".control");
+      const anchorRow = uploadStatusRow || uploadBtn.closest(".control");
+      if (anchorRow && anchorRow.parentNode) anchorRow.parentNode.insertBefore(statusRow, anchorRow.nextSibling);
+    })();
+    (function _injectSystemFontsOptgroupHTML() {
+      const select = document.getElementById("textFontFamily");
+      if (!select || document.getElementById("fontSystemGroup")) return;
+      const group = document.createElement("optgroup");
+      group.label = "System Fonts";
+      group.id = "fontSystemGroup";
+      select.appendChild(group);
+    })();
+    document.addEventListener("click", async (e) => {
+      const btn = e.target.closest("#systemFontsBtn");
+      if (!btn) return;
+      const status = document.getElementById("systemFontsStatus");
+      if (typeof window.queryLocalFonts !== "function") {
+        // v19.61: honest, specific message — this is a real browser
+        // capability gap, not a bug in this app.  Chrome/Edge only.
+        if (status) status.textContent = "⚠ System font access isn't supported in this browser. Try Chrome or Edge (v103+).";
+        toast("System fonts need Chrome or Edge — not supported in this browser");
+        return;
+      }
+      if (status) status.textContent = "Requesting permission…";
+      try {
+        const localFonts = await window.queryLocalFonts();
+        // Dedupe by family — queryLocalFonts returns one entry PER
+        // FACE (e.g. "Arial", "Arial Bold", "Arial Italic" are
+        // separate entries with the same .family) — the dropdown
+        // needs one option per FAMILY, matching how the built-in and
+        // uploaded groups already work.
+        const families = [...new Set(localFonts.map(f => f.family))].sort();
+        const group = document.getElementById("fontSystemGroup");
+        if (group) {
+          group.innerHTML = "";
+          families.forEach(fam => {
+            const opt = document.createElement("option");
+            opt.value = fam; opt.textContent = fam;
+            group.appendChild(opt);
+            SYSTEM_FONT_FAMILIES.add(fam);
+          });
+        }
+        if (status) {
+          status.textContent = families.length
+            ? `✓ ${families.length} system font${families.length === 1 ? "" : "s"} available in the Font dropdown`
+            : "⚠ No system fonts returned — permission may not have been granted. Check your browser's site settings and try again.";
+        }
+        toast(families.length ? `${families.length} system fonts loaded` : "No system fonts found — check permission was granted");
+      } catch (err) {
+        // v19.61: permission denied or the user dismissed the browser
+        // prompt — both land here.  Clear, actionable message rather
+        // than a silent no-op.
+        if (status) status.textContent = "⚠ Permission denied. Click \"System Fonts\" again to retry, or check your browser's site settings.";
+        toast("System font access denied");
+      }
+    });
+
     /* ================================================================
      * v19.58 DIRECTORS PANEL — render + wire.
      * Queries the DOM directly (getElementById) rather than the `el`
@@ -17582,8 +17709,28 @@
       const x2 = Math.max(box.startX, box.curX);
       const y1 = Math.min(box.startY, box.curY);
       const y2 = Math.max(box.startY, box.curY);
-      // Skip near-zero marquees (accidental clicks with tiny wobble).
-      if ((x2 - x1) < 4 && (y2 - y1) < 4) return;
+      // v19.61 DESELECTION FIX.
+      //
+      // Root cause of "deselecting is difficult and inconsistent": a
+      // PLAIN CLICK (mousedown+mouseup with zero movement) produces a
+      // zero-size box, which is INDISTINGUISHABLE from "accidental
+      // wobble" by size alone.  The previous version returned early
+      // for BOTH cases before ever reaching the deselect logic below —
+      // so a deliberate click on empty canvas to deselect silently did
+      // nothing, and only an ACCIDENTAL few-pixel drag during the
+      // click (occasionally clearing selection) made behavior feel
+      // random.  Fix: a tiny/zero marquee is just a plain click — we
+      // already KNOW (from the caller, el.artboard's mousedown
+      // handler) that pickLayerAtEvent found nothing directly under
+      // the cursor, since that's the only way startBoxSelect() runs
+      // in the first place.  So a tiny marquee can go straight to
+      // deselect without needing the AABB hit-test at all — that test
+      // is only meaningful for a REAL marquee with actual area.
+      const isTinyMarquee = (x2 - x1) < 4 && (y2 - y1) < 4;
+      if (isTinyMarquee) {
+        if (!box.additive) selectLayer(null);
+        return;
+      }
       // Find all layer bounding boxes that INTERSECT the marquee.
       // Uses axis-aligned test on the layer's untransformed box; for
       // rotated layers we test against the AABB of the rotated corners.
