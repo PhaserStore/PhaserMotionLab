@@ -91,6 +91,26 @@
       .director-row-actions button { flex: 1; font-size: 10.5px; padding: 3px 4px; }
       .director-row-summary { font-size: 10.5px; color: var(--ink-3); margin-top: 5px; line-height: 1.4; }
       .director-row-iconbtn { width: 22px; height: 22px; flex-shrink: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+      /* v19.60 TEXT FRAME UX FIXES.
+         Root cause of "second rounded rectangle": .text-edit-overlay
+         previously had a 90%-opaque dark fill + 6px border-radius +
+         bold accent border, all stacked visually on top of the
+         outer #selectionBox's own dashed-rect + square handles —
+         reading as two competing boxes.  Now the overlay uses a
+         SUBTLE fill and a thin, low-key border (per this session's
+         "text box can have subtle dark fill + thin border, avoid
+         oversized decorative containers" spec), and the outer
+         selection box + resize handles HIDE while text is actively
+         being edited — matching Figma/Canva/AE, where resize handles
+         disappear in text-edit mode and reappear once you click away.
+         This also fixes a real bug: the overlay's z-index (200) sat
+         ABOVE the resize handles' z-index (22), silently blocking the
+         north handle specifically whenever editing was active;
+         hiding the handles during edit removes the dead click-zone
+         entirely rather than patching the stacking order. */
+      .text-edit-overlay { background: rgba(21,22,26,0.35) !important; border-radius: 2px !important; border: 1px solid rgba(255,255,255,0.25) !important; box-shadow: none !important; }
+      .text-edit-overlay:focus { border-color: var(--accent) !important; }
+      body.text-editing .selection-box { display: none !important; }
     `;
     const tag = document.createElement("style");
     tag.id = "v1957-layout-fixes";
@@ -121,6 +141,19 @@
     // ruler ticks.  "seconds" | "beats" | "barsbeats".
     tlRulerMode: "seconds",
     tlBeatsPerBar: 4,   // time-signature numerator for Bars & Beats mode
+    // v19.60 GLOBAL TEXT EFFECT SPEED.
+    // A single multiplier applied to the ELAPSED-TIME term every
+    // text-glyph-timing effect computes internally (reveal/hide,
+    // shrink/contraction, character stagger, spring, word stomp,
+    // cascade, weight trail, bulk typing, variable font pulse, sine
+    // wave) — NOT to sceneTime itself, so playback/audio/video stay
+    // perfectly in sync while text animation runs faster or slower.
+    // Existing per-clip duration/stagger/delay param VALUES never
+    // change — only how fast the shared clock they're compared
+    // against advances.  1 = 100% = today's existing speed exactly;
+    // old projects with no saved value default here and behave
+    // identically to before this feature existed.
+    textEffectSpeed: 1,
     // v19.0 tool mode — "select" is the default; other tools ("text", future
     // "rect"/"ellipse"/"line") temporarily change canvas click behavior.
     tool: "select",
@@ -2199,7 +2232,13 @@
     return {
       text: "Text",
       fontFamily: "Inter",
-      fontSize: 96,
+      // v19.60: 96pt default made every new text layer huge — the box
+      // is MEASURED from the rendered text (buildTextLayerSVG), so a
+      // single number change here fixes both "font size too large"
+      // and "box too large" at once.  32pt is a normal starting point
+      // for social-style captions/titles, matching Figma/Canva
+      // defaults much more closely than 96pt did.
+      fontSize: 32,
       fontWeight: 500,
       color: "#FFFFFF",
       align: "middle",         // start | middle | end (SVG text-anchor values)
@@ -2568,7 +2607,11 @@
       const src = String(inputText || "");
       if (!src.length) return "";
       const charDelay = Math.max(20, P.charDelay || 90);
-      const localT = Math.max(0, sceneTime - (layer.start + clip.start));
+      // v19.60: global text-effect speed multiplier applied to the
+      // ELAPSED-TIME term only (not sceneTime itself) — see the
+      // STATE.textEffectSpeed comment for why this keeps playback in
+      // sync while still letting the reveal race faster or slower.
+      const localT = Math.max(0, sceneTime - (layer.start + clip.start)) * (STATE.textEffectSpeed || 1);
       // Normalize local time via loop / ping-pong.
       const oneCycleMs = src.length * charDelay + 200;
       let normMs = localT * 1000;
@@ -2608,7 +2651,8 @@
     bulkTyping(layer, clip, p, sig, sceneTime, inputText) {
       const P = clip.params || {};
       const src = String(inputText);
-      const localT = Math.max(0, sceneTime - (layer.start + clip.start));
+      // v19.60: global text-effect speed multiplier (see STATE.textEffectSpeed).
+      const localT = Math.max(0, sceneTime - (layer.start + clip.start)) * (STATE.textEffectSpeed || 1);
       const cps = P.cps || 20;
       let visibleChars = Math.floor(localT * cps);
       const backspaceAt = (P.backspace || 0) / 100;
@@ -2692,7 +2736,8 @@
       const stiffness = Math.max(20, P.stiffness || 180);
       const damping   = Math.max(1, P.damping || 14);
       const drop      = P.distance || 80;
-      const localMs   = Math.max(0, sceneTime - (layer.start + clip.start)) * 1000;
+      // v19.60: global text-effect speed multiplier (see STATE.textEffectSpeed).
+      const localMs   = Math.max(0, sceneTime - (layer.start + clip.start)) * 1000 * (STATE.textEffectSpeed || 1);
       // Undamped natural frequency and damped frequency
       const omega = Math.sqrt(stiffness);
       const zeta  = damping / (2 * Math.sqrt(stiffness));
@@ -2726,7 +2771,8 @@
       const stagger = P.stagger || 180;
       const overshoot = (P.overshoot || 220) / 100;    // scale peak
       const settleMs  = P.settleMs || 300;
-      const localMs   = Math.max(0, sceneTime - (layer.start + clip.start)) * 1000;
+      // v19.60: global text-effect speed multiplier (see STATE.textEffectSpeed).
+      const localMs   = Math.max(0, sceneTime - (layer.start + clip.start)) * 1000 * (STATE.textEffectSpeed || 1);
       for (let i = 0; i < N; i++) {
         const t = (localMs - i * stagger) / settleMs;
         let scale, op;
@@ -2759,7 +2805,8 @@
       const dist = P.distance || 180;
       const stagger = P.stagger || 45;
       const seed = P.seed || 7;
-      const localMs = Math.max(0, sceneTime - (layer.start + clip.start)) * 1000;
+      // v19.60: global text-effect speed multiplier (see STATE.textEffectSpeed).
+      const localMs = Math.max(0, sceneTime - (layer.start + clip.start)) * 1000 * (STATE.textEffectSpeed || 1);
       const perDur = 500;
       for (let i = 0; i < N; i++) {
         const t = Math.max(0, Math.min(1, (localMs - i * stagger) / perDur));
@@ -2788,7 +2835,9 @@
       const wMax = P.weightMax || 800;
       const cycle = Math.max(0.1, P.cycleSec || 1.5);
       // Sine oscillation, 0..1
-      const phase = (sceneTime / cycle) * Math.PI * 2;
+      // v19.60: global text-effect speed multiplier — scales how fast
+      // the pulse cycle advances, same as every other text-fx timing.
+      const phase = (sceneTime / cycle) * Math.PI * 2 * (STATE.textEffectSpeed || 1);
       const u = (Math.sin(phase) * 0.5 + 0.5);
       const w = Math.round(wMin + (wMax - wMin) * u);
       // Apply to the text element via font-variation-settings.
@@ -2836,7 +2885,9 @@
       const N = groups.length;
       const orderIdx = _computeOrderIndices(N, order, seed + (clip.id || 0) * 13);
 
-      const localMs = Math.max(0, sceneTime - (layer.start + clip.start)) * 1000;
+      // v19.60: global text-effect speed multiplier (see STATE.textEffectSpeed).
+
+      const localMs = Math.max(0, sceneTime - (layer.start + clip.start)) * 1000 * (STATE.textEffectSpeed || 1);
       // Total time budget for the reveal (or hide) pass — used for
       // "both" mode to know when to switch from reveal → hide.
       const totalRevealMs = delayMs + (N - 1) * staggerMs + durMs;
@@ -3022,7 +3073,8 @@
       const groups = _groupTspansByUnit(tspans, target, layer);
       const N = groups.length;
       const orderIdx = _computeOrderIndices(N, order, seed + (clip.id || 0) * 13);
-      const localMs = Math.max(0, sceneTime - (layer.start + clip.start)) * 1000;
+      // v19.60: global text-effect speed multiplier (see STATE.textEffectSpeed).
+      const localMs = Math.max(0, sceneTime - (layer.start + clip.start)) * 1000 * (STATE.textEffectSpeed || 1);
       const totalMs = delayMs + (N - 1) * staggerMs + durMs;
 
       const bbCache = new Map();   // glyph → BBox (once per frame)
@@ -3244,7 +3296,8 @@
       const groups = _groupTspansByUnit(tspans, unit, layer);
       const N = groups.length;
       const orderIdx = _computeOrderIndices(N, order, (clip.id || 0) * 13);
-      const localMs = Math.max(0, sceneTime - (layer.start + clip.start)) * 1000;
+      // v19.60: global text-effect speed multiplier (see STATE.textEffectSpeed).
+      const localMs = Math.max(0, sceneTime - (layer.start + clip.start)) * 1000 * (STATE.textEffectSpeed || 1);
       for (let i = 0; i < N; i++) {
         const delay = orderIdx[i] * staggerMs;
         const t = clamp01((localMs - delay) / dur);
@@ -3280,7 +3333,9 @@
       const speed = P.speed ?? 1;
       const axis = P.axis || "y";
       // Wave phase advances with scene time — deterministic.
-      const phase = sceneTime * speed * 2 * Math.PI;
+      // v19.60: global text-effect speed multiplier, layered on top
+      // of the effect's own per-clip "speed" param (both multiply).
+      const phase = sceneTime * speed * 2 * Math.PI * (STATE.textEffectSpeed || 1);
       const groups = (P.target === "word") ? _groupTspansByUnit(tspans, "word", layer) : tspans.map(t => [t]);
       let x = 0;
       for (let i = 0; i < groups.length; i++) {
@@ -5022,7 +5077,7 @@
      multiplied by STATE.zoom so the editor visually MATCHES the text
      it's editing rather than shrinking to a fixed cap. */
   let _activeTextEditor = null;
-  function startTextEdit(layer) {
+  function startTextEdit(layer, clickEvent) {
     if (!layer || layer.kind !== "TEXT" || _activeTextEditor) return;
     // Layer's on-screen bounds in viewport coords, then offset into stage
     // coordinate space (which is scrolled).
@@ -5040,13 +5095,78 @@
     const padYvb = Math.max(8, layer.textStyle.fontSize * 0.25);
     const padXpx = padXvb * scaleX;
     const padYpx = padYvb * scaleY;
+    // v19.60: compute an approximate character index from the click
+    // point BEFORE creating the textarea, so we can place the cursor
+    // there instead of always selecting the whole text — "click
+    // inside the text to position the cursor" per this session's
+    // spec.  Uses the SAME cached _baseX/_baseY per-glyph positions
+    // the layout-once architecture already maintains (v19.47) — no
+    // new measurement pass, just a nearest-glyph lookup.
+    let clickCharIndex = null;
+    if (clickEvent && typeof clickEvent.clientX === "number") {
+      try {
+        const glyphs = Array.from(layer.node.querySelectorAll('tspan[data-glyph="1"]'));
+        if (glyphs.length) {
+          // Click point → viewBox-space coords (same transform the
+          // glyphs' own _baseX/_baseY already live in).
+          const vbX = (clickEvent.clientX - wrapRect.left) / scaleX;
+          const vbY = (clickEvent.clientY - wrapRect.top) / scaleY;
+          let bestIdx = 0, bestDist = Infinity, bestAfter = false;
+          glyphs.forEach((g, i) => {
+            const gx = g._baseX != null ? g._baseX : parseFloat(g.getAttribute("x") || "0");
+            const gy = g._baseY != null ? g._baseY : parseFloat(g.getAttribute("y") || "0");
+            const d = Math.hypot(vbX - gx, vbY - gy);
+            if (d < bestDist) { bestDist = d; bestIdx = i; bestAfter = vbX > gx; }
+          });
+          clickCharIndex = bestAfter ? bestIdx + 1 : bestIdx;
+        }
+      } catch (e) { clickCharIndex = null; }
+    }
     const ta = document.createElement("textarea");
     ta.className = "text-edit-overlay";
     ta.value = layer.textStyle.text;
     ta.setAttribute("spellcheck", "false");
+    ta.style.boxSizing = "border-box";
     ta.style.left  = (wrapRect.left - stageRect.left + el.stage.scrollLeft + padXpx) + "px";
     ta.style.top   = (wrapRect.top  - stageRect.top  + el.stage.scrollTop  + padYpx * 0.05) + "px";
-    ta.style.width = Math.max(80, wrapRect.width - padXpx * 2)  + "px";
+    // v19.60: WRAP-MISMATCH FIX.
+    //
+    // Root cause: the SVG's own line count comes from a Canvas 2D
+    // `measureText()` pass (buildTextLayerSVG's soft-wrap), but the
+    // browser's native <textarea> line-wrapping is decided
+    // INDEPENDENTLY from its own font-rendering metrics.  Even with
+    // matching nominal font-size and font-family, small cross-engine
+    // measurement differences (canvas measureText vs. textarea glyph
+    // advances) were enough to make the overlay wrap a line the SVG
+    // rendered as ONE line — visually splitting e.g. "Hello World"
+    // into two lines in the overlay while the SVG showed it on one.
+    //
+    // Fix: don't let the browser re-decide wrapping at all.  Mirror
+    // the SVG's OWN line count instead — if the source text (as
+    // currently rendered) occupies a single SVG line, force
+    // `white-space: pre` (no auto-wrap; explicit \n from Shift+Enter
+    // while typing still works) and pad the width with a safety
+    // margin so the single line can never accidentally wrap.  If the
+    // SVG already has multiple lines (manual breaks or soft-wrap),
+    // keep `pre-wrap` since matching wrap points line-for-line isn't
+    // practical across two different text-layout engines anyway —
+    // multi-line editing still works correctly via native textarea
+    // behavior, just without pixel-perfect wrap-point mirroring.
+    const svgLineCount = new Set(
+      Array.from(layer.node.querySelectorAll('tspan[data-glyph="1"]')).map(g => g.getAttribute("data-line"))
+    ).size || 1;
+    const widthSafetyMargin = 1.12;   // 12% buffer absorbs cross-engine metric drift
+    const baseWidth = Math.max(80, wrapRect.width - padXpx * 2);
+    const finalWidth = svgLineCount <= 1 ? baseWidth * widthSafetyMargin : baseWidth;
+    // Widen SYMMETRICALLY (shift left by half the added margin) so the
+    // box's horizontal CENTER stays anchored regardless of the text's
+    // alignment mode — matters most for center/right-aligned text,
+    // where growing width only to the right would visibly shift the
+    // rendered glyphs off from the SVG's true position.
+    const extraW = finalWidth - baseWidth;
+    ta.style.left = (parseFloat(ta.style.left) - extraW / 2) + "px";
+    ta.style.width = finalWidth + "px";
+    ta.style.whiteSpace = svgLineCount <= 1 ? "pre" : "pre-wrap";
     ta.style.height= Math.max(28, wrapRect.height - padYpx * 0.1) + "px";
     // Match visual font metrics 1:1 with what's on-canvas.
     ta.style.fontFamily = `"${layer.textStyle.fontFamily}", ${TEXT_FONT_STACK}`;
@@ -5061,14 +5181,37 @@
     if (layer.transform && layer.transform.rot) ta.style.transform = `rotate(${layer.transform.rot}deg)`;
     el.stage.appendChild(ta);
     _activeTextEditor = { textarea: ta, layer };
-    // Auto-select the placeholder so the user's first keypress replaces it.
-    // Small timeout so focus() applies reliably.
-    requestAnimationFrame(() => { ta.focus(); ta.select(); });
+    // v19.60: hide the outer selection box + resize handles while
+    // editing — matches Figma/Canva/AE (handles disappear in text-
+    // edit mode) and also removes the dead click-zone the north
+    // handle had while sitting underneath the overlay's z-index.
+    document.body.classList.add("text-editing");
+    // v19.60: only select-all for the UNMODIFIED default placeholder
+    // ("Text") so a fresh layer's first keypress replaces it as
+    // before.  For existing/loaded text, place the cursor at the
+    // clicked position instead of forcing a full-text selection —
+    // "click inside the text to position the cursor," not "click
+    // inside the text to select everything."
+    const isFreshPlaceholder = layer.textStyle.text === "Text";
+    requestAnimationFrame(() => {
+      ta.focus();
+      if (isFreshPlaceholder && clickCharIndex == null) {
+        ta.select();
+      } else if (clickCharIndex != null) {
+        const idx = Math.max(0, Math.min(ta.value.length, clickCharIndex));
+        ta.setSelectionRange(idx, idx);
+      } else {
+        // No click coordinates available (e.g. programmatic call) —
+        // land at the end, a reasonable default for "continue typing."
+        ta.setSelectionRange(ta.value.length, ta.value.length);
+      }
+    });
     const finalize = () => {
       if (!_activeTextEditor) return;
       const newText = ta.value;
       _activeTextEditor = null;
       ta.remove();
+      document.body.classList.remove("text-editing");
       updateTextLayer(layer, { text: newText || " " });
       renderInspector();
     };
@@ -14944,7 +15087,7 @@
         const wrap = e.target.closest && e.target.closest(".layer-el");
         if (!wrap) return;
         const layer = layers.find((L) => L.wrap === wrap);
-        if (layer && layer.kind === "TEXT") { e.preventDefault(); e.stopPropagation(); startTextEdit(layer); }
+        if (layer && layer.kind === "TEXT") { e.preventDefault(); e.stopPropagation(); startTextEdit(layer, e); }
       });
       // v19.32: right-click on a stage layer opens the same context
       // menu as right-click on its row in the layer panel.  Users
@@ -16580,6 +16723,45 @@
       `;
       zoomWrap.parentNode.insertBefore(seg, zoomWrap);
     })();
+    // v19.60 GLOBAL TEXT EFFECT SPEED control — self-injected into the
+    // text inspector panel, anchored right after the Zero Style
+    // control (present since v19.54) so it lands in a predictable
+    // spot without needing index.html changes.  A global setting
+    // (not per-layer), so it's a single row with a segmented-button
+    // speed picker, matching the existing Sec/Beats/Bars pattern.
+    (function _injectTextEffectSpeedHTML() {
+      if (document.getElementById("textEffectSpeedSeg")) return;   // already present
+      const anchor = document.getElementById("textZeroStyle");
+      const zeroControl = anchor && anchor.closest(".control");
+      if (!zeroControl || !zeroControl.parentNode) return;
+      const row = document.createElement("div");
+      row.className = "control";
+      row.innerHTML = `
+        <span class="ctl-label" title="Global speed multiplier for text-effect timing — reveal, delay, stagger, trail, character and word timing all scale together. Does not affect playback/audio/video speed, only how fast text animations run within their own clip.">Effect Speed</span>
+        <div class="seg" id="textEffectSpeedSeg" style="flex-wrap:wrap">
+          <button class="seg-btn" data-speed="0.25">0.25x</button>
+          <button class="seg-btn" data-speed="0.5">0.5x</button>
+          <button class="seg-btn active" data-speed="1">1x</button>
+          <button class="seg-btn" data-speed="2">2x</button>
+          <button class="seg-btn" data-speed="3">3x</button>
+          <button class="seg-btn" data-speed="4">4x</button>
+        </div>
+      `;
+      zeroControl.parentNode.insertBefore(row, zeroControl.nextSibling);
+    })();
+    // Event delegation on document — same reasoning as the ruler-mode
+    // buttons: this control may be injected AFTER this wiring block
+    // runs (depending on init order), so binding directly to the
+    // buttons here could silently find nothing.  Delegation is
+    // immune to that ordering issue.
+    document.addEventListener("click", (e) => {
+      const btn = e.target.closest("#textEffectSpeedSeg .seg-btn");
+      if (!btn) return;
+      const seg = document.getElementById("textEffectSpeedSeg");
+      STATE.textEffectSpeed = parseFloat(btn.dataset.speed) || 1;
+      seg.querySelectorAll(".seg-btn").forEach(b => b.classList.toggle("active", b === btn));
+      paintIfPaused();
+    });
 
     /* ================================================================
      * v19.58 DIRECTORS PANEL — render + wire.
