@@ -26,6 +26,66 @@
 (() => {
   "use strict";
 
+  /* v19.57 RUNTIME STYLE INJECTION.
+   *
+   * This session fixed a critical CSS Grid/Flexbox overflow regression
+   * (timeline zoom was pushing the Director panel, zoom slider, and
+   * the whole app shell outside the browser viewport) plus related
+   * toolbar-wrapping and resize-handle-weight fixes.  Those fixes live
+   * in style.css normally, but per this session's explicit request —
+   * "implement styling changes from script.js without requiring a
+   * separate CSS file" — this block injects the exact same rules at
+   * runtime via a <style> tag, so shipping script.js ALONE is
+   * sufficient even if style.css isn't also updated.  Rules use the
+   * same selectors as style.css; if style.css already has the fix,
+   * this is a harmless no-op duplicate (last one in the cascade wins,
+   * identical rules either way).
+   *
+   * ROOT CAUSES FIXED (see comments in style.css for full detail):
+   *  1. `.app` (CSS Grid container) had no explicit grid-template-
+   *     columns AND no overflow-x control — its implicit "auto" column
+   *     track sized itself from content's max-content width instead of
+   *     the viewport, letting zoomed timeline content push the ENTIRE
+   *     grid (and everything in it) wider than the browser window.
+   *  2. `.timeline` (the grid item / flex container holding the whole
+   *     timeline footer) had no min-width:0, letting its own content
+   *     force it wider than its grid cell even after fix #1.
+   *  3. `.tl-controls` (the timeline toolbar row, ~22 buttons/inputs)
+   *     had flex-wrap:nowrap + overflow-x:hidden, silently CLIPPING
+   *     trailing controls (critically, the Zoom slider) at narrow
+   *     viewports instead of wrapping them onto a visible second row.
+   *  4. `.tl-handle` (clip resize handles) painted its full 14px hit
+   *     area with a heavy translucent fill; now a slim 3px accent
+   *     strip carries the visual weight while the 14px hit area (for
+   *     easy grabbing) stays unchanged.
+   */
+  (function _injectV1957LayoutFixStyles() {
+    const css = `
+      .app { grid-template-columns: minmax(0, 1fr) !important; overflow-x: hidden !important; }
+      .timeline { min-width: 0 !important; overflow-x: hidden !important; max-width: 100% !important; }
+      .tl-body { overflow-x: auto !important; }
+      .tl-body::-webkit-scrollbar { width: 10px; height: 10px; background: transparent; }
+      .tl-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: 5px; border: 2px solid transparent; background-clip: padding-box; }
+      .tl-body::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.28); border: 2px solid transparent; background-clip: padding-box; }
+      .tl-body::-webkit-scrollbar-corner { background: transparent; }
+      .tl-controls { flex-wrap: wrap !important; row-gap: 6px !important; min-width: 0 !important; overflow-x: hidden !important; overflow-y: visible !important; }
+      .tl-controls > * { flex-shrink: 0; }
+      .tl-handle { background: transparent !important; }
+      .tl-handle::after { content: ""; position: absolute; top: 2px; bottom: 2px; width: 3px; border-radius: 2px; background: rgba(255,255,255,0.16); transition: background 100ms ease, box-shadow 100ms ease, width 100ms ease; }
+      .tl-handle.left::after { left: 2px; }
+      .tl-handle.right::after { right: 2px; }
+      .tl-clip:hover > .tl-handle::after { background: rgba(255, 255, 255, 0.38); }
+      .tl-clip.selected > .tl-handle::after { background: rgba(255, 255, 255, 0.55); }
+      .tl-handle:hover::after { background: rgba(255, 255, 255, 0.85); box-shadow: 0 0 0 1px rgba(255,255,255,0.3); width: 4px; }
+      .tl-handle:active::after { background: var(--accent-2); }
+      html, body { overflow-x: hidden; }
+    `;
+    const tag = document.createElement("style");
+    tag.id = "v1957-layout-fixes";
+    tag.textContent = css;
+    (document.head || document.documentElement).appendChild(tag);
+  })();
+
   /* ---------------- STATE ---------------- */
   const STATE = {
     // Scene overlay strengths — default all zero.  Users opt in to
@@ -14776,6 +14836,45 @@
         if (e.shiftKey) ungroupSelectedLayer();
         else            groupSelectedLayers();
       }
+      // v19.57: Cmd/Ctrl+0 fits the complete timeline (resets zoom to
+      // 1x, scrolls to the start).  Playback time is untouched —
+      // zoomFitAll() only ever changes STATE.tlZoom and scroll
+      // position, never STATE.time — and renderTimeline() (called at
+      // the end of zoomFitAll) keeps the playhead pixel-synced via
+      // updatePlayheads(), so the playhead correctly lands on the
+      // unchanged current frame after fitting.
+      if ((e.key === "0") && (e.metaKey || e.ctrlKey) && !typing) {
+        e.preventDefault();
+        zoomFitAll();
+        toast("Timeline fit to view");
+      }
+      // v19.57: Escape cancels an in-progress clip drag/resize,
+      // restoring the clip to its pre-drag position/duration —
+      // matches the "Escape cancels current drag/resize" requirement.
+      // Layer-drag-on-canvas (dragL) and audio-clip-drag have their
+      // own separate state; this covers the timeline clip move/trim
+      // path (TL.dragClip / TL.orig).
+      if (e.key === "Escape" && TL.dragClip && TL.orig && !typing) {
+        e.preventDefault();
+        const { layer } = TL.dragClip, o = TL.orig;
+        layer.start = o.start;
+        layer.duration = o.duration;
+        endClipDrag();
+        renderTimeline();
+        toast("Drag cancelled");
+      }
+      // v19.57: +/- zoom the timeline in/out.  Guarded the same way
+      // as every other global shortcut (not while typing).  "=" is
+      // included since it's the unshifted key sharing the "+" cap on
+      // most keyboard layouts.
+      if ((e.key === "+" || e.key === "=" || e.key === "-" || e.key === "_") && !typing && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        const factor = (e.key === "+" || e.key === "=") ? 1.15 : 1 / 1.15;
+        const newZoom = Math.max(0.25, Math.min(16, (STATE.tlZoom || 1) * factor));
+        STATE.tlZoom = newZoom;
+        if (el.tlZoom) el.tlZoom.value = newZoom;
+        renderTimeline();
+      }
       // v19.17: Cmd/Ctrl+A selects every layer on the canvas.
       //  - Skips locked layers (they can't be interacted with anyway)
       //  - Includes GROUP, SHAPE, SVG, IMG, TEXT, VIDEO uniformly
@@ -15406,6 +15505,8 @@
 
     // ---- Timeline zoom + marker button ----
     if (el.tlZoom) el.tlZoom.addEventListener("input", (e) => { STATE.tlZoom = +e.target.value; renderTimeline(); });
+    // v19.57: double-clicking the zoom slider resets to the fitted view.
+    if (el.tlZoom) el.tlZoom.addEventListener("dblclick", () => { zoomFitAll(); toast("Timeline fit to view"); });
     // Item 2 — frame-snap toggle.  Reflects STATE.snapFrame (default on).
     if (el.snapFrameBtn) el.snapFrameBtn.addEventListener("click", () => {
       STATE.snapFrame = !STATE.snapFrame;
@@ -15442,10 +15543,23 @@
       else toast("Select a clip to zoom to");
     });
     // v18.8: cursor-anchored mouse-wheel zoom on the timeline body.
+    // v19.57: Alt/Option+Wheel is now an equivalent trigger (per this
+    // session's nav-shortcut spec) alongside the original Ctrl/Cmd —
+    // both keep working so no existing muscle memory breaks.
+    // Shift+Wheel (without Ctrl/Cmd/Alt) explicitly scrolls the
+    // timeline horizontally — some browsers already convert a plain
+    // vertical wheel+Shift into horizontal scroll natively, but that
+    // isn't universal, so we handle it explicitly for consistency.
     if (el.tlBody) el.tlBody.addEventListener("wheel", (e) => {
-      // Only zoom when the user holds Ctrl/Cmd or uses horizontal wheel.
-      // Otherwise let the browser scroll normally.
-      if (!(e.ctrlKey || e.metaKey)) return;
+      const zoomGesture = e.ctrlKey || e.metaKey || e.altKey;
+      if (!zoomGesture) {
+        if (e.shiftKey) {
+          // Shift+Wheel → horizontal pan, no zoom change.
+          e.preventDefault();
+          el.tlBody.scrollLeft += e.deltaY;
+        }
+        return;   // plain wheel — let the browser scroll vertically as normal.
+      }
       e.preventDefault();
       const rect = el.tlBody.getBoundingClientRect();
       const mouseX = e.clientX - rect.left;
@@ -15854,6 +15968,20 @@
       //  - Event/audio clip selected → Left/Right = MOVE clip ± 1 frame; Shift = 10.
       //  - Alt held on either     → TRIM clip end ± 1 frame (Shift = 10).
       // Guarded by `!typing` (above) so form fields keep normal behavior.
+      //
+      // v19.57 SHORTCUT AUDIT NOTE.
+      // This session's spec asked for "Shift+Left/Right: pan the
+      // timeline horizontally."  That directly conflicts with the
+      // EXISTING Shift+Arrow behavior above (10-frame jump / 10-frame
+      // trim step) — Shift is already a modifier here, and repurposing
+      // it for panning would silently break the fine-jump/precision-
+      // trim workflow that's already shipped and working.  Per this
+      // session's own instruction to "identify conflicts before
+      // changing them" and "preserve all existing working
+      // functionality," Shift+Arrow keeps its current meaning.
+      // Horizontal panning is available via Shift+Wheel (added this
+      // session) and by dragging the timeline's native scrollbar —
+      // both achieve the same result without breaking anything.
       const fps = STATE.fps || 30;
       const bigStep = e.shiftKey ? 10 : 1;
       const secStep = bigStep / fps;
