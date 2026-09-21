@@ -79,6 +79,18 @@
       .tl-handle:hover::after { background: rgba(255, 255, 255, 0.85); box-shadow: 0 0 0 1px rgba(255,255,255,0.3); width: 4px; }
       .tl-handle:active::after { background: var(--accent-2); }
       html, body { overflow-x: hidden; }
+      /* v19.58 Director rows — compact card per Director instance. */
+      .director-row { border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-bottom: 8px; background: rgba(255,255,255,0.02); }
+      .director-row.disabled { opacity: 0.5; }
+      .director-row-hd { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+      .director-row-hd input[type="text"] { flex: 1; background: transparent; border: none; color: var(--text); font-weight: 600; font-size: 12px; padding: 2px 4px; min-width: 0; }
+      .director-row-hd input[type="text"]:focus { outline: 1px solid var(--accent); border-radius: 3px; }
+      .director-row-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 6px; }
+      .director-row-grid select { width: 100%; font-size: 11px; padding: 3px 4px; background: var(--panel-2, #1a1b20); color: var(--text); border: 1px solid var(--border); border-radius: 4px; }
+      .director-row-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+      .director-row-actions button { flex: 1; font-size: 10.5px; padding: 3px 4px; }
+      .director-row-summary { font-size: 10.5px; color: var(--ink-3); margin-top: 5px; line-height: 1.4; }
+      .director-row-iconbtn { width: 22px; height: 22px; flex-shrink: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
     `;
     const tag = document.createElement("style");
     tag.id = "v1957-layout-fixes";
@@ -101,6 +113,14 @@
     audioReactive: true, snapBeat: false, autoKeyframes: false, snapFrame: true,
     // v18.8 timeline precision — magnetic snapping for clip edges
     snapPlayhead: true, snapClipEdges: true, snapMarker: false,
+    // v19.58: timeline ruler display mode.  Purely a LABEL/visual
+    // representation switch — seconds remain the internal timing
+    // source of truth everywhere (clip.start, layer.start, markers,
+    // playhead all stay in seconds).  Switching this never moves
+    // anything; it only changes what renderTimeline() prints on the
+    // ruler ticks.  "seconds" | "beats" | "barsbeats".
+    tlRulerMode: "seconds",
+    tlBeatsPerBar: 4,   // time-signature numerator for Bars & Beats mode
     // v19.0 tool mode — "select" is the default; other tools ("text", future
     // "rect"/"ellipse"/"line") temporarily change canvas click behavior.
     tool: "select",
@@ -1200,7 +1220,36 @@
   // Peaks/BPM come from the analyser reading of the music.
   const sounds = [];         // library: { id, name, url, buffer, duration }
   const audioClips = [];     // placed on timeline: { id, soundId, track: 'sfx1'|'sfx2'|'sfx3'|'voice', start, duration, volume, muted, selected, gain, source }
-  const markers = [];        // { type: 'beat'|'peak'|'manual', time }
+  const markers = [];        // { type: 'beat'|'peak'|'manual'|'grid', time }
+  // v19.58 DIRECTOR ORCHESTRATION ENGINE.
+  //
+  // Replaces the single implicit "run a prompt, mutate state once"
+  // Director with an array of independent, named, enable/disable-able
+  // configs.  Each entry fully describes what to generate and how to
+  // sync it — nothing here executes until generateDirectorEvents(id)
+  // runs, and everything it creates is removable by id via
+  // removeDirectorEvents(id).
+  //
+  // `target.kind` is deliberately generic ("effect" today) so the
+  // SAME structure can drive text/image/camera/transition generation
+  // later (item 7's future-proofing) without a new data model — only
+  // a new branch in generateDirectorEvents' dispatch needs to be
+  // added, the Director config shape itself doesn't change.
+  const DIRECTORS = [];
+  // DIRECTORS entries: {
+  //   id, name, enabled,
+  //   primaryEffect: fxKey string (default "focusSnap"),
+  //   secondaryEffects: [fxKey, ...]  (optional variation layer),
+  //   syncSource: "beat"|"bpm"|"bass"|"onset"|"transient"|"markers",
+  //   targetScope: "selected"|"all",       // which layer(s) receive events
+  //   target: { kind: "effect" }           // "effect" today; future:
+  //                                         // "text-placeholder",
+  //                                         // "image-placeholder", etc.
+  //   createdClipIds: [id, ...],           // for effect targets
+  //   createdLayerIds: [id, ...],          // for placeholder targets
+  //   lastRunSummary: string               // human-readable result
+  // }
+  let _directorIdSeq = 0;
   let selectedAudioClip = null;
   const AUDIO_TRACKS = [
     { id: "music",  label: "Music",  color: "music",  fixed: true },
@@ -6579,6 +6628,12 @@
   }
   function renderTimeline() {
     computePxPerSec();
+    // v19.58: keep the ruler-mode selector's disabled state in sync
+    // with BPM availability on every render (BPM can appear/disappear
+    // as audio loads, a tempo is tapped, or Director changes it).
+    if (typeof window !== "undefined" && typeof window.__phaserRulerModeCheck === "function") {
+      try { window.__phaserRulerModeCheck(); } catch (e) {}
+    }
     // v19.56: give the scrollable content its real width.  When
     // zoomed in (STATE.tlZoom > 1), STATE.duration * TL.pxPerSec
     // exceeds the viewport — tlBody's native overflow-x:auto scroll
@@ -6591,6 +6646,57 @@
     if (el.tlTracksWrap) el.tlTracksWrap.style.width = totalW + "px";
     // ruler
     el.tlRuler.innerHTML = "";
+    // v19.58 BPM RULER MODES (item 6).
+    //
+    // "seconds" keeps the EXACT pre-existing logic below, byte for
+    // byte — zero regression risk for the default/most-common mode.
+    // "beats" and "barsbeats" are a SEPARATE branch that only ever
+    // changes (a) how far apart ticks are placed and (b) what text is
+    // printed on them.  The tick's pixel position is ALWAYS
+    // `timeInSeconds * TL.pxPerSec` — the same formula every other
+    // element on the timeline uses — so switching modes can never
+    // move a clip, marker, event, or the playhead; seconds remain the
+    // one internal timing source of truth everywhere else in the app.
+    // If BPM is unavailable, beats/barsbeats modes are disabled (see
+    // the mode-selector wiring below) and rendering silently falls
+    // back to seconds here as a defensive guard.
+    const rulerMode = (STATE.tlRulerMode === "beats" || STATE.tlRulerMode === "barsbeats") && STATE.bpm > 0
+      ? STATE.tlRulerMode : "seconds";
+    if (rulerMode !== "seconds") {
+      const beatDur = 60 / STATE.bpm;
+      const beatsPerBar = Math.max(1, STATE.tlBeatsPerBar || 4);
+      // Same ≥55px readability rule as seconds mode, but the unit is
+      // BEATS rather than a fixed decimal step — skip every Nth beat
+      // if a single beat's pixel width is too narrow to label.
+      const pxPerBeat = beatDur * TL.pxPerSec;
+      let beatStep = 1;
+      for (const c of [1, 2, 4, 8, 16, 32]) { if (c * pxPerBeat >= 55) { beatStep = c; break; } beatStep = c; }
+      const totalBeats = Math.ceil(STATE.duration / beatDur);
+      for (let b = 0; b <= totalBeats; b += beatStep) {
+        const t = b * beatDur;
+        if (t > STATE.duration + 0.0001) break;
+        const tick = document.createElement("div");
+        const barNum = Math.floor(b / beatsPerBar) + 1;
+        const beatInBar = (b % beatsPerBar) + 1;
+        const isDownbeat = beatInBar === 1;
+        tick.className = "tl-tick" + (isDownbeat ? " major-5" : "");
+        tick.style.left = (t * TL.pxPerSec) + "px";   // SAME formula as seconds mode
+        tick.textContent = rulerMode === "barsbeats" ? `${barNum}.${beatInBar}` : String(b + 1);
+        el.tlRuler.appendChild(tick);
+      }
+      // Sub-beat minor ticks (quarter-beat) when zoomed in enough —
+      // mirrors the seconds-mode frame-tick density rule.
+      if (pxPerBeat >= 140) {
+        for (let b = 0; b < totalBeats; b++) {
+          for (const frac of [0.25, 0.5, 0.75]) {
+            const t = (b + frac) * beatDur;
+            if (t > STATE.duration) break;
+            const tick = document.createElement("div"); tick.className = "tl-tick-minor";
+            tick.style.left = (t * TL.pxPerSec) + "px"; el.tlRuler.appendChild(tick);
+          }
+        }
+      }
+    } else {
     // v19.30 → v19.35: Adaptive tick spacing.  When zoomed out, labels
     // are every 1s (or every 5s for very long durations).  When zoomed
     // in, sub-second labels appear at 500ms, 250ms, 100ms, or 50ms
@@ -6654,6 +6760,7 @@
         tick.style.left = ((f / fps) * TL.pxPerSec) + "px"; el.tlRuler.appendChild(tick);
       }
     }
+    }   // end of seconds-mode else block (v19.58 ruler mode branch)
     // markers overlay (draw in ruler and behind tracks)
     markers.forEach((m) => { const mk = document.createElement("div"); mk.className = "tl-marker " + m.type; mk.style.left = (m.time * TL.pxPerSec) + "px"; el.tlRuler.appendChild(mk); });
 
@@ -15507,6 +15614,54 @@
     if (el.tlZoom) el.tlZoom.addEventListener("input", (e) => { STATE.tlZoom = +e.target.value; renderTimeline(); });
     // v19.57: double-clicking the zoom slider resets to the fitted view.
     if (el.tlZoom) el.tlZoom.addEventListener("dblclick", () => { zoomFitAll(); toast("Timeline fit to view"); });
+    // v19.58 item 6: BPM ruler mode selector.  Beats/Bars buttons are
+    // disabled whenever STATE.bpm is 0, with a tooltip explaining why
+    // — checked on every render (BPM can appear/disappear as audio
+    // loads or the user taps a tempo) rather than only once at wiring
+    // time.
+    //
+    // v19.58 EVENT DELEGATION (bugfix): the ruler-mode buttons may be
+    // injected at runtime by _injectRulerModeSelectorHTML (see the
+    // self-sufficient-script.js block) rather than existing statically
+    // in index.html.  That injection runs in a DIFFERENT, later part
+    // of the init sequence than this wiring block.  Attaching
+    // listeners directly to the buttons here would silently find
+    // nothing if they don't exist yet at THIS point in init — event
+    // delegation on `document` sidesteps the ordering problem
+    // entirely: the listener fires on any click and asks "was a
+    // ruler-mode button the target," which works correctly no matter
+    // when the buttons were created.
+    function _updateRulerModeButtons() {
+      const seg = document.getElementById("rulerModeSeg");
+      if (!seg) return;
+      const bpmOk = STATE.bpm > 0;
+      const beatsBtn = document.getElementById("rulerModeBeatsBtn");
+      const barsBtn = document.getElementById("rulerModeBarsBtn");
+      [beatsBtn, barsBtn].forEach(btn => {
+        if (!btn) return;
+        btn.disabled = !bpmOk;
+        btn.title = bpmOk ? "" : "Needs a detected or manually-entered BPM first";
+      });
+      // If BPM just became unavailable while a BPM-based mode was
+      // active, fall back to seconds so the ruler never shows stale
+      // beat numbers computed from a BPM that no longer applies.
+      if (!bpmOk && STATE.tlRulerMode !== "seconds") {
+        STATE.tlRulerMode = "seconds";
+        seg.querySelectorAll(".seg-btn").forEach(b => b.classList.toggle("active", b.dataset.rulerMode === "seconds"));
+      }
+    }
+    document.addEventListener("click", (e) => {
+      const btn = e.target.closest("#rulerModeSeg .seg-btn");
+      if (!btn || btn.disabled) return;
+      const seg = document.getElementById("rulerModeSeg");
+      STATE.tlRulerMode = btn.dataset.rulerMode;
+      seg.querySelectorAll(".seg-btn").forEach(b => b.classList.toggle("active", b === btn));
+      renderTimeline();
+    });
+    _updateRulerModeButtons();
+    // Re-check availability every time the timeline re-renders (BPM
+    // may have just been detected or cleared).
+    window.__phaserRulerModeCheck = _updateRulerModeButtons;
     // Item 2 — frame-snap toggle.  Reflects STATE.snapFrame (default on).
     if (el.snapFrameBtn) el.snapFrameBtn.addEventListener("click", () => {
       STATE.snapFrame = !STATE.snapFrame;
@@ -15836,20 +15991,21 @@
       }
       return out;
     }
+    // v19.58: onset-detection band presets, factored out so Director's
+    // sync resolver and the marker-grid popover use IDENTICAL params —
+    // one source of truth, no drift between "what the marker button
+    // generates" and "what Director syncs to" for the same source name.
+    const ONSET_BAND_PRESETS = {
+      bass:      { bandLo: 20,   bandHi: 160,  minGap: 0.14, thresholdMul: 2.8 },
+      transient: { bandLo: 2000, bandHi: 8000, minGap: 0.06, thresholdMul: 2.8 },
+      onset:     { bandLo: 80,   bandHi: 8000, minGap: 0.09, thresholdMul: 2.5 },
+    };
     function generateAudioMarkers(mode) {
       const buffer = pickAudioBuffer();
       if (!buffer) { toast("Load a music track or a sound first"); return 0; }
       clearGeneratedMarkers();
-      let times = [];
-      // Bands from perceptual frequency ranges.
-      if (mode === "bass") {
-        times = detectOnsets(buffer, { bandLo: 20, bandHi: 160, minGap: 0.14, thresholdMul: 2.8 });
-      } else if (mode === "transient") {
-        times = detectOnsets(buffer, { bandLo: 2000, bandHi: 8000, minGap: 0.06, thresholdMul: 2.8 });
-      } else {
-        // Full-band onset — catches most percussive/note events.
-        times = detectOnsets(buffer, { bandLo: 80, bandHi: 8000, minGap: 0.09, thresholdMul: 2.5 });
-      }
+      const preset = ONSET_BAND_PRESETS[mode] || ONSET_BAND_PRESETS.onset;
+      const times = detectOnsets(buffer, preset);
       // Clamp to scene duration and emit as grid markers.
       const dur = STATE.duration;
       for (const t of times) {
@@ -15859,6 +16015,478 @@
       renderTimeline();
       return times.length;
     }
+
+    /* ================================================================
+     * v19.58 DIRECTOR SYNC RESOLUTION
+     *
+     * One function, one job: given a syncSource name, return a plain
+     * sorted array of times (seconds, clamped to [0, STATE.duration])
+     * to generate events at.  Every Director instance funnels through
+     * this — it's the "automatic synchronization" the user asked for,
+     * decoupled from any specific effect or target kind.
+     * ================================================================ */
+    function resolveSyncTimes(syncSource) {
+      const dur = STATE.duration || 0;
+      const clampSorted = (arr) => arr.filter(t => t >= 0 && t <= dur + 0.01).sort((a, b) => a - b);
+
+      if (syncSource === "bpm" || syncSource === "beat") {
+        // v19.58: "Beat" prefers REAL observed beat taps if enough
+        // exist (audio.beatTimes accumulates live during playback via
+        // tap/auto-detect — see analyzeAudio()).  Both "Beat" and
+        // "BPM" fall back to / use the same mathematical grid derived
+        // from STATE.bpm when live tap data isn't available yet —
+        // there is no pre-computed "beat position for the whole
+        // track" any other way in this codebase, so this is the
+        // honest, deterministic behavior rather than silently
+        // returning nothing.
+        if (syncSource === "beat" && audio.beatTimes && audio.beatTimes.length >= 4) {
+          // beatTimes are wall-clock performance.now() ms from when
+          // they were tapped/detected, not scene-relative seconds —
+          // convert to a relative grid using the median spacing
+          // (already what STATE.bpm is derived from) anchored at 0,
+          // since raw wall-clock values aren't meaningful scene times.
+          const spacings = [];
+          const recent = audio.beatTimes.slice(-16);
+          for (let i = 1; i < recent.length; i++) spacings.push(recent[i] - recent[i - 1]);
+          spacings.sort((a, b) => a - b);
+          const medianMs = spacings[Math.floor(spacings.length / 2)] || 0;
+          if (medianMs > 20 && medianMs < 2000) {
+            const stepSec = medianMs / 1000;
+            const out = [];
+            for (let t = 0; t <= dur; t += stepSec) out.push(+t.toFixed(3));
+            return clampSorted(out);
+          }
+        }
+        // BPM grid fallback (also the primary path for syncSource === "bpm").
+        if (!STATE.bpm) return [];
+        const step = 60 / STATE.bpm;
+        const out = [];
+        for (let t = 0; t <= dur; t += step) out.push(+t.toFixed(3));
+        return clampSorted(out);
+      }
+      if (syncSource === "bass" || syncSource === "onset" || syncSource === "transient") {
+        const buffer = pickAudioBuffer();
+        if (!buffer) return [];
+        const preset = ONSET_BAND_PRESETS[syncSource];
+        return clampSorted(detectOnsets(buffer, preset).map(t => +t.toFixed(3)));
+      }
+      if (syncSource === "markers") {
+        // Custom Markers = user-placed only ("manual" type) — the one
+        // marker type that's unambiguous about being user intent
+        // rather than a generated grid of some other source.
+        return clampSorted(markers.filter(m => m.type === "manual").map(m => m.time));
+      }
+      return [];
+    }
+    // Human-readable reason a sync source returned nothing — shown in
+    // the Director summary so failures are never silent/confusing.
+    function syncSourceUnavailableReason(syncSource) {
+      if (syncSource === "bpm" && !STATE.bpm) return "no BPM detected or entered yet";
+      if (syncSource === "beat" && !STATE.bpm && !(audio.beatTimes && audio.beatTimes.length >= 4)) return "no tapped beats or BPM yet";
+      if ((syncSource === "bass" || syncSource === "onset" || syncSource === "transient") && !pickAudioBuffer()) return "no audio loaded";
+      if (syncSource === "markers" && !markers.some(m => m.type === "manual")) return "no custom markers placed";
+      return "no sync points found";
+    }
+
+    /* ================================================================
+     * v19.58 DIRECTOR CRUD + GENERATION
+     * ================================================================ */
+    function createDirector(overrides) {
+      const d = Object.assign({
+        id: ++_directorIdSeq,
+        name: "Director " + String.fromCharCode(64 + DIRECTORS.length + 1),  // A, B, C...
+        enabled: true,
+        // v19.58 item 1: Focus Snap is the default primary effect —
+        // Director prefers it unless the user's prompt/config
+        // explicitly names something else.
+        primaryEffect: "focusSnap",
+        secondaryEffects: [],
+        syncSource: "beat",
+        targetScope: "selected",
+        target: { kind: "effect" },
+        createdClipIds: [],
+        createdLayerIds: [],
+        lastRunSummary: "",
+      }, overrides || {});
+      DIRECTORS.push(d);
+      return d;
+    }
+    function duplicateDirector(id) {
+      const src = DIRECTORS.find(d => d.id === id);
+      if (!src) return null;
+      const copy = createDirector({
+        name: src.name + " copy",
+        enabled: src.enabled,
+        primaryEffect: src.primaryEffect,
+        secondaryEffects: src.secondaryEffects.slice(),
+        syncSource: src.syncSource,
+        targetScope: src.targetScope,
+        target: Object.assign({}, src.target),
+      });
+      return copy;
+    }
+    function deleteDirector(id) {
+      // Clean up anything this Director generated before removing it
+      // from the list — deleting a Director should never leave
+      // orphaned clips/layers behind on the timeline.
+      removeDirectorEvents(id);
+      const idx = DIRECTORS.findIndex(d => d.id === id);
+      if (idx >= 0) DIRECTORS.splice(idx, 1);
+    }
+    function _directorTargetLayers(d) {
+      if (d.targetScope === "all") return layers.slice();
+      return selectedLayer ? [selectedLayer] : [];
+    }
+    // v19.58 item 4/5: Remove every clip/layer this specific Director
+    // created, identified by the _directorId tag stamped on creation —
+    // never touches manually-created clips or other Directors' output.
+    function removeDirectorEvents(id) {
+      let removed = 0;
+      layers.forEach(L => {
+        const before = L.clips.length;
+        L.clips = (L.clips || []).filter(c => c._directorId !== id);
+        removed += before - L.clips.length;
+      });
+      const d = DIRECTORS.find(x => x.id === id);
+      if (d) {
+        // Placeholder layers this Director created get deleted too.
+        const toDelete = layers.filter(L => L._directorId === id);
+        toDelete.forEach(L => { if (typeof deleteLayer === "function") deleteLayer(L); });
+        d.createdClipIds = [];
+        d.createdLayerIds = [];
+        d.lastRunSummary = removed ? `Removed ${removed} event(s)` + (toDelete.length ? ` + ${toDelete.length} layer(s)` : "") : "Nothing to remove";
+      }
+      renderTimeline(); renderInspector();
+      return removed;
+    }
+    // v19.58 CORE GENERATOR.  One Director → one call.  Validates the
+    // effect key against the CURRENT registry every time (never trusts
+    // a stale/deprecated key sitting in a saved config), resolves sync
+    // times fresh (so re-running after the audio or BPM changes picks
+    // up the new data), and tags every created clip so it's cleanly
+    // removable later without touching anything else on the timeline.
+    function generateDirectorEvents(id) {
+      const d = DIRECTORS.find(x => x.id === id);
+      if (!d) return { created: 0, summary: "Director not found" };
+      if (!d.enabled) return { created: 0, summary: "Director is disabled" };
+
+      // v19.58 item 8 (experimental): placeholder targets create new
+      // layers instead of clips on existing ones.  Kept as its own
+      // branch so the "effect" path below stays simple; this is the
+      // seam future target kinds (camera/transition/shape) would also
+      // hook into.
+      if (d.target && d.target.kind === "text-placeholder" || d.target && d.target.kind === "image-placeholder") {
+        return _generatePlaceholderLayers(d);
+      }
+
+      // --- effect path ---
+      const times = resolveSyncTimes(d.syncSource);
+      if (!times.length) {
+        d.lastRunSummary = `No events created — ${syncSourceUnavailableReason(d.syncSource)}`;
+        renderInspector();
+        return { created: 0, summary: d.lastRunSummary };
+      }
+      const targets = _directorTargetLayers(d);
+      if (!targets.length) {
+        d.lastRunSummary = "No events created — select a layer, or set scope to All Layers";
+        renderInspector();
+        return { created: 0, summary: d.lastRunSummary };
+      }
+      // v19.58: validate the primary + secondary keys against the
+      // CURRENT effect registry before ever using them — skip
+      // deprecated/missing/layer-incompatible keys safely rather than
+      // creating clutter or throwing.  This is the "never recommend
+      // deprecated, hidden, missing, or renderer-incompatible effect
+      // keys" requirement, enforced at generation time (not just at
+      // prompt-parsing time), so it's re-checked on every regenerate.
+      const validKeys = [d.primaryEffect, ...(d.secondaryEffects || [])].filter(key => {
+        const def = FX_EVENT_DEF.get(key);
+        return def && !def.deprecated;
+      });
+      if (!validKeys.length) {
+        d.lastRunSummary = "No events created — effect key(s) unavailable (deprecated or unknown)";
+        renderInspector();
+        return { created: 0, summary: d.lastRunSummary };
+      }
+      let created = 0;
+      // Avoid duplicate events at (near-)identical timestamps on the
+      // same layer — checks the layer's EXISTING clips of the SAME
+      // fxKey, not just this Director's own output, so re-running
+      // after a manual edit doesn't stack duplicates either.
+      const DUPLICATE_EPS = 0.03;
+      targets.forEach(layer => {
+        if (!fxSupportsLayer) return;
+        times.forEach((t, i) => {
+          // Distribute primary vs secondary: primary effect always
+          // fires; secondaries (if any) rotate in for variation so
+          // the timeline doesn't become a wall of identical events.
+          const key = (i === 0 || !validKeys[1]) ? validKeys[0] : validKeys[i % validKeys.length];
+          const def = FX_EVENT_DEF.get(key);
+          if (!def || !fxSupportsLayer(def, layer)) return;
+          const relStart = clamp(t - layer.start, 0, Math.max(0, layer.duration - 0.05));
+          const already = (layer.clips || []).some(c => c.fxKey === key && Math.abs(c.start - relStart) < DUPLICATE_EPS);
+          if (already) return;
+          const clip = createEventClip(key, layer, layer.start + relStart);
+          if (clip) { clip._directorId = d.id; d.createdClipIds.push(clip.id); created++; }
+        });
+      });
+      d.lastRunSummary = created
+        ? `Created ${created} event(s) · primary: ${FX_EVENT_DEF.get(validKeys[0]).label}${validKeys.length > 1 ? ` · secondary: ${validKeys.slice(1).map(k => FX_EVENT_DEF.get(k).label).join(", ")}` : ""} · synced to ${SYNC_SOURCE_LABELS[d.syncSource] || d.syncSource} (${times.length} points)`
+        : "No events created — all sync points already had events (no duplicates added)";
+      renderTimeline(); renderInspector();
+      return { created, summary: d.lastRunSummary };
+    }
+    function regenerateDirectorEvents(id) {
+      removeDirectorEvents(id);
+      return generateDirectorEvents(id);
+    }
+    const SYNC_SOURCE_LABELS = {
+      beat: "Beat", bpm: "BPM", bass: "Bass Hits", onset: "Onsets",
+      transient: "Transients", markers: "Custom Markers",
+    };
+
+    /* ================================================================
+     * v19.58 item 8 — PLACEHOLDER GENERATION (experimental).
+     *
+     * Reuses the existing createTextLayerAt / createShapeLayerAt layer
+     * factories — no new layer kind, no new renderer path.  Each
+     * placeholder is a real, ordinary layer (auto-named, auto-
+     * positioned) tagged with _directorId so it can be cleanly
+     * removed/regenerated exactly like effect events.  This is real,
+     * working generation — not just a stub — but intentionally simple:
+     * one shape/text per sync point, centered, default styling.  Future
+     * target kinds (camera moves, transitions, video placeholders)
+     * would follow the same pattern: resolve sync times, loop, create,
+     * tag with _directorId.
+     * ================================================================ */
+    function _generatePlaceholderLayers(d) {
+      const times = resolveSyncTimes(d.syncSource);
+      if (!times.length) {
+        d.lastRunSummary = `No placeholders created — ${syncSourceUnavailableReason(d.syncSource)}`;
+        renderInspector();
+        return { created: 0, summary: d.lastRunSummary };
+      }
+      const isText = d.target.kind === "text-placeholder";
+      const A = STATE.format;
+      let created = 0;
+      const dur = STATE.duration;
+      // Each placeholder occupies the gap until the NEXT sync point
+      // (or the timeline end for the last one) so they tile cleanly
+      // rather than all starting at 0 with the full duration.
+      times.forEach((t, i) => {
+        const nextT = i + 1 < times.length ? times[i + 1] : dur;
+        const segDur = Math.max(0.1, nextT - t);
+        const n = String(i + 1).padStart(2, "0");
+        let layer;
+        if (isText) {
+          layer = createTextLayerAt(A.w / 2, A.h / 2);
+          updateTextLayer(layer, { text: "Text Layer " + n });
+          layer.name = "Text Layer " + n;
+        } else {
+          layer = createShapeLayerAt("rect", { x: A.w / 2, y: A.h / 2, w: A.w * 0.5, h: A.h * 0.3 });
+          layer.name = "Placeholder " + n;
+        }
+        layer.start = t;
+        layer.duration = segDur;
+        layer._directorId = d.id;
+        d.createdLayerIds.push(layer.id);
+        created++;
+      });
+      d.lastRunSummary = created
+        ? `Created ${created} ${isText ? "text" : "image"} placeholder layer(s) · synced to ${SYNC_SOURCE_LABELS[d.syncSource] || d.syncSource}`
+        : "No placeholders created";
+      renderLayers(); renderTimeline(); renderInspector();
+      return { created, summary: d.lastRunSummary };
+    }
+
+    /* ================================================================
+     * v19.58 DIRECTOR PRESETS (item 9).
+     * Each preset is just a set of field overrides for createDirector —
+     * no separate mechanism, so new presets are cheap to add later.
+     * ================================================================ */
+    const DIRECTOR_PRESETS = {
+      "Beat Driven":     { name: "Beat Driven",     primaryEffect: "focusSnap",   syncSource: "beat" },
+      "Bass Pulse":      { name: "Bass Pulse",      primaryEffect: "focusSnap",   secondaryEffects: ["magneticSnap"], syncSource: "bass" },
+      "Techno Cut":      { name: "Techno Cut",      primaryEffect: "focusSnap",   secondaryEffects: ["lostSignal"], syncSource: "onset" },
+      "Fast Glitch":     { name: "Fast Glitch",     primaryEffect: "rgbSplitPro", secondaryEffects: ["textFlicker"], syncSource: "transient" },
+      "Cinematic Build":  { name: "Cinematic Build", primaryEffect: "pulseGlow",   syncSource: "bpm" },
+      "Photo Sync":      { name: "Photo Sync",      primaryEffect: "focusSnap",   syncSource: "beat", target: { kind: "image-placeholder" } },
+      "Text Sync":       { name: "Text Sync",       primaryEffect: "focusSnap",   syncSource: "bass", target: { kind: "text-placeholder" } },
+    };
+    function createDirectorFromPreset(presetName) {
+      const p = DIRECTOR_PRESETS[presetName];
+      if (!p) return null;
+      return createDirector(Object.assign({}, p));
+    }
+
+    /* ================================================================
+     * v19.58 SELF-SUFFICIENT DOM INJECTION.
+     *
+     * Per this session's deliverable constraint ("return only
+     * script.js"), the Directors panel and BPM ruler-mode selector
+     * must work even if index.html was NOT also updated.  Each block
+     * below checks whether its container already exists (it will, if
+     * index.html WAS updated to match) and only creates it if
+     * missing — so this is a no-op duplicate-safe guard either way,
+     * not a second competing copy.
+     * ================================================================ */
+    (function _injectDirectorsPanelHTML() {
+      if (document.getElementById("directorsSection")) return;   // already present
+      const anchor = document.getElementById("aiEcho");
+      const aiSection = anchor && anchor.closest(".prop-group");
+      if (!aiSection || !aiSection.parentNode) return;   // defensive — right panel structure not found
+      const section = document.createElement("section");
+      section.className = "prop-group";
+      section.id = "directorsSection";
+      section.innerHTML = `
+        <div class="group-head"><h3>Directors</h3><span class="badge" id="directorsCountBadge">0</span></div>
+        <p class="group-hint">Each Director independently generates timed events. Focus Snap + Beat sync by default — change per Director.</p>
+        <div id="directorList"></div>
+        <div class="control" style="gap:6px">
+          <button class="t-btn" id="addDirectorBtn" title="Add a new Director (defaults: Focus Snap, synced to Beat)">+ Add Director</button>
+          <select id="directorPresetSelect" class="ctl-num" style="flex:1">
+            <option value="">Presets…</option>
+            <option value="Beat Driven">Beat Driven</option>
+            <option value="Bass Pulse">Bass Pulse</option>
+            <option value="Techno Cut">Techno Cut</option>
+            <option value="Fast Glitch">Fast Glitch</option>
+            <option value="Cinematic Build">Cinematic Build</option>
+            <option value="Photo Sync">Photo Sync (experimental)</option>
+            <option value="Text Sync">Text Sync (experimental)</option>
+          </select>
+        </div>
+      `;
+      aiSection.parentNode.insertBefore(section, aiSection.nextSibling);
+    })();
+    (function _injectRulerModeSelectorHTML() {
+      if (document.getElementById("rulerModeSeg")) return;   // already present
+      const zoomInput = document.getElementById("tlZoom");
+      const zoomWrap = zoomInput && zoomInput.closest(".tl-zoom");
+      if (!zoomWrap || !zoomWrap.parentNode) return;
+      const seg = document.createElement("div");
+      seg.className = "seg";
+      seg.id = "rulerModeSeg";
+      seg.title = "Timeline ruler display — a visual representation only; clip/marker/playhead positions never change when you switch modes.";
+      seg.innerHTML = `
+        <button class="seg-btn active" data-ruler-mode="seconds">Sec</button>
+        <button class="seg-btn" data-ruler-mode="beats" id="rulerModeBeatsBtn">Beats</button>
+        <button class="seg-btn" data-ruler-mode="barsbeats" id="rulerModeBarsBtn">Bars</button>
+      `;
+      zoomWrap.parentNode.insertBefore(seg, zoomWrap);
+    })();
+
+    /* ================================================================
+     * v19.58 DIRECTORS PANEL — render + wire.
+     * Queries the DOM directly (getElementById) rather than the `el`
+     * cache object since these IDs were added this session and the
+     * cache is built once near the top of the file; direct lookup
+     * avoids touching that unrelated object literal.
+     * ================================================================ */
+    function _effectOptionsHTML(selectedKey) {
+      // Only currently-valid, non-deprecated, universally-applicable
+      // effects are offered — matches "never recommend deprecated
+      // effect keys" for the picker itself, not just at generation time.
+      const opts = FX_EVENTS.filter(fx => !fx.deprecated && (!fx.supportedLayerTypes || fx.category === "universal" || fx.supportedLayerTypes.length > 2));
+      // Focus Snap always appears first regardless of alphabetical
+      // sort, reinforcing it as the recommended default.
+      const focusFirst = opts.find(fx => fx.key === "focusSnap");
+      const rest = opts.filter(fx => fx.key !== "focusSnap").sort((a, b) => a.label.localeCompare(b.label));
+      const ordered = focusFirst ? [focusFirst, ...rest] : rest;
+      return ordered.map(fx => `<option value="${fx.key}"${fx.key === selectedKey ? " selected" : ""}>${escHtml(fx.label)}</option>`).join("");
+    }
+    function renderDirectorPanel() {
+      const list = document.getElementById("directorList");
+      const badge = document.getElementById("directorsCountBadge");
+      if (!list) return;   // panel not in DOM yet (shouldn't happen, defensive)
+      if (badge) badge.textContent = String(DIRECTORS.length);
+      list.innerHTML = "";
+      DIRECTORS.forEach(d => {
+        const row = document.createElement("div");
+        row.className = "director-row" + (d.enabled ? "" : " disabled");
+        row.dataset.directorId = d.id;
+        const isPlaceholder = d.target && d.target.kind !== "effect";
+        row.innerHTML = `
+          <div class="director-row-hd">
+            <input type="checkbox" ${d.enabled ? "checked" : ""} class="dr-enabled" title="Enable/disable this Director">
+            <input type="text" value="${escHtml(d.name)}" class="dr-name" title="Director name">
+            <button class="t-btn director-row-iconbtn dr-dup" title="Duplicate">⧉</button>
+            <button class="t-btn director-row-iconbtn dr-del" title="Delete">✕</button>
+          </div>
+          <div class="director-row-grid">
+            <select class="dr-target" title="What this Director generates">
+              <option value="effect"${!isPlaceholder ? " selected" : ""}>Effect events</option>
+              <option value="text-placeholder"${d.target && d.target.kind === "text-placeholder" ? " selected" : ""}>Text placeholders (experimental)</option>
+              <option value="image-placeholder"${d.target && d.target.kind === "image-placeholder" ? " selected" : ""}>Image placeholders (experimental)</option>
+            </select>
+            <select class="dr-scope" title="Which layer(s) receive events">
+              <option value="selected"${d.targetScope === "selected" ? " selected" : ""}>Selected layer</option>
+              <option value="all"${d.targetScope === "all" ? " selected" : ""}>All layers</option>
+            </select>
+            <select class="dr-primary" title="Primary effect" ${isPlaceholder ? "disabled" : ""}>${_effectOptionsHTML(d.primaryEffect)}</select>
+            <select class="dr-sync" title="Synchronization source">
+              <option value="beat"${d.syncSource === "beat" ? " selected" : ""}>Beat</option>
+              <option value="bpm"${d.syncSource === "bpm" ? " selected" : ""}>BPM</option>
+              <option value="bass"${d.syncSource === "bass" ? " selected" : ""}>Bass Hits</option>
+              <option value="onset"${d.syncSource === "onset" ? " selected" : ""}>Onsets</option>
+              <option value="transient"${d.syncSource === "transient" ? " selected" : ""}>Transients</option>
+              <option value="markers"${d.syncSource === "markers" ? " selected" : ""}>Custom Markers</option>
+            </select>
+          </div>
+          <div class="director-row-actions">
+            <button class="t-btn dr-generate">Generate</button>
+            <button class="t-btn dr-regenerate">Regenerate</button>
+            <button class="t-btn dr-remove">Remove events</button>
+          </div>
+          <div class="director-row-summary">${escHtml(d.lastRunSummary || "Not yet generated.")}</div>
+        `;
+        list.appendChild(row);
+
+        row.querySelector(".dr-enabled").addEventListener("change", (e) => {
+          d.enabled = e.target.checked;
+          row.classList.toggle("disabled", !d.enabled);
+        });
+        row.querySelector(".dr-name").addEventListener("change", (e) => { d.name = e.target.value || d.name; });
+        row.querySelector(".dr-dup").addEventListener("click", () => { duplicateDirector(d.id); renderDirectorPanel(); });
+        row.querySelector(".dr-del").addEventListener("click", () => { deleteDirector(d.id); renderDirectorPanel(); });
+        row.querySelector(".dr-target").addEventListener("change", (e) => {
+          d.target = { kind: e.target.value };
+          renderDirectorPanel();   // re-render to enable/disable the primary-effect select
+        });
+        row.querySelector(".dr-scope").addEventListener("change", (e) => { d.targetScope = e.target.value; });
+        const primarySel = row.querySelector(".dr-primary");
+        if (primarySel) primarySel.addEventListener("change", (e) => { d.primaryEffect = e.target.value; });
+        row.querySelector(".dr-sync").addEventListener("change", (e) => { d.syncSource = e.target.value; });
+        row.querySelector(".dr-generate").addEventListener("click", () => {
+          const r = generateDirectorEvents(d.id);
+          toast(r.summary);
+          renderDirectorPanel();
+        });
+        row.querySelector(".dr-regenerate").addEventListener("click", () => {
+          const r = regenerateDirectorEvents(d.id);
+          toast(r.summary);
+          renderDirectorPanel();
+        });
+        row.querySelector(".dr-remove").addEventListener("click", () => {
+          const n = removeDirectorEvents(d.id);
+          toast(n ? `Removed ${n} event(s)` : "Nothing to remove");
+          renderDirectorPanel();
+        });
+      });
+    }
+    // Wire the add-Director + preset controls once, at init time.
+    const addDirectorBtn = document.getElementById("addDirectorBtn");
+    if (addDirectorBtn) addDirectorBtn.addEventListener("click", () => { createDirector(); renderDirectorPanel(); });
+    const directorPresetSelect = document.getElementById("directorPresetSelect");
+    if (directorPresetSelect) directorPresetSelect.addEventListener("change", (e) => {
+      const name = e.target.value;
+      if (!name) return;
+      createDirectorFromPreset(name);
+      renderDirectorPanel();
+      e.target.value = "";
+    });
+    // Render once at startup so the panel isn't empty-but-uninitialized.
+    renderDirectorPanel();
+
     // v19.36: also expose the audio-marker helpers on the debug hook
     // so tests can call them directly without opening the popover.
     // These are nested-scope closures so we splice them onto the
@@ -15868,6 +16496,22 @@
       window.__phaserDebug.detectOnsets = detectOnsets;
       window.__phaserDebug.generateAudioMarkers = generateAudioMarkers;
       window.__phaserDebug.pickAudioBuffer = pickAudioBuffer;
+      // v19.58 Director engine — assigned here (not in the larger
+      // object-literal debug hook further down) because these
+      // functions live in THIS nested closure, same as the three
+      // lines above them.
+      window.__phaserDebug.getDirectors = () => DIRECTORS;
+      window.__phaserDebug.createDirector = createDirector;
+      window.__phaserDebug.duplicateDirector = duplicateDirector;
+      window.__phaserDebug.deleteDirector = deleteDirector;
+      window.__phaserDebug.generateDirectorEvents = generateDirectorEvents;
+      window.__phaserDebug.removeDirectorEvents = removeDirectorEvents;
+      window.__phaserDebug.regenerateDirectorEvents = regenerateDirectorEvents;
+      window.__phaserDebug.resolveSyncTimes = resolveSyncTimes;
+      window.__phaserDebug.createDirectorFromPreset = createDirectorFromPreset;
+      window.__phaserDebug.DIRECTOR_PRESETS = DIRECTOR_PRESETS;
+      window.__phaserDebug.getMarkers = () => markers;
+      window.__phaserDebug.renderDirectorPanel = renderDirectorPanel;
     }
 
     let _gridPopover = null;
@@ -16735,7 +17379,9 @@
     requestAnimationFrame(() => fitZoom());
     setTimeout(() => { fitZoom(); renderTimeline(); }, 120);
     // Test hook: expose internals for automated verification (harmless in production).
-    window.__phaserDebug = Object.assign(window.__phaserDebug || {}, { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, FX_EVENT_DEF, fxSupportsLayer, applyTextFxAtTime, applyWeirdSlicesOnText, applyWeirdSlicesOnLayer, TEXT_FX_STRING, TEXT_FX_DOM, buildTextLayerSVG, updateTextLayer, startTextEdit, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, paintWebCodecsLayersForExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath, runSvgRepair, collectSvgRepairOps, releaseClipPaths, removeMasks, convertShapesToPaths, audio: () => audio });
+    window.__phaserDebug = Object.assign(window.__phaserDebug || {}, { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, FX_EVENT_DEF, fxSupportsLayer, applyTextFxAtTime, applyWeirdSlicesOnText, applyWeirdSlicesOnLayer, TEXT_FX_STRING, TEXT_FX_DOM, buildTextLayerSVG, updateTextLayer, startTextEdit, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, paintWebCodecsLayersForExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath, runSvgRepair, collectSvgRepairOps, releaseClipPaths, removeMasks, convertShapesToPaths, audio: () => audio,
+      renderTimeline,
+    });
   }
   document.addEventListener("DOMContentLoaded", init);
 })();
