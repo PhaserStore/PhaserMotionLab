@@ -1027,17 +1027,17 @@
      fx: effect keys. patch: scene params. transform stays off unless the
      preset explicitly needs it (none of the defaults rotate/zoom). */
   const PRESETS = {
-    "Signal System":       { fx: ["scanRevealEvent","rgbOffset","hudOverlay","flickerBlocks","dataBreakEvent"], patch: { flicker: 38, rgbSplit: 32, scanline: 55, noise: 26 } },
+    "Signal System":       { fx: ["scanRevealEvent","rgbSplitPro","hudOverlay","textFlicker","dataBreakEvent"], patch: { flicker: 38, rgbSplit: 32, scanline: 55, noise: 26 } },
     "Hardware Motion":     { fx: ["scanRevealEvent","blurIn","hudOverlay","pulseGlow"], patch: { flicker: 26, scanline: 60, glow: 55, blur: 14 } },
     "Vector Scan":         { fx: ["scanRevealEvent","radarSweep","hudOverlay","lineDraw"], patch: { flicker: 30, scanline: 75, glow: 45, noise: 16 } },
-    "Signal Loss":         { fx: ["hardCutEvent","dataBreakEvent","rgbOffset","flickerBlocks","scanRevealEvent"], patch: { glitch: 60, flicker: 78, rgbSplit: 55, scanline: 62, noise: 55 } },
-    "Data Pulse":          { fx: ["pulseGlow","rgbOffset","dataStream","hardCutEvent"], patch: { glow: 70, rgbSplit: 40, scanline: 55, flicker: 30 } },
+    "Signal Loss":         { fx: ["hardCutEvent","dataBreakEvent","rgbSplitPro","textFlicker","scanRevealEvent"], patch: { glitch: 60, flicker: 78, rgbSplit: 55, scanline: 62, noise: 55 } },
+    "Data Pulse":          { fx: ["pulseGlow","rgbSplitPro","dataStream","hardCutEvent"], patch: { glow: 70, rgbSplit: 40, scanline: 55, flicker: 30 } },
     "Clean Motion Poster": { fx: ["blurIn","pulseGlow"], patch: { flicker: 10, blur: 16, scanline: 14, noise: 6, glow: 45 } },
     "CRT Monitor":         { fx: ["scanRevealEvent","dataBreakEvent","oscilloscope","pulseGlow"], patch: { flicker: 28, blur: 10, scanline: 95, noise: 34, glow: 40 } },
-    "Interface Intro":     { fx: ["blurIn","lineDraw","hudOverlay","rgbOffset"], patch: { flicker: 26, scanline: 50, rgbSplit: 30, glow: 45 }, stagger: true },
+    "Interface Intro":     { fx: ["blurIn","lineDraw","hudOverlay","rgbSplitPro"], patch: { flicker: 26, scanline: 50, rgbSplit: 30, glow: 45 }, stagger: true },
     "Hardware Motion Intro":{ fx: ["blurIn","scanRevealEvent","hudOverlay","coordBlinkEvt","trimPaths"], patch: { flicker: 24, scanline: 55, glow: 50, blur: 12 }, stagger: true },
-    "Terrain Scanner":     { fx: ["lineDraw","radarSweep","coordBlinkEvt","scanRevealEvent","dataStream","rgbOffset"], patch: { flicker: 22, scanline: 60, rgbSplit: 22, glow: 50, noise: 14 } },
-    "Detroit Techno":      { fx: ["hardCutEvent","rgbOffset","scanRevealEvent","flickerBlocks","pulseGlow"], patch: { flicker: 42, rgbSplit: 46, scanline: 42, glow: 55, bassReaction: 90, motionIntensity: 85 } },
+    "Terrain Scanner":     { fx: ["lineDraw","radarSweep","coordBlinkEvt","scanRevealEvent","dataStream","rgbSplitPro"], patch: { flicker: 22, scanline: 60, rgbSplit: 22, glow: 50, noise: 14 } },
+    "Detroit Techno":      { fx: ["hardCutEvent","rgbSplitPro","scanRevealEvent","textFlicker","pulseGlow"], patch: { flicker: 42, rgbSplit: 46, scanline: 42, glow: 55, bassReaction: 90, motionIntensity: 85 } },
     "Data Terminal":       { fx: ["textFlicker","hudOverlay","coordBlinkEvt","dataStream","oscilloscope","scanRevealEvent"], patch: { flicker: 34, scanline: 60, noise: 20, glow: 40 } },
   };
 
@@ -6502,11 +6502,33 @@
   /* ---------------- TIMELINE ---------------- */
   const TL = { pxPerSec: 0, dragClip: null, mode: null, startX: 0, orig: null, dragEvent: null, dragAudio: null };
   function computePxPerSec() {
-    const bodyW = el.tlTracks.clientWidth || el.tlBody.clientWidth || 600;
+    // v19.56 TIMELINE ZOOM SYNC FIX.
+    //
+    // Root cause: bodyW previously read el.tlTracks.clientWidth — but
+    // tlTracks' own width is (after this fix) set FROM pxPerSec, which
+    // would create a circular dependency (content width → clientWidth
+    // → pxPerSec → content width → ...).  el.tlBody is the SCROLL
+    // CONTAINER; its clientWidth reflects only the visible viewport
+    // and stays stable no matter how wide the scrollable content
+    // inside it becomes.  Subtract the CSS horizontal padding
+    // (24px × 2, see .tl-body in style.css) since children are
+    // positioned relative to the padding box.
+    const bodyW = Math.max(200, (el.tlBody.clientWidth || 600) - 48);
+    TL.viewportW = bodyW;
     TL.pxPerSec = (bodyW / STATE.duration) * (STATE.tlZoom || 1);
   }
   function renderTimeline() {
     computePxPerSec();
+    // v19.56: give the scrollable content its real width.  When
+    // zoomed in (STATE.tlZoom > 1), STATE.duration * TL.pxPerSec
+    // exceeds the viewport — tlBody's native overflow-x:auto scroll
+    // then has real content to scroll to, and every child positioned
+    // via `left: time * pxPerSec` (ruler ticks, clips, markers,
+    // playhead) stays visually aligned because they're all siblings
+    // within the SAME scroll container.
+    const totalW = Math.max(TL.viewportW, STATE.duration * TL.pxPerSec);
+    el.tlRuler.style.width = totalW + "px";
+    if (el.tlTracksWrap) el.tlTracksWrap.style.width = totalW + "px";
     // ruler
     el.tlRuler.innerHTML = "";
     // v19.30 → v19.35: Adaptive tick spacing.  When zoomed out, labels
@@ -6634,6 +6656,24 @@
       });
       el.tlAudioTracks.appendChild(track);
     });
+    // v19.56 TIMELINE ZOOM SYNC FIX (part 3 of 3).
+    //
+    // Root cause: the zoom slider's change handler called
+    // renderTimeline() but never updatePlayheads() — so right after
+    // changing zoom (while paused), the playhead stayed at its OLD
+    // pixel position (computed under the previous TL.pxPerSec) until
+    // the next scrub or play frame refreshed it.  Any other caller of
+    // renderTimeline() (duration change, marker generation, etc.) had
+    // the same latent gap.
+    //
+    // Fix: call updatePlayheads(STATE.time) unconditionally at the end
+    // of renderTimeline(), establishing renderTimeline() as the single
+    // place that reconciles playhead position with TL.pxPerSec.  This
+    // makes "one source of truth" concrete: STATE.time drives it,
+    // TL.pxPerSec (derived from STATE.tlZoom + STATE.duration) scales
+    // it, and every caller of renderTimeline() gets a correctly
+    // positioned playhead for free.
+    updatePlayheads(STATE.time);
   }
   function startClipDrag(e, layer, clip) {
     e.preventDefault(); selectLayer(layer); selectAudioClip(null);
@@ -7668,7 +7708,24 @@
   function autoEventFromPeak(sceneTime) {
     if (!layers.length) return;
     const target = selectedLayer || layers[Math.floor(Math.random() * layers.length)];
-    const keys = ["focusSnap", "signalInterrupt", "rgbSpike", "hardCutEvent"];
+    // v19.56 DIRECTOR BUG FIX.
+    //
+    // Root cause: this pool was ["focusSnap", "signalInterrupt",
+    // "rgbSpike", "hardCutEvent"] — three of those four keys are
+    // deprecated (see FX_CAPABILITY.deprecatedIds).  "signalInterrupt"
+    // and "hardCutEvent" have NO OBSERVABLE EFFECT on the current
+    // renderer at all, so every time the random pick landed on one of
+    // them, Beat Sync playback created a clip that did nothing visible
+    // — clutter on the timeline with zero payoff.  "rgbSpike" is
+    // deprecated in favor of "rgbSplitPro", which has a different
+    // defDur shape ("layer" instead of a plain-number short burst) so
+    // it can't be substituted 1:1 in this pool.
+    //
+    // Fix: only real, currently-supported, short single-shot event
+    // effects with a numeric defDur (required since `duration` below
+    // is used directly in clip-duration math).  All three are
+    // confirmed working from prior verification passes.
+    const keys = ["focusSnap", "magneticSnap", "lostSignal"];
     const key = keys[Math.floor(Math.random() * keys.length)];
     // relative to layer start
     const relStart = clamp(sceneTime - target.start, 0, Math.max(0, target.duration - 0.05));
@@ -11002,12 +11059,24 @@
   }
   function updateFlash(color, alpha) { if (!flashOverlay) { flashOverlay = document.createElement("div"); flashOverlay.className = "fx fx-flash"; el.artboard.appendChild(flashOverlay); } if (color && alpha > 0) { flashOverlay.style.background = color; flashOverlay.style.opacity = alpha; } else flashOverlay.style.opacity = 0; }
   function updatePlayheads(t) {
-    // Use integer px for the playhead's `left` so sub-pixel rounding
-    // in the compositor doesn't produce visible drift while scrubbing.
-    // Timecode uses 3 decimals for millisecond-level readout.
-    const pct = STATE.duration ? (t / STATE.duration) : 0;
+    // v19.56 TIMELINE ZOOM SYNC FIX.
+    //
+    // Root cause: this previously computed px as
+    // `(t/duration) * tlTracks.clientWidth` — a formula that ignores
+    // TL.pxPerSec (which includes STATE.tlZoom) entirely.  Every other
+    // timeline element (ruler ticks, clips, markers) is positioned via
+    // `time * TL.pxPerSec`.  These two formulas only agreed when zoom
+    // was exactly 1x; at any other zoom level the playhead visually
+    // drifted away from the clip/marker/ruler positions.
+    //
+    // Fix: use the SAME formula as everything else.  Because
+    // tlPlayhead is a sibling of tlRuler/tlTracksWrap inside the same
+    // scrolling container (#tlBody, now overflow-x:auto — see
+    // style.css), native browser scrolling keeps all of them visually
+    // synchronized automatically; no manual scrollLeft subtraction
+    // is needed here.
+    const px = Math.round(t * (TL.pxPerSec || 0));
     if (el.tlPlayhead) {
-      const px = Math.round(pct * (el.tlTracks.clientWidth || 0));
       el.tlPlayhead.style.left = px + "px";
       // v19.30: floating time badge on the playhead.
       const badge = document.getElementById("tlPlayheadTime");
@@ -11168,17 +11237,17 @@
       ch.push("transform motion disabled", "rotation reset to 0", "scale pulse disabled");
     }),
     _rule(["scanlines and rgb only", "scanline and rgb only", "scanlines only", "rgb only", "only opacity", "only appearance"], "Appearance only", (ch) => {
-      layerFxAll(["scanRevealEvent", "rgbOffset", "flickerBlocks"]);
+      layerFxAll(["scanRevealEvent", "rgbSplitPro", "textFlicker"]);
       layers.forEach((l) => l.allowTransform = false);
-      ch.push("sustained clips set to scanReveal + rgbOffset + flickerBlocks", "transform motion disabled");
+      ch.push("sustained clips set to scanReveal + RGB Split Pro + textFlicker", "transform motion disabled");
     }),
     _rule(["cleaner", "clean", "minimal", "elegant"], "Cleaner", (ch) => { set("glitch", 10); set("noise", 8); set("flicker", 14); bump("blur", -4); layerFxAll(["blurIn", "pulseGlow"]); ch.push("glitch/noise/flicker lowered", "layer fx = Blur-in + Pulse Glow"); }),
-    _rule(["more aggressive", "aggressive", "harder", "intense", "harsh"], "Aggressive", (ch) => { bump("glitch", 25); bump("rgbSplit", 20); bump("bassReaction", 20); bump("motionIntensity", 15); layerFxAll(["hardCutEvent", "rgbOffset", "flickerBlocks", "dataBreakEvent", "pulseGlow"]); ch.push("glitch/RGB/bass reaction increased", "clips added: hard cut + RGB + flicker + breakup + glow"); }),
+    _rule(["more aggressive", "aggressive", "harder", "intense", "harsh"], "Aggressive", (ch) => { bump("glitch", 25); bump("rgbSplit", 20); bump("bassReaction", 20); bump("motionIntensity", 15); layerFxAll(["rgbSplitPro", "textFlicker", "dataBreakEvent", "pulseGlow"]); ch.push("glitch/RGB/bass reaction increased", "clips added: RGB Split Pro + flicker + breakup + glow"); }),
     _rule(["synced to the beat", "more synced", "sync to the beat", "beat sync", "on beat", "on peaks"], "Beat sync", (ch) => {
       bump("beatSensitivity", 25); bump("bassReaction", 25); bump("peakThreshold", -10); bump("syncTightness", 20); bump("motionIntensity", 15);
       STATE.audioReactive = true; if (el.audioReactiveToggle) el.audioReactiveToggle.checked = true;
       STATE.autoKeyframes = true; if (el.autoKeyframes) el.autoKeyframes.checked = true;
-      ch.push("beat sensitivity increased", "peak threshold lowered", "auto peak events enabled (Focus Snap / Signal Interrupt / RGB Spike)");
+      ch.push("beat sensitivity increased", "peak threshold lowered", "auto peak events enabled (Focus Snap / Magnetic Snap / Lost Signal)");
     }),
     _rule(["1:1 post", "square post", "1080 x 1080", " post"], "Post 1:1", (ch) => { setFormat(1080, 1080, "Post 1:1"); ch.push("format = 1080\u00d71080"); }),
     _rule(["ig reel", "instagram reel", "reel", "vertical", "9:16"], "Reel 9:16", (ch) => { setFormat(1080, 1920, "Reel 9:16"); setDuration(8); ch.push("format = 1080\u00d71920", "duration = 8s"); }),
@@ -11186,7 +11255,12 @@
     _rule(["landscape", "16:9"], "Landscape 16:9", (ch) => { setFormat(1920, 1080, "Landscape 16:9"); ch.push("format = 1920\u00d71080"); }),
     _rule(["transparent png", "transparent", "alpha", "no background"], "Transparent", (ch) => { setBackground("transparent"); EXPORTOPTS.transparent = true; if (el.optTransparent) el.optTransparent.checked = true; ch.push("background = transparent", "PNG stills armed with alpha"); }),
     _rule(["every layer different", "each layer different", "vary layers", "layers different"], "Vary layers", (ch) => {
-      const evtKeys = ["focusSnap", "signalInterrupt", "rgbSpike", "hardCutEvent"];
+      // v19.56: signalInterrupt and hardCutEvent removed — deprecated,
+      // no observable effect on the current renderer.  rgbSpike
+      // removed in favor of magneticSnap/lostSignal, both real short
+      // single-shot event effects (rgbSplitPro's defDur is "layer"
+      // shaped, not a short single-shot burst, so it doesn't fit here).
+      const evtKeys = ["focusSnap", "magneticSnap", "lostSignal"];
       layers.forEach((l, i) => {
         l.recipe = makeRecipe((l.id * 131 + Math.floor(Math.random() * 99999)));
         l.start = Math.min(STATE.duration * 0.5, i * 0.3);
@@ -11209,8 +11283,16 @@
     _rule(["detroit", "techno"], "Detroit Techno", (ch) => { applyPreset("Detroit Techno", !selectedLayer); ch.push("preset = Detroit Techno"); }),
     _rule(["data terminal", "terminal"], "Data Terminal", (ch) => { applyPreset("Data Terminal", !selectedLayer); ch.push("preset = Data Terminal"); }),
     _rule(["focus snap"], "Focus Snap event", (ch) => { const c = createEventClip("focusSnap", selectedLayer); if (c) ch.push(`Focus Snap event @ ${c.start.toFixed(2)}s (${c.duration}s)`); }),
-    _rule(["signal interrupt", "interrupt"], "Signal Interrupt event", (ch) => { const c = createEventClip("signalInterrupt", selectedLayer); if (c) ch.push(`Signal Interrupt @ ${c.start.toFixed(2)}s`); }),
-    _rule(["rgb spike"], "RGB Spike event", (ch) => { const c = createEventClip("rgbSpike", selectedLayer); if (c) ch.push(`RGB Spike @ ${c.start.toFixed(2)}s`); }),
+    // v19.56: "signalInterrupt" is deprecated with no observable
+    // effect on the current renderer — typing this prompt used to
+    // silently create a clip that did nothing visible.  Migrated to
+    // Lost Signal, a real signal-dropout effect with similar intent.
+    _rule(["signal interrupt", "interrupt"], "Signal Interrupt event", (ch) => { const c = createEventClip("lostSignal", selectedLayer); if (c) ch.push(`Lost Signal @ ${c.start.toFixed(2)}s (was: Signal Interrupt, deprecated)`); }),
+    // v19.56: "rgbSpike" is deprecated in favor of "rgbSplitPro", but
+    // that effect's default duration spans the whole layer ("layer"
+    // sentinel) rather than a short spike.  Pass an explicit short
+    // duration (0.25s) so the prompt's "spike" intent is preserved.
+    _rule(["rgb spike"], "RGB Spike event", (ch) => { const c = createEventClip("rgbSplitPro", selectedLayer, undefined, 0.25); if (c) ch.push(`RGB Split (Pro) spike @ ${c.start.toFixed(2)}s (0.25s burst)`); }),
     _rule(["hud", "overlay", "coordinates", "labels"], "HUD overlay", (ch) => { layerFxAdd("hudOverlay"); ch.push("HUD Overlay added to layer fx"); }),
     _rule(["glow", "pulse glow"], "Pulse glow", (ch) => { layerFxAdd("pulseGlow"); ch.push("Pulse Glow added"); }),
     _rule(["hologram", "tilt", "3d card"], "Hologram tilt", (ch) => { if (selectedLayer) { selectedLayer.allowTransform = true; if (el.allowTransform) el.allowTransform.checked = true; } layerFxAdd("hologramTilt"); ch.push("transform motion enabled", "Hologram Tilt added"); }),
