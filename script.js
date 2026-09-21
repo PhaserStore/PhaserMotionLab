@@ -111,6 +111,14 @@
       .text-edit-overlay { background: rgba(21,22,26,0.35) !important; border-radius: 2px !important; border: 1px solid rgba(255,255,255,0.25) !important; box-shadow: none !important; }
       .text-edit-overlay:focus { border-color: var(--accent) !important; }
       body.text-editing .selection-box { display: none !important; }
+      /* v19.62 SELECTION VISIBILITY.  Previous highlight was 0.45
+         opacity — too low-contrast against the overlay's own dark
+         fill, especially with white text on top.  Raised to 0.85 —
+         a strongly saturated version of the app's own accent violet
+         (rgb(122,92,255), matching --accent exactly) so selected text
+         reads clearly at a glance, verified with long text and
+         multi-word drag-selections. */
+      .text-edit-overlay::selection { background: rgba(122, 92, 255, 0.85) !important; color: #fff !important; }
     `;
     const tag = document.createElement("style");
     tag.id = "v1957-layout-fixes";
@@ -5181,23 +5189,27 @@
     if (layer.transform && layer.transform.rot) ta.style.transform = `rotate(${layer.transform.rot}deg)`;
     el.stage.appendChild(ta);
     _activeTextEditor = { textarea: ta, layer };
-    // v19.61 DUPLICATE-TEXT FIX.
+    // v19.62 DUPLICATE-TEXT FIX, HARDENED.
     //
     // Root cause: nothing ever hid the ORIGINAL rendered SVG text
-    // while the edit overlay was showing.  The previous session's fix
-    // only reduced the overlay's own background opacity (0.9 → 0.35)
-    // to address a DIFFERENT complaint (the overlay itself looking
-    // like a heavy "second rectangle") — but that same opacity
-    // reduction made the still-fully-rendered text underneath show
-    // through MORE clearly, not less, producing visibly duplicated
-    // text (e.g. "Text" + "Text" overlapping into "TexText").
-    //
-    // Fix: hide the layer's rendered wrap via visibility (not
-    // display:none, which would zero its layout box and break the
-    // wrapRect-based math already captured above) for the duration of
-    // editing, and restore it in finalize() below.  Only ONE visible
-    // representation of the text exists at a time now.
-    layer.wrap.style.visibility = "hidden";
+    // while the edit overlay was showing.  A previous fix used
+    // `visibility: hidden` on layer.wrap.  That's CSS-inheritable,
+    // but any DESCENDANT that explicitly sets its own `visibility`
+    // (rather than leaving it to inherit) can locally override an
+    // ancestor's hidden state — and this codebase's per-glyph text
+    // effects (bulk typing reveal, pattern-clone rebuilding, etc.) do
+    // write `tspan.style.visibility` as part of normal operation.
+    // Even where that turned out to be safe in testing (clearing to
+    // "" lets it re-inherit rather than forcing "visible"), relying
+    // on inheritance holding across every current AND future effect
+    // is fragile.  `display: none` cannot be overridden by ANY
+    // descendant under any circumstance — it removes the element and
+    // everything inside it from rendering entirely, which is what
+    // "hidden while editing" actually needs to guarantee.  The
+    // wrapRect used for overlay positioning above was already
+    // captured before this point, so collapsing the layout box here
+    // doesn't affect anything downstream in this function.
+    layer.wrap.style.display = "none";
     // v19.60: hide the outer selection box + resize handles while
     // editing — matches Figma/Canva/AE (handles disappear in text-
     // edit mode) and also removes the dead click-zone the north
@@ -5229,9 +5241,9 @@
       _activeTextEditor = null;
       ta.remove();
       document.body.classList.remove("text-editing");
-      // v19.61: restore the original layer's visibility — it was
-      // hidden above so only the overlay was visible while editing.
-      layer.wrap.style.visibility = "";
+      // v19.62: restore the original layer's display — it was set to
+      // "none" above so only the overlay was visible while editing.
+      layer.wrap.style.display = "";
       updateTextLayer(layer, { text: newText || " " });
       renderInspector();
     };
@@ -14730,7 +14742,24 @@
       if (!selectedLayer || selectedLayer.kind !== "TEXT") return;
       // If patch changes the family, wait for it to load first.
       let loadFailed = false;
-      const isSystemFont = patch.fontFamily && window.__systemFontFamilies && window.__systemFontFamilies.has(patch.fontFamily);
+      // v19.62: use the EXPLICIT flag set by the dropdown's change
+      // handler (based on which optgroup the chosen <option> actually
+      // lives in) rather than a global name-keyed Set.  The Set
+      // approach broke down whenever a system-installed font shared
+      // its exact name with a built-in web font (e.g. "IBM Plex Mono"
+      // is a common local dev font AND one of this app's Google-
+      // Fonts-loaded built-ins) — once System Fonts had been used
+      // once, EVERY future selection of that name, including the
+      // built-in one, was wrongly treated as a system font and
+      // silently skipped the load-verification that would otherwise
+      // catch and warn about a failed web-font load.
+      const isSystemFont = !!patch._isSystemFontSelection;
+      // Strip the internal routing flag before it ever reaches
+      // layer.textStyle — updateTextLayer does a plain Object.assign
+      // with this patch, so anything left on it would stick around
+      // as a stray property on the layer's style object.
+      const cleanPatch = Object.assign({}, patch);
+      delete cleanPatch._isSystemFontSelection;
       if (patch.fontFamily && !isSystemFont) {
         try {
           // Match the same specifier we use when building — includes
@@ -14754,7 +14783,7 @@
           toast(`"${patch.fontFamily}" failed to load — using a fallback font. Check your network connection; OpenType features like slashed zero won't apply to the fallback.`);
         }
       }
-      updateTextLayer(selectedLayer, patch);
+      updateTextLayer(selectedLayer, cleanPatch);
       paintIfPaused();
       // v19.61: refresh the zero-support note too — previously this
       // only ran from the Zero Style dropdown's OWN change handler,
@@ -14766,7 +14795,21 @@
     };
     if (el.textFontFamily) {
       el.textFontFamily.addEventListener("change", () => {
-        _requestFontChange({ fontFamily: el.textFontFamily.value });
+        // v19.62: determine "is this a system font" from WHICH
+        // OPTION the user actually picked (its optgroup), not from a
+        // global name-keyed Set.  Root cause of a real ambiguity bug:
+        // if the user's OS happens to have a locally-installed font
+        // sharing the exact name of a built-in web font (e.g. "IBM
+        // Plex Mono" is a common developer font that could be BOTH
+        // Google-Fonts-loaded AND locally installed), a name-only Set
+        // couldn't tell which one was selected — once System Fonts
+        // had been used even once, EVERY future selection of that
+        // name (including the built-in one) would be wrongly treated
+        // as a system font, silently skipping the load-verification
+        // that would otherwise warn about a failed web-font load.
+        const selectedOption = el.textFontFamily.selectedOptions && el.textFontFamily.selectedOptions[0];
+        const fromSystemGroup = !!(selectedOption && selectedOption.parentElement && selectedOption.parentElement.id === "fontSystemGroup");
+        _requestFontChange({ fontFamily: el.textFontFamily.value, _isSystemFontSelection: fromSystemGroup });
       });
     }
     // v19.54 FONT UPLOAD with real metadata parsing.
