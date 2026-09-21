@@ -11396,6 +11396,43 @@
      explicit "Detected → Applied" list. Rules modify STATE, layer.fx,
      event clips, and (for reference-style prompts) create timeline events. */
   function _rule(kw, name, fn) { return { kw, name, fn }; }
+  // v19.59 CHAT ↔ DIRECTOR BRIDGE.
+  //
+  // One reusable "chat Director" — created once, reused/regenerated
+  // on subsequent matches rather than piling up a new Director per
+  // prompt.  Routes through window.__phaserDebug because AI_RULES
+  // lives in a different closure than the Director engine
+  // (createDirector/generateDirectorEvents/resolveSyncTimes) — the
+  // debug hook is the one access path proven to work regardless of
+  // scope (see the v19.58 session notes on the createDirector
+  // scoping bug).  Focus Snap stays the default primary effect per
+  // "Director should prefer Focus Snap unless another effect is
+  // explicitly requested" — these chat phrases only ever name a
+  // SYNC source, never a different effect, so Focus Snap applies.
+  let _chatDirectorId = null;
+  function _chatSyncToDirector(canonSource, ch) {
+    const dbg = window.__phaserDebug;
+    if (!dbg || !dbg.createDirector) return;   // defensive — engine not loaded yet
+    let d = _chatDirectorId ? dbg.getDirectors().find(x => x.id === _chatDirectorId) : null;
+    if (!d) {
+      d = dbg.createDirector({ name: "Chat Director", primaryEffect: "focusSnap", syncSource: canonSource, targetScope: "all" });
+      _chatDirectorId = d.id;
+    } else if (d.syncSource !== canonSource) {
+      // v19.59: each chat prompt is a FRESH sync intent, not an
+      // additive layer on top of whatever the Chat Director did last
+      // time.  Without clearing first, switching "sync to beat" →
+      // "golden ratio" would leave the old beat-based events sitting
+      // on the timeline alongside the new golden-ratio ones — the
+      // same clutter the dedicated Remove/Regenerate actions exist to
+      // prevent.  Reuse that exact mechanism: clear old events before
+      // generating under the new source.
+      dbg.removeDirectorEvents(d.id);
+      d.syncSource = canonSource;
+    }
+    const result = dbg.generateDirectorEvents(d.id);
+    ch.push(`${escHtml(d.name)}: ${result.summary}`);
+    if (typeof dbg.renderDirectorPanel === "function") dbg.renderDirectorPanel();
+  }
   const AI_RULES = [
     _rule(["no rotation", "no scale", "no zoom", "static", "still"], "Static layers", (ch) => {
       layers.forEach((l) => { l.allowTransform = false; l.transform.rot = 0; });
@@ -11410,12 +11447,45 @@
     }),
     _rule(["cleaner", "clean", "minimal", "elegant"], "Cleaner", (ch) => { set("glitch", 10); set("noise", 8); set("flicker", 14); bump("blur", -4); layerFxAll(["blurIn", "pulseGlow"]); ch.push("glitch/noise/flicker lowered", "layer fx = Blur-in + Pulse Glow"); }),
     _rule(["more aggressive", "aggressive", "harder", "intense", "harsh"], "Aggressive", (ch) => { bump("glitch", 25); bump("rgbSplit", 20); bump("bassReaction", 20); bump("motionIntensity", 15); layerFxAll(["rgbSplitPro", "textFlicker", "dataBreakEvent", "pulseGlow"]); ch.push("glitch/RGB/bass reaction increased", "clips added: RGB Split Pro + flicker + breakup + glow"); }),
-    _rule(["synced to the beat", "more synced", "sync to the beat", "beat sync", "on beat", "on peaks"], "Beat sync", (ch) => {
+    _rule(["synced to the beat", "more synced", "sync to the beat", "beat sync", "on beat", "on peaks", "bpm sync"], "Beat sync", (ch) => {
       bump("beatSensitivity", 25); bump("bassReaction", 25); bump("peakThreshold", -10); bump("syncTightness", 20); bump("motionIntensity", 15);
       STATE.audioReactive = true; if (el.audioReactiveToggle) el.audioReactiveToggle.checked = true;
       STATE.autoKeyframes = true; if (el.autoKeyframes) el.autoKeyframes.checked = true;
       ch.push("beat sensitivity increased", "peak threshold lowered", "auto peak events enabled (Focus Snap / Magnetic Snap / Lost Signal)");
+      // v19.59: ALSO drive the shared Director engine with canonical
+      // source "beat" — unifies this chat phrase with the same
+      // resolveSyncTimes path Audio Sync / Director / markers use.
+      _chatSyncToDirector("beat", ch);
     }),
+    // v19.59: new canonical-source chat rules.  Each mirrors the Beat
+    // sync rule's shape — bump the relevant Audio Sync slider (same
+    // ones Bass/Mid/High/Peak detection reads via
+    // _slidersAdjustedPreset) and drive the shared Director engine.
+    _rule(["sync to bass", "sync to the bass", "bass hits", "bass sync", "sync to kick", "sync to the kick"], "Bass sync", (ch) => {
+      bump("bassReaction", 20); STATE.audioReactive = true; if (el.audioReactiveToggle) el.audioReactiveToggle.checked = true;
+      ch.push("bass reaction increased");
+      _chatSyncToDirector("bass", ch);
+    }),
+    _rule(["sync to mid", "sync to mids", "sync to the mid", "sync to the mids", "mid sync"], "Mid sync", (ch) => {
+      bump("midReaction", 20); STATE.audioReactive = true; if (el.audioReactiveToggle) el.audioReactiveToggle.checked = true;
+      ch.push("mid reaction increased");
+      _chatSyncToDirector("mid", ch);
+    }),
+    _rule(["sync to high", "sync to highs", "sync to the high", "sync to the highs", "sync to treble", "high sync", "treble sync"], "High sync", (ch) => {
+      bump("highReaction", 20); STATE.audioReactive = true; if (el.audioReactiveToggle) el.audioReactiveToggle.checked = true;
+      ch.push("high reaction increased");
+      _chatSyncToDirector("high", ch);
+    }),
+    _rule(["sync to peak", "sync to peaks", "sync to onset", "sync to onsets", "sync to transient", "sync to transients", "peak sync"], "Peak sync", (ch) => {
+      bump("peakThreshold", -10); STATE.audioReactive = true; if (el.audioReactiveToggle) el.audioReactiveToggle.checked = true;
+      ch.push("peak threshold lowered");
+      _chatSyncToDirector("peak", ch);
+    }),
+    _rule(["golden ratio"], "Golden Ratio sync", (ch) => { _chatSyncToDirector("goldenRatio", ch); }),
+    _rule(["sync to halves", "in halves", "sync halves"], "Halves sync", (ch) => { _chatSyncToDirector("halves", ch); }),
+    _rule(["sync to thirds", "in thirds", "sync thirds"], "Thirds sync", (ch) => { _chatSyncToDirector("thirds", ch); }),
+    _rule(["sync to quarters", "in quarters", "sync quarters"], "Quarters sync", (ch) => { _chatSyncToDirector("quarters", ch); }),
+    _rule(["custom markers", "manual markers", "custom marker", "manual marker"], "Custom marker sync", (ch) => { _chatSyncToDirector("custom", ch); }),
     _rule(["1:1 post", "square post", "1080 x 1080", " post"], "Post 1:1", (ch) => { setFormat(1080, 1080, "Post 1:1"); ch.push("format = 1080\u00d71080"); }),
     _rule(["ig reel", "instagram reel", "reel", "vertical", "9:16"], "Reel 9:16", (ch) => { setFormat(1080, 1920, "Reel 9:16"); setDuration(8); ch.push("format = 1080\u00d71920", "duration = 8s"); }),
     _rule(["portrait", "4:5"], "Portrait 4:5", (ch) => { setFormat(1080, 1350, "Portrait 4:5"); ch.push("format = 1080\u00d71350"); }),
@@ -11494,8 +11564,35 @@
     });
     renderInspector(); renderTimeline();
   }
+  // v19.59 CHAT NORMALIZATION.
+  //
+  // Two levels, deliberately separate:
+  //  - normalizeForRules(): lowercase, strip punctuation, collapse
+  //    whitespace, fix "synched"/"sync'd" → "synced".  Safe for ALL
+  //    existing AI_RULES keyword substrings (none of them contain
+  //    punctuation or rely on it), so this can never break an
+  //    existing match — it can only make matching MORE forgiving
+  //    (trailing periods, extra spaces, capitalization no longer
+  //    matter).
+  //  - normalizeForRules does NOT strip filler words like "more"/
+  //    "the"/"make it", because several EXISTING rule keyword
+  //    strings literally contain those words verbatim (e.g. "synced
+  //    to the beat", "more synced") — removing them from the input
+  //    would break those exact matches.  Filler-word tolerance is
+  //    handled separately, only by the rules that need it, via their
+  //    own phrase lists already written to match common short forms
+  //    ("bass sync", "sync to bass") rather than by mutating the
+  //    shared input text.
+  function normalizeForRules(text) {
+    let t = String(text || "").toLowerCase();
+    t = t.replace(/synch(ed)?\b/g, "sync$1");   // synched/synch → synced/sync
+    t = t.replace(/sync'd\b/g, "synced");
+    t = t.replace(/[.,!?;:()"]/g, " ");         // strip punctuation
+    t = t.replace(/\s+/g, " ").trim();          // collapse whitespace
+    return t;
+  }
   function runAI() {
-    const text = el.aiPrompt.value.toLowerCase().trim();
+    const text = normalizeForRules(el.aiPrompt.value);
     if (!text) { el.aiEcho.innerHTML = 'Type a direction first, like <em>"make it more synced to the beat"</em>.'; return; }
     const detected = [], changes = [];
     AI_RULES.forEach((r) => {
@@ -15805,8 +15902,11 @@
       let t = 1;
       while (t < dur) { times.push(t); t *= phi; }
       // Always include 0 as the first marker for a clear reference.
-      markers.push({ type: "grid", time: 0 });
-      for (const time of times) markers.push({ type: "grid", time: +time.toFixed(3) });
+      // v19.59: tagged "goldenRatio" (was generic "grid") — same
+      // canonical type Director's Golden Ratio sync source expects,
+      // and the SAME exact math/positions as before.
+      markers.push({ type: "goldenRatio", time: 0 });
+      for (const time of times) markers.push({ type: "goldenRatio", time: +time.toFixed(3) });
       renderTimeline();
       return times.length + 1;
     }
@@ -15991,26 +16091,98 @@
       }
       return out;
     }
-    // v19.58: onset-detection band presets, factored out so Director's
-    // sync resolver and the marker-grid popover use IDENTICAL params —
-    // one source of truth, no drift between "what the marker button
-    // generates" and "what Director syncs to" for the same source name.
-    const ONSET_BAND_PRESETS = {
-      bass:      { bandLo: 20,   bandHi: 160,  minGap: 0.14, thresholdMul: 2.8 },
-      transient: { bandLo: 2000, bandHi: 8000, minGap: 0.06, thresholdMul: 2.8 },
-      onset:     { bandLo: 80,   bandHi: 8000, minGap: 0.09, thresholdMul: 2.5 },
+    /* ================================================================
+     * v19.59 CANONICAL SYNCHRONIZATION SYSTEM.
+     *
+     * One shared vocabulary for Audio Sync, Director, markers,
+     * presets, and the rule-based chat — replacing the previous
+     * mix of "bpm"/"beat", "onset"/"transient"/"peak", "manual"/
+     * "markers" that meant almost-but-not-quite the same things in
+     * different parts of the app.
+     *
+     * Canonical keys: beat, bass, mid, high, peak, goldenRatio,
+     * halves, thirds, quarters, custom.
+     * ================================================================ */
+    const SYNC_CANON = {
+      groups: {
+        AUDIO:     ["beat", "bass", "mid", "high", "peak"],
+        STRUCTURE: ["goldenRatio", "halves", "thirds", "quarters"],
+        MARKERS:   ["custom"],
+      },
+      labels: {
+        beat: "Beat", bass: "Bass", mid: "Mid", high: "High", peak: "Peak",
+        goldenRatio: "Golden Ratio", halves: "Halves", thirds: "Thirds", quarters: "Quarters",
+        custom: "Custom Markers",
+      },
+      // Old string → canonical string.  Applied everywhere a
+      // syncSource value is READ (resolveSyncTimes, summaries, the
+      // dropdown's "selected" match, saved/duplicated Director
+      // configs) so nothing already using the old names breaks.
+      legacyAliases: {
+        bpm: "beat",
+        "bass-hits": "bass", bassHits: "bass",
+        onset: "peak", onsets: "peak", transient: "peak", transients: "peak",
+        manual: "custom", markers: "custom",
+      },
     };
+    function normalizeSyncSource(source) {
+      if (!source) return "beat";
+      if (SYNC_CANON.labels[source]) return source;   // already canonical
+      return SYNC_CANON.legacyAliases[source] || source;
+    }
+    // v19.59: bandAverage split points reused VERBATIM from the live
+    // Audio Sync engine (analyzeAudio(), a few hundred lines above) —
+    // bass=20-160Hz, mid=160-2000Hz, high=2000-12000Hz.  Using the
+    // SAME edges here is what makes Director's Bass/Mid/High sync
+    // sources consistent with the Audio Sync meters/sliders rather
+    // than a second, subtly-different detector.  "Peak" reuses the
+    // broad-spectrum band the old onset preset used, conceptually
+    // matching the live engine's combined-band flux → STATE.peak.
+    const ONSET_BAND_PRESETS = {
+      bass: { bandLo: 20,   bandHi: 160,   minGap: 0.14, thresholdMul: 2.8 },
+      mid:  { bandLo: 160,  bandHi: 2000,  minGap: 0.10, thresholdMul: 2.6 },
+      high: { bandLo: 2000, bandHi: 12000, minGap: 0.06, thresholdMul: 2.8 },
+      peak: { bandLo: 80,   bandHi: 12000, minGap: 0.09, thresholdMul: 2.5 },
+    };
+    // v19.59: fold the current Audio Sync slider value into the
+    // detector's threshold, so Director's offline detection responds
+    // to the SAME sliders the user already tuned for live playback —
+    // "use current slider settings," not just the same frequency
+    // bands.  Higher Reaction = more sensitive = LOWER threshold
+    // (catches more/smaller hits).  Peak inverts this on purpose:
+    // STATE.peakThreshold is a literal gate in analyzeAudio() where
+    // HIGHER = stricter, so Director's offline Peak detector mirrors
+    // that exact direction instead of the Reaction sliders' direction.
+    function _slidersAdjustedPreset(canonKey) {
+      const base = ONSET_BAND_PRESETS[canonKey];
+      if (!base) return base;
+      const preset = Object.assign({}, base);
+      if (canonKey === "bass") preset.thresholdMul = base.thresholdMul * (1.6 - (STATE.bassReaction || 50) / 100);
+      else if (canonKey === "mid") preset.thresholdMul = base.thresholdMul * (1.6 - (STATE.midReaction || 50) / 100);
+      else if (canonKey === "high") preset.thresholdMul = base.thresholdMul * (1.6 - (STATE.highReaction || 50) / 100);
+      else if (canonKey === "peak") preset.thresholdMul = base.thresholdMul * (0.6 + (STATE.peakThreshold || 60) / 100);
+      preset.thresholdMul = Math.max(1.2, preset.thresholdMul);
+      return preset;
+    }
     function generateAudioMarkers(mode) {
       const buffer = pickAudioBuffer();
       if (!buffer) { toast("Load a music track or a sound first"); return 0; }
       clearGeneratedMarkers();
-      const preset = ONSET_BAND_PRESETS[mode] || ONSET_BAND_PRESETS.onset;
+      // v19.59: the marker-grid popover's three "From audio" buttons
+      // map onto canonical types so markers are never stored under
+      // a generic "grid" tag — bass stays bass; the old "onset"
+      // (broad-spectrum) button now tags "peak"; the old "transient"
+      // (hats/snares, high-frequency) button now tags "high".  Same
+      // underlying detection math either way (see ONSET_BAND_PRESETS).
+      const modeToCanon = { bass: "bass", onset: "peak", transient: "high" };
+      const canonKey = modeToCanon[mode] || "peak";
+      const preset = _slidersAdjustedPreset(canonKey) || ONSET_BAND_PRESETS.peak;
       const times = detectOnsets(buffer, preset);
-      // Clamp to scene duration and emit as grid markers.
+      // Clamp to scene duration and emit as canonically-typed markers.
       const dur = STATE.duration;
       for (const t of times) {
         if (t > dur + 0.01) break;
-        markers.push({ type: "grid", time: +t.toFixed(3) });
+        markers.push({ type: canonKey, time: +t.toFixed(3) });
       }
       renderTimeline();
       return times.length;
@@ -16026,25 +16198,22 @@
      * decoupled from any specific effect or target kind.
      * ================================================================ */
     function resolveSyncTimes(syncSource) {
+      const source = normalizeSyncSource(syncSource);
       const dur = STATE.duration || 0;
       const clampSorted = (arr) => arr.filter(t => t >= 0 && t <= dur + 0.01).sort((a, b) => a - b);
 
-      if (syncSource === "bpm" || syncSource === "beat") {
-        // v19.58: "Beat" prefers REAL observed beat taps if enough
-        // exist (audio.beatTimes accumulates live during playback via
-        // tap/auto-detect — see analyzeAudio()).  Both "Beat" and
-        // "BPM" fall back to / use the same mathematical grid derived
-        // from STATE.bpm when live tap data isn't available yet —
-        // there is no pre-computed "beat position for the whole
-        // track" any other way in this codebase, so this is the
-        // honest, deterministic behavior rather than silently
-        // returning nothing.
-        if (syncSource === "beat" && audio.beatTimes && audio.beatTimes.length >= 4) {
-          // beatTimes are wall-clock performance.now() ms from when
-          // they were tapped/detected, not scene-relative seconds —
-          // convert to a relative grid using the median spacing
-          // (already what STATE.bpm is derived from) anchored at 0,
-          // since raw wall-clock values aren't meaningful scene times.
+      if (source === "beat") {
+        // v19.59: Beat prefers REAL observed beat taps if enough exist
+        // (audio.beatTimes accumulates live during playback via
+        // tap/auto-detect — see analyzeAudio()).  Falls back to the
+        // mathematical grid derived from STATE.bpm when live tap data
+        // isn't available yet — there is no pre-computed "beat
+        // position for the whole track" any other way in this
+        // codebase, so this is the honest, deterministic behavior
+        // rather than silently returning nothing.  ("bpm" as a
+        // syncSource value normalizes to "beat" above, so this single
+        // branch now covers what used to be two separate keys.)
+        if (audio.beatTimes && audio.beatTimes.length >= 4) {
           const spacings = [];
           const recent = audio.beatTimes.slice(-16);
           for (let i = 1; i < recent.length; i++) spacings.push(recent[i] - recent[i - 1]);
@@ -16057,20 +16226,46 @@
             return clampSorted(out);
           }
         }
-        // BPM grid fallback (also the primary path for syncSource === "bpm").
+        // BPM grid fallback.
         if (!STATE.bpm) return [];
         const step = 60 / STATE.bpm;
         const out = [];
         for (let t = 0; t <= dur; t += step) out.push(+t.toFixed(3));
         return clampSorted(out);
       }
-      if (syncSource === "bass" || syncSource === "onset" || syncSource === "transient") {
+      if (source === "bass" || source === "mid" || source === "high" || source === "peak") {
+        // v19.59: Bass/Mid/High/Peak reuse the ONE existing offline
+        // detector (detectOnsets) with the SAME band edges as the
+        // live Audio Sync engine's bandAverage() calls, and fold in
+        // the CURRENT slider value for that band — no separate
+        // detector, no duplicated analysis logic.
         const buffer = pickAudioBuffer();
         if (!buffer) return [];
-        const preset = ONSET_BAND_PRESETS[syncSource];
+        const preset = _slidersAdjustedPreset(source);
         return clampSorted(detectOnsets(buffer, preset).map(t => +t.toFixed(3)));
       }
-      if (syncSource === "markers") {
+      if (source === "goldenRatio") {
+        // v19.59: EXACT same math as generateGoldenRatioGrid() — φ
+        // progression starting at 1s, plus a leading 0 — so Director's
+        // Golden Ratio source lands on identical positions to the
+        // marker-grid popover's "Golden ratio (φ)" button.
+        const phi = (1 + Math.sqrt(5)) / 2;
+        const out = [0];
+        let t = 1;
+        while (t < dur) { out.push(+t.toFixed(3)); t *= phi; }
+        return clampSorted(out);
+      }
+      if (source === "halves" || source === "thirds" || source === "quarters") {
+        // v19.59: equal-division structural markers — boundary points
+        // of N equal segments, including start and end (0 and dur),
+        // matching the same "always include a clear reference" spirit
+        // as the existing Golden Ratio generator.
+        const n = source === "halves" ? 2 : source === "thirds" ? 3 : 4;
+        const out = [];
+        for (let i = 0; i <= n; i++) out.push(+(dur * i / n).toFixed(3));
+        return clampSorted(out);
+      }
+      if (source === "custom") {
         // Custom Markers = user-placed only ("manual" type) — the one
         // marker type that's unambiguous about being user intent
         // rather than a generated grid of some other source.
@@ -16081,10 +16276,10 @@
     // Human-readable reason a sync source returned nothing — shown in
     // the Director summary so failures are never silent/confusing.
     function syncSourceUnavailableReason(syncSource) {
-      if (syncSource === "bpm" && !STATE.bpm) return "no BPM detected or entered yet";
-      if (syncSource === "beat" && !STATE.bpm && !(audio.beatTimes && audio.beatTimes.length >= 4)) return "no tapped beats or BPM yet";
-      if ((syncSource === "bass" || syncSource === "onset" || syncSource === "transient") && !pickAudioBuffer()) return "no audio loaded";
-      if (syncSource === "markers" && !markers.some(m => m.type === "manual")) return "no custom markers placed";
+      const source = normalizeSyncSource(syncSource);
+      if (source === "beat" && !STATE.bpm && !(audio.beatTimes && audio.beatTimes.length >= 4)) return "no tapped beats or BPM yet";
+      if ((source === "bass" || source === "mid" || source === "high" || source === "peak") && !pickAudioBuffer()) return "no audio loaded";
+      if (source === "custom" && !markers.some(m => m.type === "manual")) return "no custom markers placed";
       return "no sync points found";
     }
 
@@ -16108,6 +16303,10 @@
         createdLayerIds: [],
         lastRunSummary: "",
       }, overrides || {});
+      // v19.59: normalize immediately — if overrides carried a legacy
+      // value (old preset, old saved config), the Director's stored
+      // syncSource is canonical from the moment it exists.
+      d.syncSource = normalizeSyncSource(d.syncSource);
       DIRECTORS.push(d);
       return d;
     }
@@ -16169,6 +16368,13 @@
       const d = DIRECTORS.find(x => x.id === id);
       if (!d) return { created: 0, summary: "Director not found" };
       if (!d.enabled) return { created: 0, summary: "Director is disabled" };
+      // v19.59: normalize + persist canonical form.  Any legacy value
+      // ("bpm", "onset", "transient", "manual", "markers") stored on
+      // an older Director config becomes the canonical key here, so
+      // every downstream read (summary text, dropdown selection,
+      // debug output) sees ONE consistent vocabulary from this point
+      // forward — not re-normalized ad hoc in a dozen places.
+      d.syncSource = normalizeSyncSource(d.syncSource);
 
       // v19.58 item 8 (experimental): placeholder targets create new
       // layers instead of clips on existing ones.  Kept as its own
@@ -16231,7 +16437,7 @@
         });
       });
       d.lastRunSummary = created
-        ? `Created ${created} event(s) · primary: ${FX_EVENT_DEF.get(validKeys[0]).label}${validKeys.length > 1 ? ` · secondary: ${validKeys.slice(1).map(k => FX_EVENT_DEF.get(k).label).join(", ")}` : ""} · synced to ${SYNC_SOURCE_LABELS[d.syncSource] || d.syncSource} (${times.length} points)`
+        ? `Created ${created} event(s) · primary: ${FX_EVENT_DEF.get(validKeys[0]).label}${validKeys.length > 1 ? ` · secondary: ${validKeys.slice(1).map(k => FX_EVENT_DEF.get(k).label).join(", ")}` : ""} · synced to ${SYNC_CANON.labels[d.syncSource] || d.syncSource} (${times.length} points)`
         : "No events created — all sync points already had events (no duplicates added)";
       renderTimeline(); renderInspector();
       return { created, summary: d.lastRunSummary };
@@ -16240,10 +16446,10 @@
       removeDirectorEvents(id);
       return generateDirectorEvents(id);
     }
-    const SYNC_SOURCE_LABELS = {
-      beat: "Beat", bpm: "BPM", bass: "Bass Hits", onset: "Onsets",
-      transient: "Transients", markers: "Custom Markers",
-    };
+    // v19.59: SYNC_SOURCE_LABELS kept as a name (in case anything else
+    // in the file still references it) but now just points at the
+    // ONE canonical label table — no separate, driftable copy.
+    const SYNC_SOURCE_LABELS = SYNC_CANON.labels;
 
     /* ================================================================
      * v19.58 item 8 — PLACEHOLDER GENERATION (experimental).
@@ -16307,9 +16513,9 @@
     const DIRECTOR_PRESETS = {
       "Beat Driven":     { name: "Beat Driven",     primaryEffect: "focusSnap",   syncSource: "beat" },
       "Bass Pulse":      { name: "Bass Pulse",      primaryEffect: "focusSnap",   secondaryEffects: ["magneticSnap"], syncSource: "bass" },
-      "Techno Cut":      { name: "Techno Cut",      primaryEffect: "focusSnap",   secondaryEffects: ["lostSignal"], syncSource: "onset" },
-      "Fast Glitch":     { name: "Fast Glitch",     primaryEffect: "rgbSplitPro", secondaryEffects: ["textFlicker"], syncSource: "transient" },
-      "Cinematic Build":  { name: "Cinematic Build", primaryEffect: "pulseGlow",   syncSource: "bpm" },
+      "Techno Cut":      { name: "Techno Cut",      primaryEffect: "focusSnap",   secondaryEffects: ["lostSignal"], syncSource: "peak" },
+      "Fast Glitch":     { name: "Fast Glitch",     primaryEffect: "rgbSplitPro", secondaryEffects: ["textFlicker"], syncSource: "high" },
+      "Cinematic Build":  { name: "Cinematic Build", primaryEffect: "pulseGlow",   syncSource: "beat" },
       "Photo Sync":      { name: "Photo Sync",      primaryEffect: "focusSnap",   syncSource: "beat", target: { kind: "image-placeholder" } },
       "Text Sync":       { name: "Text Sync",       primaryEffect: "focusSnap",   syncSource: "bass", target: { kind: "text-placeholder" } },
     };
@@ -16394,6 +16600,21 @@
       const ordered = focusFirst ? [focusFirst, ...rest] : rest;
       return ordered.map(fx => `<option value="${fx.key}"${fx.key === selectedKey ? " selected" : ""}>${escHtml(fx.label)}</option>`).join("");
     }
+    // v19.59: sync-source dropdown built from SYNC_CANON.groups so the
+    // grouping (AUDIO / STRUCTURE / MARKERS) and the canonical keys
+    // stay in ONE place — no separate hand-written <option> list to
+    // drift out of sync with resolveSyncTimes' own dispatch.
+    function _syncSourceOptionsHTML(selectedSource) {
+      const sel = normalizeSyncSource(selectedSource);
+      const groupHTML = (groupKeys) => groupKeys.map(key =>
+        `<option value="${key}"${key === sel ? " selected" : ""}>${escHtml(SYNC_CANON.labels[key])}</option>`
+      ).join("");
+      return `
+        <optgroup label="Audio">${groupHTML(SYNC_CANON.groups.AUDIO)}</optgroup>
+        <optgroup label="Structure">${groupHTML(SYNC_CANON.groups.STRUCTURE)}</optgroup>
+        <optgroup label="Markers">${groupHTML(SYNC_CANON.groups.MARKERS)}</optgroup>
+      `;
+    }
     function renderDirectorPanel() {
       const list = document.getElementById("directorList");
       const badge = document.getElementById("directorsCountBadge");
@@ -16401,6 +16622,12 @@
       if (badge) badge.textContent = String(DIRECTORS.length);
       list.innerHTML = "";
       DIRECTORS.forEach(d => {
+        // v19.59: normalize on every render too — belt-and-suspenders
+        // for any Director object that reached here without passing
+        // through createDirector/generateDirectorEvents (shouldn't
+        // happen, but the dropdown must never show a stale/legacy
+        // value even in that case).
+        d.syncSource = normalizeSyncSource(d.syncSource);
         const row = document.createElement("div");
         row.className = "director-row" + (d.enabled ? "" : " disabled");
         row.dataset.directorId = d.id;
@@ -16423,14 +16650,7 @@
               <option value="all"${d.targetScope === "all" ? " selected" : ""}>All layers</option>
             </select>
             <select class="dr-primary" title="Primary effect" ${isPlaceholder ? "disabled" : ""}>${_effectOptionsHTML(d.primaryEffect)}</select>
-            <select class="dr-sync" title="Synchronization source">
-              <option value="beat"${d.syncSource === "beat" ? " selected" : ""}>Beat</option>
-              <option value="bpm"${d.syncSource === "bpm" ? " selected" : ""}>BPM</option>
-              <option value="bass"${d.syncSource === "bass" ? " selected" : ""}>Bass Hits</option>
-              <option value="onset"${d.syncSource === "onset" ? " selected" : ""}>Onsets</option>
-              <option value="transient"${d.syncSource === "transient" ? " selected" : ""}>Transients</option>
-              <option value="markers"${d.syncSource === "markers" ? " selected" : ""}>Custom Markers</option>
-            </select>
+            <select class="dr-sync" title="Synchronization source — Audio sources reuse the same detection engine and sliders as Audio Sync; Structure sources are mathematical positions; Markers uses only manually-placed markers.">${_syncSourceOptionsHTML(d.syncSource)}</select>
           </div>
           <div class="director-row-actions">
             <button class="t-btn dr-generate">Generate</button>
