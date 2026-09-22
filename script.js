@@ -15040,116 +15040,387 @@
         fontUploadInput.value = "";
       });
     }
-    // v19.54 ZERO STYLE dropdown wiring + support probe.
-    // The probe measures a rendered '0' with and without the "zero"
-    // feature; if the widths / bounding boxes are IDENTICAL, the font
-    // ignores the feature (no true slashed zero) and we surface a
-    // note.  Uses an offscreen canvas measurement.
-    const zeroSupportNote = document.getElementById("zeroSupportNote");
-    // v19.64 PROBE REWRITE — HONEST VERIFICATION ONLY.
-    //
-    // The previous probe rendered two SVG variants via
-    // `img.src = "data:image/svg+xml..."` and pixel-diffed them to
-    // guess whether the font honors the "zero" feature.  Verified via
-    // direct testing this session that this rasterization technique
-    // — ANY <img>-based SVG rasterization, data: URI or Blob URL —
-    // does NOT apply CSS font-feature-settings in this Chromium
-    // build, REGARDLESS of whether the font genuinely supports the
-    // feature.  Proof: loaded a real IBM Plex Mono file (confirmed via
-    // fontTools to have working "zero"/"ss03" → zero.alt01
-    // substitutions, and confirmed the glyph is visibly a slash, not
-    // a dot, by extracting and rendering the actual outline), then
-    // compared rendering across paths — direct DOM SVG with the
-    // feature applied via inline style.fontFeatureSettings correctly
-    // showed the slash; the exact same markup rasterized via <img>
-    // (data: URI or Blob URL, matching this probe and the export
-    // pipeline respectively) showed a plain oval every time.
-    //
-    // A probe built on a technique that can't detect a feature even
-    // when it demonstrably works is worse than no probe — it can
-    // manufacture false "unsupported" verdicts for fonts that are
-    // actually fine.  This rewrite only claims what it can actually
-    // verify: whether the requested font genuinely finished loading
-    // (the SAME reliable document.fonts iteration check used in
-    // _requestFontChange, not the load()/check() combo that gives
-    // false positives for fonts that never registered at all).  Live
-    // on-screen rendering (direct DOM) is unaffected by the
-    // rasterization bug and applies the feature correctly whenever
-    // the font is genuinely loaded.
-    function isFontGenuinelyLoaded(family, weight) {
-      const wanted = String(family || "").replace(/^["']|["']$/g, "").toLowerCase();
-      let found = false;
-      document.fonts.forEach((f) => {
-        const fFamily = f.family.replace(/^["']|["']$/g, "").toLowerCase();
-        if (fFamily === wanted && f.status === "loaded") found = true;
+   // v19.65 SLASHED ZERO
+// Stores the slashedZero setting on the text layer and applies the
+// real OpenType "zero" feature directly to rendered DOM SVG text.
+//
+// Important:
+// Direct DOM SVG supports font-feature-settings. SVG rasterized through
+// <img> may ignore OpenType features in some Chromium builds, so export
+// can still require a separate text-to-path solution.
+
+const zeroSupportNote = document.getElementById("zeroSupportNote");
+const zeroDropdown = document.getElementById("textZeroStyle");
+
+/**
+ * Returns possible rendered DOM roots belonging to a text layer.
+ * Supports common Phaser Motion Lab references and falls back to
+ * searching by the layer ID.
+ */
+function getRenderedTextRoots(layer) {
+  if (!layer) return [];
+
+  const roots = new Set();
+
+  // Direct DOM references, if stored on the layer.
+  [
+    layer.el,
+    layer.element,
+    layer.node,
+    layer.group,
+    layer.svg,
+    layer.svgEl,
+    layer.svgNode,
+    layer.svgGroup,
+    layer.domElement,
+    layer.renderElement
+  ].forEach((node) => {
+    if (node instanceof Element) roots.add(node);
+  });
+
+  // Try common layer ID selectors.
+  const rawId = layer.id ?? layer.uid ?? layer.layerId;
+
+  if (rawId != null) {
+    const id = String(rawId);
+    const escaped = window.CSS && CSS.escape
+      ? CSS.escape(id)
+      : id.replace(/["\\]/g, "\\$&");
+
+    [
+      `[data-layer-id="${escaped}"]`,
+      `[data-id="${escaped}"]`,
+      `#layer-${escaped}`,
+      `#${escaped}`
+    ].forEach((selector) => {
+      try {
+        const node = document.querySelector(selector);
+        if (node) roots.add(node);
+      } catch (_) {
+        // Ignore selectors that cannot be resolved safely.
+      }
+    });
+  }
+
+  return Array.from(roots);
+}
+
+/**
+ * Applies or removes the real OpenType slashed-zero feature.
+ *
+ * Applies both:
+ *   font-feature-settings: "zero" 1
+ *   font-variant-numeric: slashed-zero
+ *
+ * Inline styles are used because they work reliably on direct DOM SVG
+ * <text> and <tspan> elements.
+ */
+function applySlashedZeroToRenderedLayer(layer) {
+  if (!layer || layer.kind !== "TEXT") return false;
+
+  const enabled = !!(layer.textStyle && layer.textStyle.slashedZero);
+  const roots = getRenderedTextRoots(layer);
+  const textNodes = new Set();
+
+  roots.forEach((root) => {
+    if (root.matches && root.matches("text, tspan")) {
+      textNodes.add(root);
+    }
+
+    if (root.querySelectorAll) {
+      root.querySelectorAll("text, tspan").forEach((node) => {
+        textNodes.add(node);
       });
-      return found;
     }
-    async function updateZeroSupportNote() {
-      if (!zeroSupportNote || !selectedLayer || selectedLayer.kind !== "TEXT") {
-        if (zeroSupportNote) zeroSupportNote.textContent = "";
-        return;
-      }
-      const s = selectedLayer.textStyle;
-      if (!s.slashedZero) { zeroSupportNote.textContent = ""; return; }
-      // System fonts render synchronously with no @font-face to
-      // "load" — document.fonts won't ever list them, so skip the
-      // load check for those and just confirm the feature is applied.
-      const isSystemFont = window.__systemFontFamilies && window.__systemFontFamilies.has(s.fontFamily);
-      if (isSystemFont) {
-        zeroSupportNote.textContent = "✓ Slashed Zero applied — check the rendered text to confirm this system font supports it";
-        return;
-      }
-      const loaded = isFontGenuinelyLoaded(s.fontFamily, s.fontWeight);
-      if (!loaded) {
-        zeroSupportNote.textContent = `⚠ "${s.fontFamily}" hasn't finished loading (network issue?) — Slashed Zero can't take effect on a fallback font`;
-      } else {
-        zeroSupportNote.textContent = "✓ Font loaded — Slashed Zero applied (verify the rendered '0' visually; this app can't reliably auto-detect per-font glyph support)";
-      }
+  });
+
+  textNodes.forEach((node) => {
+    if (enabled) {
+      // Real OpenType feature for fonts such as IBM Plex Mono.
+      node.style.fontFeatureSettings = '"zero" 1';
+      node.style.fontVariantNumeric = "slashed-zero";
+
+      // Also set SVG presentation attributes as an additional fallback.
+      node.setAttribute("font-feature-settings", '"zero" 1');
+      node.setAttribute("font-variant-numeric", "slashed-zero");
+    } else {
+      node.style.removeProperty("font-feature-settings");
+      node.style.removeProperty("font-variant-numeric");
+
+      node.removeAttribute("font-feature-settings");
+      node.removeAttribute("font-variant-numeric");
     }
-    window.__updateZeroSupportNote = updateZeroSupportNote;
-    window.__isFontGenuinelyLoaded = isFontGenuinelyLoaded;
-    const zeroDropdown = document.getElementById("textZeroStyle");
-    if (zeroDropdown) {
-      zeroDropdown.addEventListener("change", () => {
-        if (!(selectedLayer && selectedLayer.kind === "TEXT")) return;
-        const on = zeroDropdown.value === "slashed";
-        updateTextLayer(selectedLayer, { slashedZero: on });
-        if (el.textSlashedZero) el.textSlashedZero.checked = on;   // keep legacy in sync
-        // v19.55: force applyTextFxAtTime to run so slash overlay
-        // appears/disappears immediately.
-        applyTextFxAtTime(selectedLayer, STATE.time, audio && audio.getSignal ? audio.getSignal() : {level:0,low:0,mid:0,high:0});
-        paintIfPaused();
-        updateZeroSupportNote();
-      });
+  });
+
+  if (!textNodes.size) {
+    console.warn(
+      "[Slashed Zero] No rendered SVG <text>/<tspan> nodes were found for layer:",
+      layer
+    );
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Rebuilds the selected text layer and then applies the OpenType
+ * feature to the newly created DOM SVG nodes.
+ */
+function refreshSlashedZero(layer) {
+  if (!layer || layer.kind !== "TEXT") return false;
+
+  // Rebuild first because buildTextLayerSVG may replace existing nodes.
+  if (typeof buildTextLayerSVG === "function") {
+    buildTextLayerSVG(layer);
+  }
+
+  const applied = applySlashedZeroToRenderedLayer(layer);
+
+  // Keep existing animated text effects updated.
+  if (typeof applyTextFxAtTime === "function") {
+    applyTextFxAtTime(
+      layer,
+      STATE.time,
+      audio && audio.getSignal
+        ? audio.getSignal()
+        : { level: 0, low: 0, mid: 0, high: 0 }
+    );
+  }
+
+  // applyTextFxAtTime might replace or modify text/tspan nodes,
+  // so apply the OpenType feature once more afterward.
+  applySlashedZeroToRenderedLayer(layer);
+
+  if (typeof paintIfPaused === "function") {
+    paintIfPaused();
+  }
+
+  return applied;
+}
+
+/**
+ * Checks whether a registered FontFace with the requested family,
+ * weight and style has actually finished loading.
+ */
+function isFontGenuinelyLoaded(family, weight, style = "normal") {
+  const wantedFamily = String(family || "")
+    .replace(/^["']|["']$/g, "")
+    .trim()
+    .toLowerCase();
+
+  const wantedWeight = String(weight || "400");
+  const wantedStyle = String(style || "normal").toLowerCase();
+
+  let exactMatch = false;
+  let familyMatch = false;
+
+  document.fonts.forEach((font) => {
+    const fontFamily = String(font.family || "")
+      .replace(/^["']|["']$/g, "")
+      .trim()
+      .toLowerCase();
+
+    if (fontFamily !== wantedFamily || font.status !== "loaded") return;
+
+    familyMatch = true;
+
+    const fontWeight = String(font.weight || "400");
+    const fontStyle = String(font.style || "normal").toLowerCase();
+
+    if (fontWeight === wantedWeight && fontStyle === wantedStyle) {
+      exactMatch = true;
     }
-    wireTextInput(el.textSize, (n) => {
-      // v19.46: allow 1pt with decimals (no more 8pt floor).
-      const v = clamp(parseFloat(n.value) || 64, 1, 800);
-      if (el.textSizeRange) el.textSizeRange.value = Math.min(400, v);
-      return { fontSize: v };
+  });
+
+  // Some FontFace registrations use ranges such as "100 900".
+  // In that case the loaded family match is still useful.
+  return exactMatch || familyMatch;
+}
+
+/**
+ * Updates the UI message.
+ *
+ * This verifies:
+ *   1. whether the setting was applied to the rendered DOM SVG
+ *   2. whether an uploaded/web font was genuinely loaded
+ *
+ * It intentionally does not claim that a font contains the "zero"
+ * substitution because Chromium cannot reliably auto-detect that
+ * through the current SVG-to-image rasterization pipeline.
+ */
+function updateZeroSupportNote(renderApplied = null) {
+  if (
+    !zeroSupportNote ||
+    !selectedLayer ||
+    selectedLayer.kind !== "TEXT"
+  ) {
+    if (zeroSupportNote) zeroSupportNote.textContent = "";
+    return;
+  }
+
+  const style = selectedLayer.textStyle || {};
+
+  if (!style.slashedZero) {
+    zeroSupportNote.textContent = "";
+    return;
+  }
+
+  const family = style.fontFamily || "";
+  const weight = style.fontWeight || "400";
+  const fontStyle = style.fontStyle || (style.italic ? "italic" : "normal");
+
+  const isSystemFont =
+    window.__systemFontFamilies &&
+    window.__systemFontFamilies.has(family);
+
+  const applied =
+    renderApplied == null
+      ? applySlashedZeroToRenderedLayer(selectedLayer)
+      : renderApplied;
+
+  if (!applied) {
+    zeroSupportNote.textContent =
+      "⚠ Slashed Zero is enabled, but the rendered SVG text node was not found";
+    return;
+  }
+
+  if (isSystemFont) {
+    zeroSupportNote.textContent =
+      '✓ Slashed Zero applied using the OpenType "zero" feature. Verify the rendered 0 visually.';
+    return;
+  }
+
+  const loaded = isFontGenuinelyLoaded(
+    family,
+    weight,
+    fontStyle
+  );
+
+  if (!loaded) {
+    zeroSupportNote.textContent =
+      `⚠ "${family}" is not registered as a loaded font. ` +
+      "The text may be rendering with a fallback font.";
+    return;
+  }
+
+  zeroSupportNote.textContent =
+    '✓ Font loaded and OpenType "zero" applied. Verify the rendered 0 visually.';
+}
+
+window.__applySlashedZeroToRenderedLayer =
+  applySlashedZeroToRenderedLayer;
+
+window.__refreshSlashedZero =
+  refreshSlashedZero;
+
+window.__updateZeroSupportNote =
+  updateZeroSupportNote;
+
+window.__isFontGenuinelyLoaded =
+  isFontGenuinelyLoaded;
+
+
+// ZERO STYLE DROPDOWN
+
+if (zeroDropdown) {
+  zeroDropdown.addEventListener("change", () => {
+    if (!(selectedLayer && selectedLayer.kind === "TEXT")) return;
+
+    const enabled = zeroDropdown.value === "slashed";
+
+    updateTextLayer(selectedLayer, {
+      slashedZero: enabled
     });
-    wireTextInput(el.textSizeRange, (n) => {
-      const v = Math.max(1, parseFloat(n.value) || 64);
-      if (el.textSize) el.textSize.value = v;
-      return { fontSize: v };
-    });
-    wireTextInput(el.textWeight, (n) => ({ fontWeight: +n.value }));
-    wireTextInput(el.textColor, (n) => {
-      if (el.textColorHex) el.textColorHex.textContent = n.value.toUpperCase();
-      return { color: n.value };
-    });
-    wireTextInput(el.textLetterSpacing, (n) => ({ letterSpacing: +n.value || 0 }));
-    wireTextInput(el.textLineHeight, (n) => ({ lineHeight: Math.max(0.5, +n.value || 1.2) }));
-    // v19.44: Slashed Zero toggle — applies "zero" OpenType feature
-    // when the font supports it, otherwise leaves the character alone.
+
+    // Keep the legacy checkbox synchronized.
     if (el.textSlashedZero) {
-      el.textSlashedZero.addEventListener("change", () => {
-        if (selectedLayer && selectedLayer.kind === "TEXT") {
-          updateTextLayer(selectedLayer, { slashedZero: !!el.textSlashedZero.checked });
-        }
-      });
+      el.textSlashedZero.checked = enabled;
     }
+
+    const applied = refreshSlashedZero(selectedLayer);
+    updateZeroSupportNote(applied);
+  });
+}
+
+
+// TEXT CONTROLS
+
+wireTextInput(el.textSize, (input) => {
+  // Allow sizes from 1 pt, including decimal values.
+  const value = clamp(
+    parseFloat(input.value) || 64,
+    1,
+    800
+  );
+
+  if (el.textSizeRange) {
+    el.textSizeRange.value = Math.min(400, value);
+  }
+
+  return { fontSize: value };
+});
+
+wireTextInput(el.textSizeRange, (input) => {
+  const value = Math.max(
+    1,
+    parseFloat(input.value) || 64
+  );
+
+  if (el.textSize) {
+    el.textSize.value = value;
+  }
+
+  return { fontSize: value };
+});
+
+wireTextInput(el.textWeight, (input) => ({
+  fontWeight: +input.value
+}));
+
+wireTextInput(el.textColor, (input) => {
+  if (el.textColorHex) {
+    el.textColorHex.textContent =
+      input.value.toUpperCase();
+  }
+
+  return { color: input.value };
+});
+
+wireTextInput(el.textLetterSpacing, (input) => ({
+  letterSpacing: +input.value || 0
+}));
+
+wireTextInput(el.textLineHeight, (input) => ({
+  lineHeight: Math.max(
+    0.5,
+    +input.value || 1.2
+  )
+}));
+
+
+// LEGACY SLASHED ZERO CHECKBOX
+
+if (el.textSlashedZero) {
+  el.textSlashedZero.addEventListener("change", () => {
+    if (!(selectedLayer && selectedLayer.kind === "TEXT")) return;
+
+    const enabled = !!el.textSlashedZero.checked;
+
+    updateTextLayer(selectedLayer, {
+      slashedZero: enabled
+    });
+
+    // Keep the new dropdown synchronized.
+    if (zeroDropdown) {
+      zeroDropdown.value =
+        enabled ? "slashed" : "normal";
+    }
+
+    const applied = refreshSlashedZero(selectedLayer);
+    updateZeroSupportNote(applied);
+  });
+}
     // v19.46: Frame Overflow — visible/clip switch.
     if (el.textFrameOverflow) {
       el.textFrameOverflow.addEventListener("change", () => {
