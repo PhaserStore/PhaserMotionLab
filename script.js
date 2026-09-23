@@ -705,6 +705,50 @@
       category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", sustained: true, persistEnd: true,
       _mirror: true, _mirrorDefaults: { mirrorMode: "fourWay" }, paramDefs: null },
 
+    // === v19.65 VERTICAL SLICE / ECHO COPIES / TEXT STRETCH / LETTER SCATTER ===
+    // Replacements for the removed HUD Overlay / Radar Sweep / Signal
+    // Shake / Ghost Frame / Hologram Tilt / Lost Signal / Oscilloscope.
+    { key: "verticalSlice", label: "Vertical Slice", defDur: 1.20, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", persistEnd: true,
+      paramDefs: [
+        { key: "sliceCount", label: "Slice Count",       type: "range",  min: 2, max: 24, step: 1, default: 8 },
+        { key: "stagger",    label: "Stagger (ms)",       type: "range",  min: 0, max: 200, step: 5, default: 40 },
+        { key: "duration",   label: "Duration (ms)",      type: "range",  min: 60, max: 1200, step: 10, default: 320 },
+        { key: "distance",   label: "Distance (px)",      type: "range",  min: 0, max: 300, step: 5, default: 60 },
+        { key: "direction",  label: "Direction",          type: "select", options: ["up","down"], default: "up" },
+        { key: "easing",     label: "Easing",             type: "select", options: ["linear","easeOut","easeInOut","expoOut"], default: "easeOut" },
+      ] },
+    { key: "echoCopies", label: "Echo Copies", defDur: "layer", group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", sustained: true, persistEnd: true,
+      paramDefs: [
+        { key: "count",        label: "Copies",           type: "range", min: 1, max: 20, step: 1, default: 5 },
+        { key: "offsetX",       label: "Offset X (px)",    type: "range", min: -60, max: 60, step: 1, default: 14 },
+        { key: "offsetY",       label: "Offset Y (px)",    type: "range", min: -60, max: 60, step: 1, default: 0 },
+        { key: "startOpacity",  label: "Start Opacity %",  type: "range", min: 0, max: 100, step: 1, default: 55 },
+        { key: "falloff",       label: "Opacity Falloff %",type: "range", min: 0, max: 100, step: 1, default: 65 },
+        { key: "blurPerStep",   label: "Blur / Step (px)", type: "range", min: 0, max: 6, step: 0.5, default: 0 },
+      ] },
+    { key: "textStretch", label: "Text Stretch", defDur: "layer", group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", sustained: true, persistEnd: true,
+      paramDefs: [
+        { key: "axis",      label: "Axis",           type: "select", options: ["horizontal","vertical","both"], default: "horizontal" },
+        { key: "amplitude", label: "Amplitude %",     type: "range",  min: 0, max: 80, step: 1, default: 25 },
+        { key: "cycleSec",  label: "Cycle (sec)",     type: "range",  min: 0.2, max: 5, step: 0.1, default: 1.2 },
+      ] },
+    { key: "letterScatter", label: "Letter Scatter", defDur: 1.80, group: "text",
+      category: "text", supportedLayerTypes: ["TEXT"], placement: "layerStart", persistEnd: true,
+      paramDefs: [
+        { key: "target",    label: "Target",          type: "select", options: ["char","word","line"], default: "char" },
+        { key: "distance",  label: "Scatter Distance", type: "range",  min: 20, max: 400, step: 5, default: 140 },
+        { key: "stagger",   label: "Stagger (ms)",     type: "range",  min: 0, max: 100, step: 2, default: 18 },
+        { key: "duration",  label: "Reform Duration (ms)", type: "range", min: 100, max: 1500, step: 10, default: 450 },
+        { key: "rotation",  label: "Scatter Rotation °", type: "range", min: 0, max: 90, step: 1, default: 25 },
+        { key: "easing",    label: "Easing",           type: "select", options: ["linear","easeOut","easeInOut","expoOut"], default: "easeOut" },
+        { key: "loop",      label: "Loop",             type: "select", options: ["no","yes"], default: "no" },
+        { key: "hold",      label: "Hold (ms)",        type: "range",  min: 0, max: 3000, step: 50, default: 900 },
+        { key: "seed",      label: "Seed",             type: "range",  min: 1, max: 999, step: 1, default: 11 },
+      ] },
+
     // === v19.54 WEIGHT TRAIL REVEAL ===
     // Progressive character reveal with a moving face-weight sequence:
     // the newest character wears the leading face (Bold Italic), the
@@ -872,11 +916,22 @@
       "coordShift",      // → pathJitter (positional wobble)
       "coordBlinkEvt",   // → textFlicker on text layers (blink/flicker output)
       "frameHold",       // no observable effect on the current renderer
-      "targetPing",      // → radarSweep (overlapping visual language)
-      "waveformBurst",   // → oscilloscope (overlapping visual language)
+      "targetPing",      // → pulseGlow (radarSweep, its old target, is ALSO deprecated now)
+      "waveformBurst",   // → dataStream (oscilloscope, its old target, is ALSO deprecated now)
       "hardCutEvent",    // duplicate of internal Hard Cut
       "signalInterrupt", // no observable effect on current renderer
       "layerSwap",       // legacy; superseded by textReplace + layer visibility
+      // v19.65: replaced with genuinely useful features per explicit
+      // request — these were weak/invisible in practice (scene-scope
+      // decoration with little visible payoff, or transform wobble
+      // effects with no distinct visual identity of their own).
+      "hudOverlay",      // scene-scope decoration, low visible impact → dataStream
+      "radarSweep",      // scene-scope decoration, low visible impact → pulseGlow
+      "signalShake",     // → pathJitter (same shake/wobble result, already more capable)
+      "ghostFrame",      // → echoCopies (the new effect IS this effect's proper replacement)
+      "hologramTilt",    // no strong substitute; 3D-tilt transform had little distinct payoff
+      "lostSignal",      // no strong substitute; signal-dropout effect was rarely visible
+      "oscilloscope",    // scene-scope decoration, low visible impact → dataStream
     ]),
     // v19.44 SCENE-SCOPE effects.  These emit ONLY scene-level
     // channels (hud overlay, radar overlay, oscilloscope waveform,
@@ -885,8 +940,11 @@
     // multiple copies to different layers is redundant.  Still
     // shown in the picker for backwards compatibility but tagged
     // so the inspector can label them clearly.
+    // v19.65: hudOverlay/radarSweep/oscilloscope are now deprecated
+    // (see above) — dataStream is the only survivor still in this
+    // category.
     sceneScope: new Set([
-      "hudOverlay", "radarSweep", "oscilloscope", "dataStream",
+      "dataStream",
     ]),
     // Old ID → new ID map.  Applied at project load and at clip
     // create time (createEventClip aliases before assigning).  Never
@@ -897,8 +955,19 @@
       "flickerBlocks": "textFlicker",
       "microJitter":   "pathJitter",
       "coordShift":    "pathJitter",
-      "targetPing":    "radarSweep",
-      "waveformBurst": "oscilloscope",
+      "targetPing":    "pulseGlow",
+      "waveformBurst": "dataStream",
+      // v19.65
+      "hudOverlay":    "dataStream",
+      "radarSweep":    "pulseGlow",
+      "signalShake":   "pathJitter",
+      "ghostFrame":    "echoCopies",
+      "oscilloscope":  "dataStream",
+      // hologramTilt and lostSignal have no close equivalent among
+      // current effects — left unmapped, matching frameHold/
+      // signalInterrupt's existing "no migration" precedent.  Old
+      // projects keep rendering via the untouched runtime handler;
+      // there's just nothing to silently upgrade them to.
     },
   };
   function migrateFxKey(oldKey) {
@@ -1148,18 +1217,18 @@
      fx: effect keys. patch: scene params. transform stays off unless the
      preset explicitly needs it (none of the defaults rotate/zoom). */
   const PRESETS = {
-    "Signal System":       { fx: ["scanRevealEvent","rgbSplitPro","hudOverlay","textFlicker","dataBreakEvent"], patch: { flicker: 38, rgbSplit: 32, scanline: 55, noise: 26 } },
-    "Hardware Motion":     { fx: ["scanRevealEvent","blurIn","hudOverlay","pulseGlow"], patch: { flicker: 26, scanline: 60, glow: 55, blur: 14 } },
-    "Vector Scan":         { fx: ["scanRevealEvent","radarSweep","hudOverlay","lineDraw"], patch: { flicker: 30, scanline: 75, glow: 45, noise: 16 } },
+    "Signal System":       { fx: ["scanRevealEvent","rgbSplitPro","dataStream","textFlicker","dataBreakEvent"], patch: { flicker: 38, rgbSplit: 32, scanline: 55, noise: 26 } },
+    "Hardware Motion":     { fx: ["scanRevealEvent","blurIn","dataStream","pulseGlow"], patch: { flicker: 26, scanline: 60, glow: 55, blur: 14 } },
+    "Vector Scan":         { fx: ["scanRevealEvent","dataStream","pulseGlow","lineDraw"], patch: { flicker: 30, scanline: 75, glow: 45, noise: 16 } },
     "Signal Loss":         { fx: ["hardCutEvent","dataBreakEvent","rgbSplitPro","textFlicker","scanRevealEvent"], patch: { glitch: 60, flicker: 78, rgbSplit: 55, scanline: 62, noise: 55 } },
     "Data Pulse":          { fx: ["pulseGlow","rgbSplitPro","dataStream","hardCutEvent"], patch: { glow: 70, rgbSplit: 40, scanline: 55, flicker: 30 } },
     "Clean Motion Poster": { fx: ["blurIn","pulseGlow"], patch: { flicker: 10, blur: 16, scanline: 14, noise: 6, glow: 45 } },
-    "CRT Monitor":         { fx: ["scanRevealEvent","dataBreakEvent","oscilloscope","pulseGlow"], patch: { flicker: 28, blur: 10, scanline: 95, noise: 34, glow: 40 } },
-    "Interface Intro":     { fx: ["blurIn","lineDraw","hudOverlay","rgbSplitPro"], patch: { flicker: 26, scanline: 50, rgbSplit: 30, glow: 45 }, stagger: true },
-    "Hardware Motion Intro":{ fx: ["blurIn","scanRevealEvent","hudOverlay","coordBlinkEvt","trimPaths"], patch: { flicker: 24, scanline: 55, glow: 50, blur: 12 }, stagger: true },
-    "Terrain Scanner":     { fx: ["lineDraw","radarSweep","coordBlinkEvt","scanRevealEvent","dataStream","rgbSplitPro"], patch: { flicker: 22, scanline: 60, rgbSplit: 22, glow: 50, noise: 14 } },
+    "CRT Monitor":         { fx: ["scanRevealEvent","dataBreakEvent","dataStream","pulseGlow"], patch: { flicker: 28, blur: 10, scanline: 95, noise: 34, glow: 40 } },
+    "Interface Intro":     { fx: ["blurIn","lineDraw","dataStream","rgbSplitPro"], patch: { flicker: 26, scanline: 50, rgbSplit: 30, glow: 45 }, stagger: true },
+    "Hardware Motion Intro":{ fx: ["blurIn","scanRevealEvent","dataStream","coordBlinkEvt","trimPaths"], patch: { flicker: 24, scanline: 55, glow: 50, blur: 12 }, stagger: true },
+    "Terrain Scanner":     { fx: ["lineDraw","pulseGlow","coordBlinkEvt","scanRevealEvent","dataStream","rgbSplitPro"], patch: { flicker: 22, scanline: 60, rgbSplit: 22, glow: 50, noise: 14 } },
     "Detroit Techno":      { fx: ["hardCutEvent","rgbSplitPro","scanRevealEvent","textFlicker","pulseGlow"], patch: { flicker: 42, rgbSplit: 46, scanline: 42, glow: 55, bassReaction: 90, motionIntensity: 85 } },
-    "Data Terminal":       { fx: ["textFlicker","hudOverlay","coordBlinkEvt","dataStream","oscilloscope","scanRevealEvent"], patch: { flicker: 34, scanline: 60, noise: 20, glow: 40 } },
+    "Data Terminal":       { fx: ["textFlicker","pulseGlow","coordBlinkEvt","dataStream","dataBreakEvent","scanRevealEvent"], patch: { flicker: 34, scanline: 60, noise: 20, glow: 40 } },
   };
 
   /* ---------------- DOM ---------------- */
@@ -3294,6 +3363,242 @@
     mirrorReflectionAbove(l,c,p,s,t)    { return TEXT_FX_DOM.mirror(l,c,p,s,t); },
     mirrorReflectionBelow(l,c,p,s,t)    { return TEXT_FX_DOM.mirror(l,c,p,s,t); },
     mirrorFourWay(l,c,p,s,t)            { return TEXT_FX_DOM.mirror(l,c,p,s,t); },
+
+    // === v19.65 VERTICAL SLICE ===
+    // Splits the text into N vertical strips (via clip-path clones,
+    // reusing mirror's clone-group architecture) and animates each
+    // strip independently with a staggered slide-in, creating a
+    // "venetian blind" / shutter reveal.  Each strip is a full clone
+    // of the source text, clipped to its own vertical band.
+    verticalSlice(layer, clip, p, sig, sceneTime) {
+      const svg = layer.node;
+      if (!svg) return;
+      const NS = "http://www.w3.org/2000/svg";
+      const textEl = svg.querySelector("text");
+      if (!textEl) return;
+      const P = clip.params || {};
+      const sliceCount = Math.max(2, Math.min(24, P.sliceCount || 8));
+      const staggerMs = P.stagger != null ? P.stagger : 40;
+      const durMs = P.duration || 320;
+      const distance = P.distance != null ? P.distance : 60;
+      const dir = P.direction || "up";   // "up" | "down"
+      const easingName = P.easing || "easeOut";
+      const ease = TEXT_EASE[easingName] || TEXT_EASE.easeOut;
+      const W = layer.natW || 300;
+      const H = layer.natH || 100;
+      const localMs = Math.max(0, sceneTime - (layer.start + clip.start)) * 1000 * (STATE.textEffectSpeed || 1);
+
+      const groupId = "vslice-clones-" + (layer.id || "x");
+      let group = svg.querySelector("#" + groupId);
+      if (!group) {
+        group = document.createElementNS(NS, "g");
+        group.setAttribute("id", groupId);
+        svg.insertBefore(group, textEl);
+      }
+      // Reuse/resize the clip-path defs pool.
+      let defs = svg.querySelector("#" + groupId + "-defs");
+      if (!defs) {
+        defs = document.createElementNS(NS, "defs");
+        defs.setAttribute("id", groupId + "-defs");
+        svg.insertBefore(defs, group);
+      }
+      let clips = Array.from(defs.querySelectorAll('clipPath[data-vslice="1"]'));
+      let clones = Array.from(group.querySelectorAll('text[data-vslice-copy="1"]'));
+      for (let i = clones.length - 1; i >= sliceCount; i--) { clones[i].remove(); clones.splice(i, 1); }
+      for (let i = clips.length - 1; i >= sliceCount; i--) { clips[i].remove(); clips.splice(i, 1); }
+      while (clones.length < sliceCount) {
+        const shell = document.createElementNS(NS, "text");
+        shell.setAttribute("data-vslice-copy", "1");
+        group.appendChild(shell);
+        clones.push(shell);
+      }
+      while (clips.length < sliceCount) {
+        const cp = document.createElementNS(NS, "clipPath");
+        cp.setAttribute("data-vslice", "1");
+        const rect = document.createElementNS(NS, "rect");
+        cp.appendChild(rect);
+        defs.appendChild(cp);
+        clips.push(cp);
+      }
+      const srcAttrs = Array.from(textEl.attributes);
+      const srcInlineStyle = textEl.style.cssText;
+      const srcChildren = Array.from(textEl.children);
+      const stripW = W / sliceCount;
+      // Source hides — only the sliced clones should be visible;
+      // matches the mirror/pattern precedent of moving the "real"
+      // rendering into clone shells while the effect is active.
+      textEl.style.opacity = "0";
+      for (let i = 0; i < sliceCount; i++) {
+        const c = clones[i];
+        const cp = clips[i];
+        const clipId = groupId + "-clip-" + i;
+        cp.setAttribute("id", clipId);
+        const rect = cp.firstChild;
+        rect.setAttribute("x", (i * stripW).toFixed(2));
+        rect.setAttribute("y", -H);
+        rect.setAttribute("width", stripW.toFixed(2));
+        rect.setAttribute("height", (H * 3).toFixed(2));
+
+        const cAttrNames = Array.from(c.attributes).map(a => a.name);
+        for (const n of cAttrNames) {
+          if (n === "data-vslice-copy" || n === "transform" || n === "opacity" || n === "clip-path") continue;
+          c.removeAttribute(n);
+        }
+        for (const a of srcAttrs) {
+          if (a.name === "id" || a.name === "transform") continue;
+          c.setAttribute(a.name, a.value);
+        }
+        c.style.cssText = srcInlineStyle;
+        c.style.opacity = "1";
+        c.setAttribute("clip-path", `url(#${clipId})`);
+        while (c.firstChild) c.removeChild(c.firstChild);
+        for (const child of srcChildren) c.appendChild(child.cloneNode(true));
+
+        const startAt = i * staggerMs;
+        const tRaw = Math.max(0, Math.min(1, (localMs - startAt) / durMs));
+        const eased = ease(tRaw);
+        const dy = (1 - eased) * distance * (dir === "up" ? 1 : -1);
+        c.setAttribute("transform", `translate(0, ${dy.toFixed(2)})`);
+        c.setAttribute("opacity", eased.toFixed(3));
+      }
+    },
+
+    // === v19.65 ECHO COPIES ===
+    // Creates N offset, progressively-fading copies behind the
+    // source text — a static "motion trail" stack, reusing mirror's
+    // clone architecture (translate-only, no flip).
+    echoCopies(layer, clip, p, sig, sceneTime) {
+      const svg = layer.node;
+      if (!svg) return;
+      const NS = "http://www.w3.org/2000/svg";
+      const textEl = svg.querySelector("text");
+      if (!textEl) return;
+      const P = clip.params || {};
+      const count = Math.max(1, Math.min(20, P.count != null ? P.count : 5));
+      const offsetX = P.offsetX != null ? P.offsetX : 14;
+      const offsetY = P.offsetY != null ? P.offsetY : 0;
+      const startOpacity = (P.startOpacity != null ? P.startOpacity : 55) / 100;
+      const falloff = (P.falloff != null ? P.falloff : 65) / 100;
+      const blurPerStep = P.blurPerStep || 0;
+      const groupId = "echo-clones-" + (layer.id || "x");
+      let group = svg.querySelector("#" + groupId);
+      if (!group) {
+        group = document.createElementNS(NS, "g");
+        group.setAttribute("id", groupId);
+        // Echoes render BEHIND the source (trail effect).
+        svg.insertBefore(group, textEl);
+      }
+      let clones = Array.from(group.querySelectorAll('text[data-echo-copy="1"]'));
+      for (let i = clones.length - 1; i >= count; i--) { clones[i].remove(); clones.splice(i, 1); }
+      while (clones.length < count) {
+        const shell = document.createElementNS(NS, "text");
+        shell.setAttribute("data-echo-copy", "1");
+        group.appendChild(shell);
+        clones.push(shell);
+      }
+      const srcAttrs = Array.from(textEl.attributes);
+      const srcInlineStyle = textEl.style.cssText;
+      const srcChildren = Array.from(textEl.children);
+      // Render furthest-back copy FIRST (lowest index in DOM = painted
+      // first = visually behind), so stacking order reads correctly.
+      for (let i = count; i >= 1; i--) {
+        const c = clones[i - 1];
+        const cAttrNames = Array.from(c.attributes).map(a => a.name);
+        for (const n of cAttrNames) {
+          if (n === "data-echo-copy" || n === "transform" || n === "opacity") continue;
+          c.removeAttribute(n);
+        }
+        for (const a of srcAttrs) {
+          if (a.name === "id" || a.name === "transform") continue;
+          c.setAttribute(a.name, a.value);
+        }
+        c.style.cssText = srcInlineStyle;
+        while (c.firstChild) c.removeChild(c.firstChild);
+        for (const child of srcChildren) c.appendChild(child.cloneNode(true));
+        c.setAttribute("transform", `translate(${(offsetX * i).toFixed(2)}, ${(offsetY * i).toFixed(2)})`);
+        const op = startOpacity * Math.pow(falloff, i - 1);
+        c.setAttribute("opacity", Math.max(0, op).toFixed(3));
+        if (blurPerStep > 0) c.style.filter = `blur(${(blurPerStep * i).toFixed(1)}px)`;
+        else c.style.filter = "";
+      }
+    },
+
+    // === v19.65 TEXT STRETCH ===
+    // Continuous squash/stretch oscillation on the whole text
+    // element — same sine-oscillator pattern as Variable Font Pulse,
+    // applied as a scaleX/scaleY transform instead of a weight axis.
+    textStretch(layer, clip, p, sig, sceneTime) {
+      const textEl = layer.node && layer.node.querySelector("text");
+      if (!textEl) return;
+      const P = clip.params || {};
+      const axis = P.axis || "horizontal";   // horizontal | vertical | both
+      const amplitude = (P.amplitude != null ? P.amplitude : 25) / 100;
+      const cycle = Math.max(0.1, P.cycleSec || 1.2);
+      const phase = (sceneTime / cycle) * Math.PI * 2 * (STATE.textEffectSpeed || 1);
+      const u = Math.sin(phase);   // -1..1
+      const sx = axis !== "vertical" ? 1 + u * amplitude : 1;
+      const sy = axis !== "horizontal" ? 1 - u * amplitude * (axis === "both" ? 1 : 1) : 1;
+      const W = layer.natW || 300, H = layer.natH || 100;
+      const anchorX = W / 2, anchorY = H / 2;
+      textEl.setAttribute("transform", `translate(${anchorX},${anchorY}) scale(${sx.toFixed(4)},${sy.toFixed(4)}) translate(${-anchorX},${-anchorY})`);
+    },
+
+    // === v19.65 LETTER SCATTER ===
+    // Characters spread apart (seeded random radial scatter, like
+    // cascadeAssemble) then animate back into position — but as a
+    // SUSTAINED, LOOPABLE ambient motion (scatter → reform → hold →
+    // repeat) rather than cascadeAssemble's one-shot reveal, so the
+    // two effects read as genuinely distinct rather than aliases of
+    // each other.  Adds a slight per-glyph rotation for a more
+    // "explosive" scatter silhouette.
+    letterScatter(layer, clip, p, sig, sceneTime) {
+      const P = clip.params || {};
+      const tspans = _getGlyphTspans(layer);
+      if (!tspans.length) return;
+      const unit = P.target || "char";
+      const groups = _groupTspansByUnit(tspans, unit, layer);
+      const N = groups.length;
+      const dist = P.distance != null ? P.distance : 140;
+      const stagger = P.stagger != null ? P.stagger : 18;
+      const durMs = P.duration != null ? P.duration : 450;
+      const holdMs = P.hold != null ? P.hold : 900;
+      const seed = P.seed || 11;
+      const loop = P.loop === "yes" || P.loop === true;
+      const rotAmount = P.rotation != null ? P.rotation : 25;
+      const easingName = P.easing || "easeOut";
+      const ease = TEXT_EASE[easingName] || TEXT_EASE.easeOut;
+      let localMs = Math.max(0, sceneTime - (layer.start + clip.start)) * 1000 * (STATE.textEffectSpeed || 1);
+      if (loop) {
+        const cycleMs = durMs + holdMs + durMs;   // scatter out, hold, reform
+        localMs = localMs % Math.max(1, cycleMs);
+      }
+      for (let i = 0; i < N; i++) {
+        const startAt = i * stagger;
+        // Reform phase: t=0 at scatter start, 1 once settled.
+        const t = Math.max(0, Math.min(1, (localMs - startAt) / durMs));
+        const eased = ease(t);
+        const rng = _rng(seed + i * 53);
+        const angle = rng() * Math.PI * 2;
+        const rScatter = 0.6 + rng() * 0.4;   // vary radius per glyph
+        const startX = Math.cos(angle) * dist * rScatter;
+        const startY = Math.sin(angle) * dist * rScatter;
+        const rot = (rng() * 2 - 1) * rotAmount;
+        const dx = startX * (1 - eased);
+        const dy = startY * (1 - eased);
+        const glyphRot = rot * (1 - eased);
+        for (const ts of groups[i]) {
+          ts.setAttribute("dx", String((ts._baseDx || 0) + dx));
+          ts.setAttribute("dy", String((ts._baseDy || 0) + dy));
+          ts.setAttribute("opacity", String(Math.max(0.15, eased)));
+          if (Math.abs(glyphRot) > 0.1) {
+            const gx = ts._baseX || 0, gy = ts._baseY || 0;
+            ts.setAttribute("transform", `rotate(${glyphRot.toFixed(2)}, ${gx}, ${gy})`);
+          } else {
+            ts.removeAttribute("transform");
+          }
+        }
+      }
+    },
     charStagger(layer, clip, p, sig, sceneTime) {
       const P = clip.params || {};
       const tspans = _getGlyphTspans(layer);
@@ -4385,6 +4690,38 @@
       const mgrp = layer.node && layer.node.querySelector('g[id^="mirror-clones-"]');
       if (mgrp) mgrp.remove();
     }
+    // v19.65 VERTICAL SLICE CLEANUP.  When no longer active, remove
+    // the slice clones + clip-path defs and restore the source
+    // text's own opacity (Vertical Slice hides the source while its
+    // clip-path clones are the visible representation).
+    const vsliceActive = activeAll.some(({ c }) => c.fxKey === "verticalSlice");
+    if (!vsliceActive) {
+      const vgrp = layer.node && layer.node.querySelector('g[id^="vslice-clones-"]');
+      if (vgrp) vgrp.remove();
+      const vdefs = layer.node && layer.node.querySelector('defs[id$="-defs"][id^="vslice-clones-"]');
+      if (vdefs) vdefs.remove();
+      const srcTextEl = layer.node && layer.node.querySelector("text");
+      if (srcTextEl && srcTextEl.style.opacity === "0") srcTextEl.style.opacity = "";
+    }
+    // v19.65 ECHO COPIES CLEANUP.  Remove the echo clone group when
+    // the effect isn't active — the source text is never hidden for
+    // this effect (echoes render behind it), so no opacity restore
+    // is needed here.
+    const echoActive = activeAll.some(({ c }) => c.fxKey === "echoCopies");
+    if (!echoActive) {
+      const egrp = layer.node && layer.node.querySelector('g[id^="echo-clones-"]');
+      if (egrp) egrp.remove();
+    }
+    // v19.65 TEXT STRETCH CLEANUP.  Writes a whole-<text>-element
+    // transform (scaleX/scaleY oscillation) rather than a per-tspan
+    // one, so it falls outside the unconditional per-glyph reset pass
+    // above — without this, the last computed stretch would stay
+    // stuck on the text permanently once the clip ends.
+    const stretchActive = activeAll.some(({ c }) => c.fxKey === "textStretch");
+    if (!stretchActive) {
+      const srcTextEl2 = layer.node && layer.node.querySelector("text");
+      if (srcTextEl2 && srcTextEl2.hasAttribute("transform") && !patternClip) srcTextEl2.removeAttribute("transform");
+    }
     // v19.55 SLASHED ZERO OVERLAY — runs after every other mutation so
     // Pattern clones, Mirror clones, Bulk Typing, Weight Trail etc.
     // have all settled their glyph state.  See _applyZeroSlashOverlay
@@ -4517,7 +4854,18 @@
       }
       textEl.style.display = "";
       textEl.style.opacity = "";
-      textEl.removeAttribute("transform");
+      // v19.65: removed an unconditional textEl.removeAttribute("transform")
+      // that used to live here.  Confirmed via direct inspection that
+      // Pattern's OWN active-rendering path never sets a transform on
+      // the source textEl at all — this was purely defensive leftover
+      // clearing.  Harmless while nothing else used textEl-level
+      // transform, but it now unconditionally wipes textStretch's
+      // legitimate scale transform on every frame Pattern isn't
+      // active, since this function runs for every layer regardless
+      // of which OTHER effects are active on it.  textStretch has its
+      // own correctly-scoped cleanup (see stretchActive check above)
+      // that only clears the transform when textStretch itself isn't
+      // active — that's the right owner for this responsibility.
       return;
     }
     const P = clip.params || {};
@@ -8102,7 +8450,7 @@
     // effects with a numeric defDur (required since `duration` below
     // is used directly in clip-duration math).  All three are
     // confirmed working from prior verification passes.
-    const keys = ["focusSnap", "magneticSnap", "lostSignal"];
+    const keys = ["focusSnap", "magneticSnap", "pulseGlow"];
     const key = keys[Math.floor(Math.random() * keys.length)];
     // relative to layer start
     const relStart = clamp(sceneTime - target.start, 0, Math.max(0, target.duration - 0.05));
@@ -8483,6 +8831,10 @@
     motionBlurReveal()  { return {}; },
     directionalDissolve(){ return {}; },
     weightTrailReveal(){ return {}; },   // v19.54 stub — mutation runs in applyTextFxAtTime
+    verticalSlice(){ return {}; },       // v19.65 stub — mutation runs in applyTextFxAtTime
+    echoCopies(){ return {}; },          // v19.65 stub — mutation runs in applyTextFxAtTime
+    textStretch(){ return {}; },         // v19.65 stub — mutation runs in applyTextFxAtTime
+    letterScatter(){ return {}; },       // v19.65 stub — mutation runs in applyTextFxAtTime
     // v19.53 contraction + mirror family stubs (mutation in applyTextFxAtTime).
     contractionBuild(){ return {}; },
     collapseIn(){ return {}; },
@@ -11707,7 +12059,7 @@
       // removed in favor of magneticSnap/lostSignal, both real short
       // single-shot event effects (rgbSplitPro's defDur is "layer"
       // shaped, not a short single-shot burst, so it doesn't fit here).
-      const evtKeys = ["focusSnap", "magneticSnap", "lostSignal"];
+      const evtKeys = ["focusSnap", "magneticSnap", "pulseGlow"];
       layers.forEach((l, i) => {
         l.recipe = makeRecipe((l.id * 131 + Math.floor(Math.random() * 99999)));
         l.start = Math.min(STATE.duration * 0.5, i * 0.3);
@@ -11734,16 +12086,15 @@
     // effect on the current renderer — typing this prompt used to
     // silently create a clip that did nothing visible.  Migrated to
     // Lost Signal, a real signal-dropout effect with similar intent.
-    _rule(["signal interrupt", "interrupt"], "Signal Interrupt event", (ch) => { const c = createEventClip("lostSignal", selectedLayer); if (c) ch.push(`Lost Signal @ ${c.start.toFixed(2)}s (was: Signal Interrupt, deprecated)`); }),
+    _rule(["signal interrupt", "interrupt"], "Signal Interrupt event", (ch) => { const c = createEventClip("dataBreakEvent", selectedLayer); if (c) ch.push(`Data Break @ ${c.start.toFixed(2)}s (was: Signal Interrupt, deprecated)`); }),
     // v19.56: "rgbSpike" is deprecated in favor of "rgbSplitPro", but
     // that effect's default duration spans the whole layer ("layer"
     // sentinel) rather than a short spike.  Pass an explicit short
     // duration (0.25s) so the prompt's "spike" intent is preserved.
     _rule(["rgb spike"], "RGB Spike event", (ch) => { const c = createEventClip("rgbSplitPro", selectedLayer, undefined, 0.25); if (c) ch.push(`RGB Split (Pro) spike @ ${c.start.toFixed(2)}s (0.25s burst)`); }),
-    _rule(["hud", "overlay", "coordinates", "labels"], "HUD overlay", (ch) => { layerFxAdd("hudOverlay"); ch.push("HUD Overlay added to layer fx"); }),
+    _rule(["hud", "overlay", "coordinates", "labels"], "Data stream overlay", (ch) => { layerFxAdd("dataStream"); ch.push("Data Stream overlay added (was: HUD Overlay, deprecated)"); }),
     _rule(["glow", "pulse glow"], "Pulse glow", (ch) => { layerFxAdd("pulseGlow"); ch.push("Pulse Glow added"); }),
-    _rule(["hologram", "tilt", "3d card"], "Hologram tilt", (ch) => { if (selectedLayer) { selectedLayer.allowTransform = true; if (el.allowTransform) el.allowTransform.checked = true; } layerFxAdd("hologramTilt"); ch.push("transform motion enabled", "Hologram Tilt added"); }),
-    _rule(["shake"], "Signal shake", (ch) => { if (selectedLayer) { selectedLayer.allowTransform = true; if (el.allowTransform) el.allowTransform.checked = true; } layerFxAdd("signalShake"); ch.push("transform motion enabled", "Signal Shake added"); }),
+    _rule(["shake"], "Position jitter", (ch) => { if (selectedLayer) { selectedLayer.allowTransform = true; if (el.allowTransform) el.allowTransform.checked = true; } layerFxAdd("pathJitter"); ch.push("transform motion enabled", "Path Jitter added (was: Signal Shake, deprecated)"); }),
     _rule(["allow transform", "enable transform", "allow motion"], "Transform on", (ch) => { (selectedLayer ? [selectedLayer] : layers).forEach((l) => l.allowTransform = true); if (el.allowTransform) el.allowTransform.checked = true; renderInspector(); ch.push("Allow transform motion enabled on target layer(s)"); }),
     _rule(["dark", "darker", "moody"], "Darker", (ch) => { setBackground("custom", "#050506"); bump("scanline", 12); ch.push("background darkened", "scanline level bumped"); }),
     _rule(["slow", "slower", "calm"], "Slower", (ch) => { set("speed", 25); bump("flicker", -12); ch.push("speed lowered", "flicker lowered"); }),
@@ -15040,387 +15391,116 @@
         fontUploadInput.value = "";
       });
     }
-   // v19.65 SLASHED ZERO
-// Stores the slashedZero setting on the text layer and applies the
-// real OpenType "zero" feature directly to rendered DOM SVG text.
-//
-// Important:
-// Direct DOM SVG supports font-feature-settings. SVG rasterized through
-// <img> may ignore OpenType features in some Chromium builds, so export
-// can still require a separate text-to-path solution.
-
-const zeroSupportNote = document.getElementById("zeroSupportNote");
-const zeroDropdown = document.getElementById("textZeroStyle");
-
-/**
- * Returns possible rendered DOM roots belonging to a text layer.
- * Supports common Phaser Motion Lab references and falls back to
- * searching by the layer ID.
- */
-function getRenderedTextRoots(layer) {
-  if (!layer) return [];
-
-  const roots = new Set();
-
-  // Direct DOM references, if stored on the layer.
-  [
-    layer.el,
-    layer.element,
-    layer.node,
-    layer.group,
-    layer.svg,
-    layer.svgEl,
-    layer.svgNode,
-    layer.svgGroup,
-    layer.domElement,
-    layer.renderElement
-  ].forEach((node) => {
-    if (node instanceof Element) roots.add(node);
-  });
-
-  // Try common layer ID selectors.
-  const rawId = layer.id ?? layer.uid ?? layer.layerId;
-
-  if (rawId != null) {
-    const id = String(rawId);
-    const escaped = window.CSS && CSS.escape
-      ? CSS.escape(id)
-      : id.replace(/["\\]/g, "\\$&");
-
-    [
-      `[data-layer-id="${escaped}"]`,
-      `[data-id="${escaped}"]`,
-      `#layer-${escaped}`,
-      `#${escaped}`
-    ].forEach((selector) => {
-      try {
-        const node = document.querySelector(selector);
-        if (node) roots.add(node);
-      } catch (_) {
-        // Ignore selectors that cannot be resolved safely.
-      }
-    });
-  }
-
-  return Array.from(roots);
-}
-
-/**
- * Applies or removes the real OpenType slashed-zero feature.
- *
- * Applies both:
- *   font-feature-settings: "zero" 1
- *   font-variant-numeric: slashed-zero
- *
- * Inline styles are used because they work reliably on direct DOM SVG
- * <text> and <tspan> elements.
- */
-function applySlashedZeroToRenderedLayer(layer) {
-  if (!layer || layer.kind !== "TEXT") return false;
-
-  const enabled = !!(layer.textStyle && layer.textStyle.slashedZero);
-  const roots = getRenderedTextRoots(layer);
-  const textNodes = new Set();
-
-  roots.forEach((root) => {
-    if (root.matches && root.matches("text, tspan")) {
-      textNodes.add(root);
+    // v19.54 ZERO STYLE dropdown wiring + support probe.
+    // The probe measures a rendered '0' with and without the "zero"
+    // feature; if the widths / bounding boxes are IDENTICAL, the font
+    // ignores the feature (no true slashed zero) and we surface a
+    // note.  Uses an offscreen canvas measurement.
+    const zeroSupportNote = document.getElementById("zeroSupportNote");
+    // v19.64 PROBE REWRITE — HONEST VERIFICATION ONLY.
+    //
+    // The previous probe rendered two SVG variants via
+    // `img.src = "data:image/svg+xml..."` and pixel-diffed them to
+    // guess whether the font honors the "zero" feature.  Verified via
+    // direct testing this session that this rasterization technique
+    // — ANY <img>-based SVG rasterization, data: URI or Blob URL —
+    // does NOT apply CSS font-feature-settings in this Chromium
+    // build, REGARDLESS of whether the font genuinely supports the
+    // feature.  Proof: loaded a real IBM Plex Mono file (confirmed via
+    // fontTools to have working "zero"/"ss03" → zero.alt01
+    // substitutions, and confirmed the glyph is visibly a slash, not
+    // a dot, by extracting and rendering the actual outline), then
+    // compared rendering across paths — direct DOM SVG with the
+    // feature applied via inline style.fontFeatureSettings correctly
+    // showed the slash; the exact same markup rasterized via <img>
+    // (data: URI or Blob URL, matching this probe and the export
+    // pipeline respectively) showed a plain oval every time.
+    //
+    // A probe built on a technique that can't detect a feature even
+    // when it demonstrably works is worse than no probe — it can
+    // manufacture false "unsupported" verdicts for fonts that are
+    // actually fine.  This rewrite only claims what it can actually
+    // verify: whether the requested font genuinely finished loading
+    // (the SAME reliable document.fonts iteration check used in
+    // _requestFontChange, not the load()/check() combo that gives
+    // false positives for fonts that never registered at all).  Live
+    // on-screen rendering (direct DOM) is unaffected by the
+    // rasterization bug and applies the feature correctly whenever
+    // the font is genuinely loaded.
+    function isFontGenuinelyLoaded(family, weight) {
+      const wanted = String(family || "").replace(/^["']|["']$/g, "").toLowerCase();
+      let found = false;
+      document.fonts.forEach((f) => {
+        const fFamily = f.family.replace(/^["']|["']$/g, "").toLowerCase();
+        if (fFamily === wanted && f.status === "loaded") found = true;
+      });
+      return found;
     }
-
-    if (root.querySelectorAll) {
-      root.querySelectorAll("text, tspan").forEach((node) => {
-        textNodes.add(node);
+    async function updateZeroSupportNote() {
+      if (!zeroSupportNote || !selectedLayer || selectedLayer.kind !== "TEXT") {
+        if (zeroSupportNote) zeroSupportNote.textContent = "";
+        return;
+      }
+      const s = selectedLayer.textStyle;
+      if (!s.slashedZero) { zeroSupportNote.textContent = ""; return; }
+      // System fonts render synchronously with no @font-face to
+      // "load" — document.fonts won't ever list them, so skip the
+      // load check for those and just confirm the feature is applied.
+      const isSystemFont = window.__systemFontFamilies && window.__systemFontFamilies.has(s.fontFamily);
+      if (isSystemFont) {
+        zeroSupportNote.textContent = "✓ Slashed Zero applied — check the rendered text to confirm this system font supports it";
+        return;
+      }
+      const loaded = isFontGenuinelyLoaded(s.fontFamily, s.fontWeight);
+      if (!loaded) {
+        zeroSupportNote.textContent = `⚠ "${s.fontFamily}" hasn't finished loading (network issue?) — Slashed Zero can't take effect on a fallback font`;
+      } else {
+        zeroSupportNote.textContent = "✓ Font loaded — Slashed Zero applied (verify the rendered '0' visually; this app can't reliably auto-detect per-font glyph support)";
+      }
+    }
+    window.__updateZeroSupportNote = updateZeroSupportNote;
+    window.__isFontGenuinelyLoaded = isFontGenuinelyLoaded;
+    const zeroDropdown = document.getElementById("textZeroStyle");
+    if (zeroDropdown) {
+      zeroDropdown.addEventListener("change", () => {
+        if (!(selectedLayer && selectedLayer.kind === "TEXT")) return;
+        const on = zeroDropdown.value === "slashed";
+        updateTextLayer(selectedLayer, { slashedZero: on });
+        if (el.textSlashedZero) el.textSlashedZero.checked = on;   // keep legacy in sync
+        // v19.55: force applyTextFxAtTime to run so slash overlay
+        // appears/disappears immediately.
+        applyTextFxAtTime(selectedLayer, STATE.time, audio && audio.getSignal ? audio.getSignal() : {level:0,low:0,mid:0,high:0});
+        paintIfPaused();
+        updateZeroSupportNote();
       });
     }
-  });
-
-  textNodes.forEach((node) => {
-    if (enabled) {
-      // Real OpenType feature for fonts such as IBM Plex Mono.
-      node.style.fontFeatureSettings = '"zero" 1';
-      node.style.fontVariantNumeric = "slashed-zero";
-
-      // Also set SVG presentation attributes as an additional fallback.
-      node.setAttribute("font-feature-settings", '"zero" 1');
-      node.setAttribute("font-variant-numeric", "slashed-zero");
-    } else {
-      node.style.removeProperty("font-feature-settings");
-      node.style.removeProperty("font-variant-numeric");
-
-      node.removeAttribute("font-feature-settings");
-      node.removeAttribute("font-variant-numeric");
-    }
-  });
-
-  if (!textNodes.size) {
-    console.warn(
-      "[Slashed Zero] No rendered SVG <text>/<tspan> nodes were found for layer:",
-      layer
-    );
-    return false;
-  }
-
-  return true;
-}
-
-/**
- * Rebuilds the selected text layer and then applies the OpenType
- * feature to the newly created DOM SVG nodes.
- */
-function refreshSlashedZero(layer) {
-  if (!layer || layer.kind !== "TEXT") return false;
-
-  // Rebuild first because buildTextLayerSVG may replace existing nodes.
-  if (typeof buildTextLayerSVG === "function") {
-    buildTextLayerSVG(layer);
-  }
-
-  const applied = applySlashedZeroToRenderedLayer(layer);
-
-  // Keep existing animated text effects updated.
-  if (typeof applyTextFxAtTime === "function") {
-    applyTextFxAtTime(
-      layer,
-      STATE.time,
-      audio && audio.getSignal
-        ? audio.getSignal()
-        : { level: 0, low: 0, mid: 0, high: 0 }
-    );
-  }
-
-  // applyTextFxAtTime might replace or modify text/tspan nodes,
-  // so apply the OpenType feature once more afterward.
-  applySlashedZeroToRenderedLayer(layer);
-
-  if (typeof paintIfPaused === "function") {
-    paintIfPaused();
-  }
-
-  return applied;
-}
-
-/**
- * Checks whether a registered FontFace with the requested family,
- * weight and style has actually finished loading.
- */
-function isFontGenuinelyLoaded(family, weight, style = "normal") {
-  const wantedFamily = String(family || "")
-    .replace(/^["']|["']$/g, "")
-    .trim()
-    .toLowerCase();
-
-  const wantedWeight = String(weight || "400");
-  const wantedStyle = String(style || "normal").toLowerCase();
-
-  let exactMatch = false;
-  let familyMatch = false;
-
-  document.fonts.forEach((font) => {
-    const fontFamily = String(font.family || "")
-      .replace(/^["']|["']$/g, "")
-      .trim()
-      .toLowerCase();
-
-    if (fontFamily !== wantedFamily || font.status !== "loaded") return;
-
-    familyMatch = true;
-
-    const fontWeight = String(font.weight || "400");
-    const fontStyle = String(font.style || "normal").toLowerCase();
-
-    if (fontWeight === wantedWeight && fontStyle === wantedStyle) {
-      exactMatch = true;
-    }
-  });
-
-  // Some FontFace registrations use ranges such as "100 900".
-  // In that case the loaded family match is still useful.
-  return exactMatch || familyMatch;
-}
-
-/**
- * Updates the UI message.
- *
- * This verifies:
- *   1. whether the setting was applied to the rendered DOM SVG
- *   2. whether an uploaded/web font was genuinely loaded
- *
- * It intentionally does not claim that a font contains the "zero"
- * substitution because Chromium cannot reliably auto-detect that
- * through the current SVG-to-image rasterization pipeline.
- */
-function updateZeroSupportNote(renderApplied = null) {
-  if (
-    !zeroSupportNote ||
-    !selectedLayer ||
-    selectedLayer.kind !== "TEXT"
-  ) {
-    if (zeroSupportNote) zeroSupportNote.textContent = "";
-    return;
-  }
-
-  const style = selectedLayer.textStyle || {};
-
-  if (!style.slashedZero) {
-    zeroSupportNote.textContent = "";
-    return;
-  }
-
-  const family = style.fontFamily || "";
-  const weight = style.fontWeight || "400";
-  const fontStyle = style.fontStyle || (style.italic ? "italic" : "normal");
-
-  const isSystemFont =
-    window.__systemFontFamilies &&
-    window.__systemFontFamilies.has(family);
-
-  const applied =
-    renderApplied == null
-      ? applySlashedZeroToRenderedLayer(selectedLayer)
-      : renderApplied;
-
-  if (!applied) {
-    zeroSupportNote.textContent =
-      "⚠ Slashed Zero is enabled, but the rendered SVG text node was not found";
-    return;
-  }
-
-  if (isSystemFont) {
-    zeroSupportNote.textContent =
-      '✓ Slashed Zero applied using the OpenType "zero" feature. Verify the rendered 0 visually.';
-    return;
-  }
-
-  const loaded = isFontGenuinelyLoaded(
-    family,
-    weight,
-    fontStyle
-  );
-
-  if (!loaded) {
-    zeroSupportNote.textContent =
-      `⚠ "${family}" is not registered as a loaded font. ` +
-      "The text may be rendering with a fallback font.";
-    return;
-  }
-
-  zeroSupportNote.textContent =
-    '✓ Font loaded and OpenType "zero" applied. Verify the rendered 0 visually.';
-}
-
-window.__applySlashedZeroToRenderedLayer =
-  applySlashedZeroToRenderedLayer;
-
-window.__refreshSlashedZero =
-  refreshSlashedZero;
-
-window.__updateZeroSupportNote =
-  updateZeroSupportNote;
-
-window.__isFontGenuinelyLoaded =
-  isFontGenuinelyLoaded;
-
-
-// ZERO STYLE DROPDOWN
-
-if (zeroDropdown) {
-  zeroDropdown.addEventListener("change", () => {
-    if (!(selectedLayer && selectedLayer.kind === "TEXT")) return;
-
-    const enabled = zeroDropdown.value === "slashed";
-
-    updateTextLayer(selectedLayer, {
-      slashedZero: enabled
+    wireTextInput(el.textSize, (n) => {
+      // v19.46: allow 1pt with decimals (no more 8pt floor).
+      const v = clamp(parseFloat(n.value) || 64, 1, 800);
+      if (el.textSizeRange) el.textSizeRange.value = Math.min(400, v);
+      return { fontSize: v };
     });
-
-    // Keep the legacy checkbox synchronized.
+    wireTextInput(el.textSizeRange, (n) => {
+      const v = Math.max(1, parseFloat(n.value) || 64);
+      if (el.textSize) el.textSize.value = v;
+      return { fontSize: v };
+    });
+    wireTextInput(el.textWeight, (n) => ({ fontWeight: +n.value }));
+    wireTextInput(el.textColor, (n) => {
+      if (el.textColorHex) el.textColorHex.textContent = n.value.toUpperCase();
+      return { color: n.value };
+    });
+    wireTextInput(el.textLetterSpacing, (n) => ({ letterSpacing: +n.value || 0 }));
+    wireTextInput(el.textLineHeight, (n) => ({ lineHeight: Math.max(0.5, +n.value || 1.2) }));
+    // v19.44: Slashed Zero toggle — applies "zero" OpenType feature
+    // when the font supports it, otherwise leaves the character alone.
     if (el.textSlashedZero) {
-      el.textSlashedZero.checked = enabled;
+      el.textSlashedZero.addEventListener("change", () => {
+        if (selectedLayer && selectedLayer.kind === "TEXT") {
+          updateTextLayer(selectedLayer, { slashedZero: !!el.textSlashedZero.checked });
+        }
+      });
     }
-
-    const applied = refreshSlashedZero(selectedLayer);
-    updateZeroSupportNote(applied);
-  });
-}
-
-
-// TEXT CONTROLS
-
-wireTextInput(el.textSize, (input) => {
-  // Allow sizes from 1 pt, including decimal values.
-  const value = clamp(
-    parseFloat(input.value) || 64,
-    1,
-    800
-  );
-
-  if (el.textSizeRange) {
-    el.textSizeRange.value = Math.min(400, value);
-  }
-
-  return { fontSize: value };
-});
-
-wireTextInput(el.textSizeRange, (input) => {
-  const value = Math.max(
-    1,
-    parseFloat(input.value) || 64
-  );
-
-  if (el.textSize) {
-    el.textSize.value = value;
-  }
-
-  return { fontSize: value };
-});
-
-wireTextInput(el.textWeight, (input) => ({
-  fontWeight: +input.value
-}));
-
-wireTextInput(el.textColor, (input) => {
-  if (el.textColorHex) {
-    el.textColorHex.textContent =
-      input.value.toUpperCase();
-  }
-
-  return { color: input.value };
-});
-
-wireTextInput(el.textLetterSpacing, (input) => ({
-  letterSpacing: +input.value || 0
-}));
-
-wireTextInput(el.textLineHeight, (input) => ({
-  lineHeight: Math.max(
-    0.5,
-    +input.value || 1.2
-  )
-}));
-
-
-// LEGACY SLASHED ZERO CHECKBOX
-
-if (el.textSlashedZero) {
-  el.textSlashedZero.addEventListener("change", () => {
-    if (!(selectedLayer && selectedLayer.kind === "TEXT")) return;
-
-    const enabled = !!el.textSlashedZero.checked;
-
-    updateTextLayer(selectedLayer, {
-      slashedZero: enabled
-    });
-
-    // Keep the new dropdown synchronized.
-    if (zeroDropdown) {
-      zeroDropdown.value =
-        enabled ? "slashed" : "normal";
-    }
-
-    const applied = refreshSlashedZero(selectedLayer);
-    updateZeroSupportNote(applied);
-  });
-}
     // v19.46: Frame Overflow — visible/clip switch.
     if (el.textFrameOverflow) {
       el.textFrameOverflow.addEventListener("change", () => {
@@ -17062,7 +17142,7 @@ if (el.textSlashedZero) {
     const DIRECTOR_PRESETS = {
       "Beat Driven":     { name: "Beat Driven",     primaryEffect: "focusSnap",   syncSource: "beat" },
       "Bass Pulse":      { name: "Bass Pulse",      primaryEffect: "focusSnap",   secondaryEffects: ["magneticSnap"], syncSource: "bass" },
-      "Techno Cut":      { name: "Techno Cut",      primaryEffect: "focusSnap",   secondaryEffects: ["lostSignal"], syncSource: "peak" },
+      "Techno Cut":      { name: "Techno Cut",      primaryEffect: "focusSnap",   secondaryEffects: ["pulseGlow"], syncSource: "peak" },
       "Fast Glitch":     { name: "Fast Glitch",     primaryEffect: "rgbSplitPro", secondaryEffects: ["textFlicker"], syncSource: "high" },
       "Cinematic Build":  { name: "Cinematic Build", primaryEffect: "pulseGlow",   syncSource: "beat" },
       "Photo Sync":      { name: "Photo Sync",      primaryEffect: "focusSnap",   syncSource: "beat", target: { kind: "image-placeholder" } },
