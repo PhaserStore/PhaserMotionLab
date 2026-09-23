@@ -2922,7 +2922,7 @@
       const u = (Math.sin(phase) * 0.5 + 0.5);
       const w = Math.round(wMin + (wMax - wMin) * u);
       // Apply to the text element via font-variation-settings.
-      const textEl = layer.node && layer.node.querySelector("text");
+      const textEl = _getSourceTextEl(layer.node);
       if (!textEl) return;
       textEl.style.fontVariationSettings = `"wght" ${w}`;
       textEl.setAttribute("font-weight", String(w));
@@ -3259,7 +3259,7 @@
       const svg = layer.node;
       if (!svg) return;
       const NS = "http://www.w3.org/2000/svg";
-      const textEl = svg.querySelector("text");
+      const textEl = _getSourceTextEl(svg);
       if (!textEl) return;
       const P = clip.params || {};
       const mode = P.mirrorMode || "horizontal";
@@ -3374,7 +3374,7 @@
       const svg = layer.node;
       if (!svg) return;
       const NS = "http://www.w3.org/2000/svg";
-      const textEl = svg.querySelector("text");
+      const textEl = _getSourceTextEl(svg);
       if (!textEl) return;
       const P = clip.params || {};
       const sliceCount = Math.max(2, Math.min(24, P.sliceCount || 8));
@@ -3471,7 +3471,7 @@
       const svg = layer.node;
       if (!svg) return;
       const NS = "http://www.w3.org/2000/svg";
-      const textEl = svg.querySelector("text");
+      const textEl = _getSourceTextEl(svg);
       if (!textEl) return;
       const P = clip.params || {};
       const count = Math.max(1, Math.min(20, P.count != null ? P.count : 5));
@@ -3528,7 +3528,7 @@
     // element — same sine-oscillator pattern as Variable Font Pulse,
     // applied as a scaleX/scaleY transform instead of a weight axis.
     textStretch(layer, clip, p, sig, sceneTime) {
-      const textEl = layer.node && layer.node.querySelector("text");
+      const textEl = _getSourceTextEl(layer.node);
       if (!textEl) return;
       const P = clip.params || {};
       const axis = P.axis || "horizontal";   // horizontal | vertical | both
@@ -3783,7 +3783,7 @@
       }
 
       // Wrap text in <textPath>.
-      const textEl = svg.querySelector("text");
+      const textEl = _getSourceTextEl(svg);
       if (!textEl) return;
       // v19.48 SOURCE-OF-TRUTH TEXT.
       // Take the layer's textStyle.text directly, NOT textEl.textContent.
@@ -4465,9 +4465,43 @@
      A stale glyph pool (from a previous longer display) is trimmed by
      hiding trailing glyphs; we never delete tspans mid-effect because
      that would invalidate cached _baseX/_baseY. */
+  // v19.66 ROOT-CAUSE FIX for Mirror / Vertical Slice / Echo Copies.
+  //
+  // Every clone-based effect (Mirror, Vertical Slice, Echo Copies,
+  // Pattern) inserts its clone group BEFORE the true source <text>
+  // in the DOM (so clones paint underneath/behind the source, or so
+  // insertBefore has a stable anchor).  Many call sites across this
+  // file used the shorthand `_getSourceTextEl(svg)` to mean "the
+  // true source" — which is ONLY correct on the very first frame,
+  // before any clone group exists.  On every subsequent frame, that
+  // query returns the FIRST clone instead (since clones now precede
+  // the source in document order).
+  //
+  // The specific, confirmed failure mode: _applyDisplayToGlyphs used
+  // this shorthand, found a clone, and its "remove stale tail
+  // glyphs" cleanup — which identifies extra glyphs by checking for
+  // a MISSING `_baseX` JS property — treated EVERY tspan inside that
+  // clone as removable garbage, because cloneNode() never copies
+  // custom JS properties like `_baseX` onto the clone's tspans (it
+  // only clones DOM structure/attributes).  Result: the misidentified
+  // "source" had all its (actually legitimate, cloned) tspans
+  // deleted on the second render frame — explaining why Mirror,
+  // Vertical Slice, and Echo Copies all appeared broken starting
+  // from their second frame onward, while working correctly on the
+  // first.  Confirmed via direct instrumentation tracing children
+  // count through every step of applyTextFxAtTime across two frames.
+  //
+  // Fix: one canonical helper, used everywhere "the true source" is
+  // needed, that explicitly excludes every known clone-marker
+  // attribute rather than relying on "first <text> in the DOM."
+  function _getSourceTextEl(svgOrLayer) {
+    const svg = svgOrLayer && svgOrLayer.querySelectorAll ? svgOrLayer : (svgOrLayer && svgOrLayer.node);
+    if (!svg) return null;
+    return svg.querySelector('text:not([data-mirror-copy]):not([data-vslice-copy]):not([data-echo-copy]):not([data-pattern-copy])');
+  }
   function _applyDisplayToGlyphs(layer, original, display) {
     if (!layer || !layer.node) return;
-    const textEl = layer.node.querySelector("text");
+    const textEl = _getSourceTextEl(layer.node);
     if (!textEl) return;
     const glyphs = Array.from(textEl.querySelectorAll('tspan[data-glyph="1"]'));
     if (!glyphs.length) return;
@@ -4700,7 +4734,7 @@
       if (vgrp) vgrp.remove();
       const vdefs = layer.node && layer.node.querySelector('defs[id$="-defs"][id^="vslice-clones-"]');
       if (vdefs) vdefs.remove();
-      const srcTextEl = layer.node && layer.node.querySelector("text");
+      const srcTextEl = _getSourceTextEl(layer.node);
       if (srcTextEl && srcTextEl.style.opacity === "0") srcTextEl.style.opacity = "";
     }
     // v19.65 ECHO COPIES CLEANUP.  Remove the echo clone group when
@@ -4719,7 +4753,7 @@
     // stuck on the text permanently once the clip ends.
     const stretchActive = activeAll.some(({ c }) => c.fxKey === "textStretch");
     if (!stretchActive) {
-      const srcTextEl2 = layer.node && layer.node.querySelector("text");
+      const srcTextEl2 = _getSourceTextEl(layer.node);
       if (srcTextEl2 && srcTextEl2.hasAttribute("transform") && !patternClip) srcTextEl2.removeAttribute("transform");
     }
     // v19.55 SLASHED ZERO OVERLAY — runs after every other mutation so
@@ -4839,7 +4873,7 @@
     const svg = layer.node;
     if (!svg) return;
     const NS = "http://www.w3.org/2000/svg";
-    const textEl = svg.querySelector("text");
+    const textEl = _getSourceTextEl(svg);
     if (!textEl) return;
     const groupId = "pattern-copies-" + (layer.id || "x");
     let group = svg.querySelector("#" + groupId);
@@ -5142,7 +5176,7 @@
         cy = parseFloat(first.getAttribute("y") || cy) - charH * 0.85;
       } else {
         // No glyphs at all — anchor at the textEl origin
-        const textEl = svg.querySelector("text");
+        const textEl = _getSourceTextEl(svg);
         if (textEl) {
           cx = parseFloat(textEl.getAttribute("x") || "8");
           cy = parseFloat(textEl.getAttribute("y") || cy) - charH * 0.85;
@@ -9811,6 +9845,56 @@
     }
   }
 
+  // v19.66 EXPORT FIX for Weird Glitch on SVG / IMG / SHAPE layers.
+  //
+  // Root cause of "Weird works on imported SVGs in the editor but is
+  // missing/broken in MP4 exports": applyWeirdSlicesOnLayer (the
+  // Weird Glitch handler for non-text raster layers) was ONLY ever
+  // called from the two PREVIEW rendering paths — frame() (live
+  // playback) and renderOneAnimatedFrame() (paused scrubbing).
+  // Confirmed by finding exactly 2 call sites in the whole file, both
+  // explicitly documented as preview-only.  The export pipeline
+  // (drawExportFrame / rasterizeAll / the video-encode loops) never
+  // called it at all, so exported frames always sampled the layer's
+  // plain, unmodified rasterization — Weird Glitch simply never ran
+  // during export, regardless of duration/intensity settings.
+  //
+  // Fix: this function mirrors updateTextLayersForExportFrame's exact
+  // pattern (already correctly wired for TEXT layers) for IMG / SVG /
+  // SHAPE layers instead, and gets called alongside it at every
+  // export call site below.
+  async function updateNonTextWeirdSlicesForExportFrame(imgs, t, W, H) {
+    const rasterLayers = layers.filter((L) => (L.kind === "IMG" || L.kind === "SVG" || L.kind === "SHAPE") && L.visible);
+    for (const L of rasterLayers) {
+      const inWindow = t >= L.start - 0.001 && t <= L.start + L.duration + 0.001;
+      if (!inWindow) continue;
+      const activeWeird = activeEventClipsAt(L, t).filter((e) => e.c.fxKey === "weirdGlitch");
+      try { applyWeirdSlicesOnLayer(L, activeWeird, t); } catch (e) {}
+      if (L._weirdActive && L._weirdCanvas) {
+        imgs[L.id] = L._weirdCanvas;
+      } else {
+        // v19.66: NOT active — always re-rasterize rather than only
+        // when imgs[L.id] previously pointed at the weird canvas.
+        // Root cause this guards against: _showWeirdCanvas sets
+        // layer.node.style.visibility = "hidden" directly on the SVG
+        // element itself (an inline style, not a wrap-level one) —
+        // and that's exactly what XMLSerializer bakes into the
+        // string layerToImage rasterizes.  If a PRIOR preview
+        // interaction (before this export even started) left that
+        // visibility flag set, rasterizeAll's very first capture at
+        // export start would already be a permanently-blank image
+        // for this layer, and only re-rasterizing on the "was weird
+        // canvas" condition would never notice or recover from that
+        // — the layer would stay invisible for the entire export
+        // even in frames where Weird Glitch was never active at all.
+        // applyWeirdSlicesOnLayer's inactive branch (just above)
+        // already resets that visibility flag via _clearWeirdCanvas,
+        // so re-rasterizing here is always safe and always correct.
+        try { imgs[L.id] = await layerToImage(L, W, H); } catch (e) {}
+      }
+    }
+  }
+
   /* ---------------- RENDER LOOP ---------------- */
   let rafStart = performance.now();
   let hudLayer = null, flashOverlay = null;
@@ -13790,6 +13874,7 @@
     const ctx = c.getContext("2d"), imgs = await rasterizeAll(W, H);
     redirectImgsToExportCanvases(imgs);
     await updateTextLayersForExportFrame(imgs, STATE.time, W, H);
+    await updateNonTextWeirdSlicesForExportFrame(imgs, STATE.time, W, H);
     await drawExportFrame(ctx, W, H, imgs, STATE.time, { bg: transparent ? null : resolveExportBg(false) }, crop);
     c.toBlob((b) => { downloadBlob(b, transparent ? baseName("transparent.png") : baseName("png")); setExportStatus("Done — PNG saved", "done"); closeSheet(); }, "image/png");
   }
@@ -13801,7 +13886,7 @@
     const { W, H, crop } = exportDims(), c = document.createElement("canvas"); c.width = W; c.height = H;
     const ctx = c.getContext("2d"), imgs = await rasterizeAll(W, H), bg = transparent ? null : resolveExportBg(false);
     redirectImgsToExportCanvases(imgs);
-    for (let f = 0; f < total; f++) { await seekAllVideoLayersTo(f / fps); await paintWebCodecsLayersForExport(f / fps); await updateTextLayersForExportFrame(imgs, f / fps, W, H); await drawExportFrame(ctx, W, H, imgs, f / fps, { bg }, crop); await new Promise((res) => c.toBlob((b) => { downloadBlob(b, `phaser-seq-${String(f).padStart(4, "0")}.png`); setTimeout(res, 55); }, "image/png")); if (f % 10 === 0) setExportStatus(`Rendering frame ${f + 1}/${total}…`, "work"); }
+    for (let f = 0; f < total; f++) { await seekAllVideoLayersTo(f / fps); await paintWebCodecsLayersForExport(f / fps); await updateTextLayersForExportFrame(imgs, f / fps, W, H); await updateNonTextWeirdSlicesForExportFrame(imgs, f / fps, W, H); await drawExportFrame(ctx, W, H, imgs, f / fps, { bg }, crop); await new Promise((res) => c.toBlob((b) => { downloadBlob(b, `phaser-seq-${String(f).padStart(4, "0")}.png`); setTimeout(res, 55); }, "image/png")); if (f % 10 === 0) setExportStatus(`Rendering frame ${f + 1}/${total}…`, "work"); }
     setExportStatus("Done — sequence saved", "done"); closeSheet();
   }
   function pickWebmMime() { return ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"].find((m) => MediaRecorder.isTypeSupported(m)) || "video/webm"; }
@@ -13886,6 +13971,7 @@
         await driveVideoLayersRealtime(t % STATE.duration);
         await paintWebCodecsLayersForExport(t % STATE.duration);
         await updateTextLayersForExportFrame(imgs, t % STATE.duration, W, H);
+    await updateNonTextWeirdSlicesForExportFrame(imgs, t % STATE.duration, W, H);
         await drawExportFrame(ctx, W, H, imgs, t % STATE.duration, { bg }, crop);
       } else {
         // Behind by more than 1.5 frame intervals — reuse the last
@@ -14306,6 +14392,7 @@
       await seekAllVideoLayersTo(t);              // legacy layers only (no-op otherwise)
       await paintWebCodecsLayersForExport(t);     // WebCodecs layers only (no-op otherwise)
       await updateTextLayersForExportFrame(imgs, t, W, H);
+    await updateNonTextWeirdSlicesForExportFrame(imgs, t, W, H);
       await drawExportFrame(ctx, W, H, imgs, t, { bg }, crop);
       // Phase 1 diag: capture pre-encode PNG at target frame.  This
       // is the canvas EXACTLY as it enters new VideoFrame(canvas, ...).
@@ -14655,6 +14742,7 @@
           await driveVideoLayersRealtime(t % STATE.duration);
           await paintWebCodecsLayersForExport(t % STATE.duration);
           await updateTextLayersForExportFrame(imgs, t % STATE.duration, W, H);
+    await updateNonTextWeirdSlicesForExportFrame(imgs, t % STATE.duration, W, H);
           await drawExportFrame(ctx, W, H, imgs, t % STATE.duration, { bg }, crop);
         } else {
           droppedFrames++;
@@ -18371,7 +18459,7 @@
     requestAnimationFrame(() => fitZoom());
     setTimeout(() => { fitZoom(); renderTimeline(); }, 120);
     // Test hook: expose internals for automated verification (harmless in production).
-    window.__phaserDebug = Object.assign(window.__phaserDebug || {}, { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, FX_EVENT_DEF, fxSupportsLayer, applyTextFxAtTime, applyWeirdSlicesOnText, applyWeirdSlicesOnLayer, TEXT_FX_STRING, TEXT_FX_DOM, buildTextLayerSVG, updateTextLayer, startTextEdit, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, paintWebCodecsLayersForExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath, runSvgRepair, collectSvgRepairOps, releaseClipPaths, removeMasks, convertShapesToPaths, audio: () => audio,
+    window.__phaserDebug = Object.assign(window.__phaserDebug || {}, { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, FX_EVENT_DEF, fxSupportsLayer, applyTextFxAtTime, applyWeirdSlicesOnText, applyWeirdSlicesOnLayer, updateTextLayersForExportFrame, updateNonTextWeirdSlicesForExportFrame, TEXT_FX_STRING, TEXT_FX_DOM, buildTextLayerSVG, updateTextLayer, startTextEdit, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, paintWebCodecsLayersForExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath, runSvgRepair, collectSvgRepairOps, releaseClipPaths, removeMasks, convertShapesToPaths, audio: () => audio,
       renderTimeline,
     });
   }
