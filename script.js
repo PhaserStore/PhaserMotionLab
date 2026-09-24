@@ -448,6 +448,29 @@
         { key: "scanlineDrop", label: "Scanline Drop", type: "range", min: 0, max: 100, step: 1, default: 20 },
         { key: "seed",         label: "Seed",          type: "range", min: 0, max: 1000, step: 1, default: 137 },
       ] },
+    // v19.67 REPEATER — first effect on the new generic canvas-effect
+    // pipeline.  NOTE: VIDEO deliberately excluded from
+    // supportedLayerTypes — live video-frame rasterization into the
+    // canvas source isn't implemented, so declaring support here
+    // without a working path would repeat the exact "registered but
+    // not actually wired" gap already found in Weird Glitch's own
+    // registration (see GENERIC_FX_STACK_ORDER / dispatcher comments).
+    { key: "repeater",       label: "Repeater",        defDur: "layer", group: "signal",
+      category: "universal", supportedLayerTypes: ["TEXT","IMG","SVG","SHAPE"], sustained: true,
+      paramDefs: [
+        { key: "count",          label: "Copies",           type: "range",  min: 1, max: 20, step: 1, default: 5 },
+        { key: "offsetX",        label: "Offset X",         type: "range",  min: -200, max: 200, step: 1, default: 20 },
+        { key: "offsetY",        label: "Offset Y",         type: "range",  min: -200, max: 200, step: 1, default: 0 },
+        { key: "scaleStepX",     label: "Scale Step X %",   type: "range",  min: -50, max: 50, step: 1, default: 0 },
+        { key: "scaleStepY",     label: "Scale Step Y %",   type: "range",  min: -50, max: 50, step: 1, default: 0 },
+        { key: "rotationStep",   label: "Rotation Step °",  type: "range",  min: -45, max: 45, step: 1, default: 0 },
+        { key: "opacityFalloff", label: "Opacity Falloff %",type: "range",  min: 0, max: 100, step: 1, default: 70 },
+        { key: "anchor",         label: "Origin / Anchor",  type: "select", options: ["center","topLeft","topRight","bottomLeft","bottomRight","topCenter","bottomCenter","leftCenter","rightCenter"], default: "center" },
+        { key: "order",          label: "Order",            type: "select", options: ["originalFirst","originalLast"], default: "originalFirst" },
+        { key: "startPct",       label: "Start %",          type: "range",  min: 0, max: 100, step: 1, default: 0 },
+        { key: "endPct",         label: "End %",            type: "range",  min: 0, max: 100, step: 1, default: 100 },
+        { key: "easing",         label: "Easing",           type: "select", options: ["linear","easeOut","easeInOut","expoOut"], default: "easeOut" },
+      ] },
     { key: "svgTextOnPath",  label: "Text on Path",    defDur: "layer", group: "text",
       category: "text", supportedLayerTypes: ["TEXT","SVG"], placement: "layerStart", sustained: true, persistEnd: true,
       paramDefs: [
@@ -4003,9 +4026,34 @@
     return tile;
   }
 
+  // v19.67 GENERIC CANVAS-EFFECT PIPELINE.
+  //
+  // Fixed oversample factor for the canvas-compositor path (Weird
+  // Glitch, and now Repeater).  Applied identically in preview and
+  // export — never reads window.devicePixelRatio or the actual
+  // export target resolution, since either would make preview and
+  // export diverge, violating the determinism requirement.  Source
+  // rasterization functions use ctx.setTransform(OVERSAMPLE,...) and
+  // otherwise keep working in LOGICAL (natW × natH) units — every
+  // existing proportional calculation (band heights, offsets as
+  // fractions of W/H) continues to work completely unchanged; only
+  // the physical pixel buffer is denser.  setTransform (not
+  // ctx.scale) is used deliberately: it SETS the matrix absolutely
+  // rather than compounding it, so calling it every frame is safe
+  // and cannot drift even if an early-return path ever skips a
+  // matching "restore".
+  const CANVAS_FX_OVERSAMPLE = 2;
+  // Fixed, deterministic stack order for generic canvas effects.
+  // NOT clip.start-order — these effects semantically chain (repeat
+  // then slice reads differently than slice then repeat), so the
+  // order must be an explicit, documented pipeline, not incidental
+  // creation order.  New effects extend this array; call sites never
+  // need to change.
+  const GENERIC_FX_STACK_ORDER = ["repeater", "weirdGlitch"];
+
   function _ensureWeirdCanvases(layer) {
-    const W = Math.max(1, layer.natW | 0);
-    const H = Math.max(1, layer.natH | 0);
+    const W = Math.max(1, layer.natW | 0) * CANVAS_FX_OVERSAMPLE;
+    const H = Math.max(1, layer.natH | 0) * CANVAS_FX_OVERSAMPLE;
     if (!layer._weirdCanvas) {
       layer._weirdCanvas = document.createElement("canvas");
       // Fills the wrap so the CSS transforms (position, scale, rotation)
@@ -4013,11 +4061,24 @@
       layer._weirdCanvas.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;display:none";
       layer.wrap.appendChild(layer._weirdCanvas);
     }
+    // v19.67: second ping-pong buffer.  When more than one generic
+    // canvas effect is active on a layer, effects chain: stage 1
+    // reads the rasterized source and writes here; stage 2 reads
+    // this and writes back to _weirdCanvas; and so on, alternating.
+    // With exactly 2 effects in GENERIC_FX_STACK_ORDER today, one
+    // extra buffer is sufficient; adding a 3rd/4th effect later still
+    // only ever needs these same two buffers (they keep alternating).
+    if (!layer._weirdCanvas2) {
+      layer._weirdCanvas2 = document.createElement("canvas");
+      layer._weirdCanvas2.style.cssText = "display:none";
+    }
     if (!layer._weirdSourceCanvas) layer._weirdSourceCanvas = document.createElement("canvas");
-    if (layer._weirdCanvas.width       !== W) layer._weirdCanvas.width       = W;
-    if (layer._weirdCanvas.height      !== H) layer._weirdCanvas.height      = H;
-    if (layer._weirdSourceCanvas.width !== W) layer._weirdSourceCanvas.width = W;
-    if (layer._weirdSourceCanvas.height!== H) layer._weirdSourceCanvas.height= H;
+    if (layer._weirdCanvas.width        !== W) layer._weirdCanvas.width        = W;
+    if (layer._weirdCanvas.height       !== H) layer._weirdCanvas.height       = H;
+    if (layer._weirdCanvas2.width       !== W) layer._weirdCanvas2.width       = W;
+    if (layer._weirdCanvas2.height      !== H) layer._weirdCanvas2.height      = H;
+    if (layer._weirdSourceCanvas.width  !== W) layer._weirdSourceCanvas.width  = W;
+    if (layer._weirdSourceCanvas.height !== H) layer._weirdSourceCanvas.height = H;
   }
 
   function _rasterizeTextToSource(layer) {
@@ -4029,9 +4090,17 @@
     const key = displayText + "|" + s.fontFamily + "|" + s.fontSize + "|" + s.fontWeight + "|" + s.color + "|" + s.align + "|" + layer.natW + "|" + layer.natH;
     if (layer._weirdSourceKey === key) return;
     const src = layer._weirdSourceCanvas;
-    const W = src.width, H = src.height;
+    // v19.67: src.width/height are now the PHYSICAL (oversampled)
+    // buffer size.  clearRect uses that physical size; W/H used for
+    // every position/size calculation below stay LOGICAL (natW/natH)
+    // so none of that existing math needs to change.  setTransform
+    // (not ctx.scale) — safe to call every frame with no matching
+    // "restore", since it sets the matrix absolutely rather than
+    // compounding it call over call.
     const sctx = src.getContext("2d");
-    sctx.clearRect(0, 0, W, H);
+    sctx.clearRect(0, 0, src.width, src.height);
+    sctx.setTransform(CANVAS_FX_OVERSAMPLE, 0, 0, CANVAS_FX_OVERSAMPLE, 0, 0);
+    const W = src.width / CANVAS_FX_OVERSAMPLE, H = src.height / CANVAS_FX_OVERSAMPLE;
     if (!displayText) { layer._weirdSourceKey = key; return; }
     sctx.font = `${s.fontWeight || 500} ${s.fontSize || 96}px "${s.fontFamily || "Inter"}", sans-serif`;
     sctx.fillStyle = s.color || "#FFFFFF";
@@ -4069,12 +4138,24 @@
     dstCtx.drawImage(_weirdScratchCanvas, 0, 0, sw, sh, dx, dy, sw, sh);
   }
 
-  function _compositeWeirdSlices(layer, P, sceneTime) {
-    const dstCanvas = layer._weirdCanvas;
-    const src = layer._weirdSourceCanvas;
-    const W = dstCanvas.width, H = dstCanvas.height;
+  // v19.67: signature generalized from (layer, P, sceneTime) to take
+  // explicit src/dst canvases, so the dispatcher can chain this after
+  // another effect (reading THAT effect's output) instead of always
+  // reading layer._weirdSourceCanvas directly.  Calling it the same
+  // way as before (source=rasterized content, dest=visible canvas)
+  // produces byte-identical output to the previous version — nothing
+  // about the actual compositing logic below changed.
+  function _compositeWeirdSlices(srcCanvas, dstCanvas, P, sceneTime) {
+    const src = srcCanvas;
+    // Physical (oversampled) buffer size, but every calculation below
+    // continues to use LOGICAL size — same technique as the
+    // rasterize functions above; none of this function's existing
+    // math needed to change.
+    const physW = dstCanvas.width, physH = dstCanvas.height;
     const ctx = dstCanvas.getContext("2d");
-    ctx.clearRect(0, 0, W, H);
+    ctx.clearRect(0, 0, physW, physH);
+    ctx.setTransform(CANVAS_FX_OVERSAMPLE, 0, 0, CANVAS_FX_OVERSAMPLE, 0, 0);
+    const W = physW / CANVAS_FX_OVERSAMPLE, H = physH / CANVAS_FX_OVERSAMPLE;
     ctx.globalCompositeOperation = "source-over";
     ctx.globalAlpha = 1;
 
@@ -4279,33 +4360,211 @@
       const ctx = layer._weirdCanvas.getContext("2d");
       ctx.clearRect(0, 0, layer._weirdCanvas.width, layer._weirdCanvas.height);
     }
+    // v19.67: also clear the intermediate ping-pong buffer — otherwise
+    // stale content from a previous chain (e.g. Repeater's output)
+    // could linger and be visible for one frame if effects are
+    // re-added later without the buffer being cleared first.
+    if (layer._weirdCanvas2) {
+      const ctx2 = layer._weirdCanvas2.getContext("2d");
+      ctx2.clearRect(0, 0, layer._weirdCanvas2.width, layer._weirdCanvas2.height);
+    }
     if (layer.node && layer.node.style) layer.node.style.visibility = "";
     layer._weirdActive = false;
     layer._weirdSourceKey = null;
   }
 
+  // ================================================================
+  // v19.67 GENERIC CANVAS-EFFECT REGISTRY + DISPATCHER
+  //
+  // One shared pipeline for any effect that needs to rasterize a
+  // layer's appearance and manipulate it at the pixel level, rather
+  // than expressing itself as a CSS transform/opacity delta.
+  // GENERIC_FX_STACK_ORDER (declared earlier, alongside
+  // CANVAS_FX_OVERSAMPLE) defines a FIXED, explicit chain order —
+  // not clip-creation order — since these effects semantically
+  // compose (repeat-then-slice reads differently than slice-then-
+  // repeat).  Adding a future effect (Slice Distortion, Wave, Noise)
+  // means adding one registry entry and one array slot — no call
+  // site anywhere else needs to change.
+  // ================================================================
+
+  // v19.67 REPEATER — first universal canvas effect.  Draws N copies
+  // of the rasterized source with progressive offset/scale/rotation
+  // and opacity falloff.  The "amount" (0..1) driving offset/scale/
+  // rotation comes from clip-relative progress run through the
+  // existing TEXT_EASE table and the clip's own Start%/End% — the
+  // SAME progress+easing model every other effect in this file uses;
+  // no new keyframe or animation system.  Copy count and opacity
+  // falloff are NOT progress-driven (ramping copy count would pop
+  // copies in/out discontinuously; falloff is a static "how much do
+  // copies fade" setting) — only offset/scale/rotation ramp.
+  function _computeRepeaterAnchor(anchor, W, H) {
+    switch (anchor) {
+      case "topLeft":      return [0, 0];
+      case "topRight":     return [W, 0];
+      case "bottomLeft":   return [0, H];
+      case "bottomRight":  return [W, H];
+      case "topCenter":    return [W / 2, 0];
+      case "bottomCenter": return [W / 2, H];
+      case "leftCenter":   return [0, H / 2];
+      case "rightCenter":  return [W, H / 2];
+      default:             return [W / 2, H / 2];   // "center"
+    }
+  }
+  function _compositeRepeater(srcCanvas, dstCanvas, P, sceneTime, progress) {
+    const physW = dstCanvas.width, physH = dstCanvas.height;
+    const ctx = dstCanvas.getContext("2d");
+    ctx.clearRect(0, 0, physW, physH);
+    ctx.setTransform(CANVAS_FX_OVERSAMPLE, 0, 0, CANVAS_FX_OVERSAMPLE, 0, 0);
+    const W = physW / CANVAS_FX_OVERSAMPLE, H = physH / CANVAS_FX_OVERSAMPLE;
+
+    const count       = Math.max(1, Math.min(20, Math.round(P.count ?? 5)));
+    const offsetX      = P.offsetX ?? 20;
+    const offsetY      = P.offsetY ?? 0;
+    const scaleStepX    = (P.scaleStepX ?? 0) / 100;
+    const scaleStepY    = (P.scaleStepY ?? 0) / 100;
+    const rotationStep  = P.rotationStep ?? 0;
+    const falloff      = Math.max(0, Math.min(100, P.opacityFalloff ?? 70)) / 100;
+    const anchorMode   = P.anchor || "center";
+    const order        = P.order || "originalFirst";
+    const easingName   = P.easing || "easeOut";
+    const ease         = TEXT_EASE[easingName] || TEXT_EASE.easeOut;
+    const startPct     = (P.startPct ?? 0) / 100;
+    const endPct       = (P.endPct ?? 100) / 100;
+
+    // Clip-relative progress, eased — the existing model, reused
+    // exactly as every one-shot text effect in this file already
+    // computes it.  progress is passed in by the dispatcher.
+    const eased = ease(Math.max(0, Math.min(1, progress)));
+    const amount = startPct + (endPct - startPct) * eased;
+
+    const [anchorPx, anchorPy] = _computeRepeaterAnchor(anchorMode, W, H);
+
+    // Order param is literal about paint sequence: originalFirst
+    // paints the untouched copy (index 0) FIRST, so it sits at the
+    // BOTTOM of the stack with every offset copy painted on top of
+    // it; originalLast paints it LAST, so it ends up on TOP, most
+    // prominent, with the faded trail sitting behind it.
+    const indices = [];
+    for (let i = 0; i < count; i++) indices.push(i);
+    const drawOrder = order === "originalLast"
+      ? indices.slice(1).reverse().concat([0])
+      : indices.slice();
+
+    for (const i of drawOrder) {
+      const dx = i * offsetX * amount;
+      const dy = i * offsetY * amount;
+      const sx = 1 + i * scaleStepX * amount;
+      const sy = 1 + i * scaleStepY * amount;
+      const rot = i * rotationStep * amount * Math.PI / 180;
+      const opacity = i === 0 ? 1 : Math.pow(falloff, i);
+      if (opacity <= 0.002) continue;
+      ctx.save();
+      ctx.translate(dx, dy);
+      ctx.translate(anchorPx, anchorPy);
+      if (rot !== 0) ctx.rotate(rot);
+      if (sx !== 1 || sy !== 1) ctx.scale(sx, sy);
+      ctx.translate(-anchorPx, -anchorPy);
+      ctx.globalAlpha = opacity;
+      ctx.drawImage(srcCanvas, 0, 0, srcCanvas.width / CANVAS_FX_OVERSAMPLE, srcCanvas.height / CANVAS_FX_OVERSAMPLE);
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+    // Repeater has no whole-canvas CSS shake (unlike Weird Glitch) —
+    // always clear any stale transform so stacking after Weird Glitch
+    // (which does set one) can't leave a leftover shake offset if
+    // Weird Glitch is later removed while Repeater stays active.
+    dstCanvas.style.transform = "";
+  }
+
+  const GENERIC_CANVAS_FX = {
+    repeater:   { composite: _compositeRepeater,   needsProgress: true  },
+    weirdGlitch:{ composite: _compositeWeirdSlices, needsProgress: false },
+  };
+
+  // v19.67: deliberately NOT declared `async`.  An async function's
+  // body still suspends at an `await` even when the awaited value is
+  // not a genuine pending promise (awaiting a non-thenable still
+  // costs one microtask tick per the JS spec) — which would defer
+  // the ENTIRE compositing loop below by a tick for TEXT/IMG/SHAPE
+  // layers even though nothing about them is actually async.  Preview
+  // call sites don't await this function's return value, and export
+  // call sites read the canvas synchronously right after calling it
+  // — either would risk reading a stale/empty canvas if a tick were
+  // silently inserted here for layers that never needed one.
+  // _rasterizeAnyLayerToSource returns null when it already
+  // completed synchronously (IMG, SHAPE, or an unchanged/cached SVG)
+  // and only returns a genuine pending Promise for a fresh SVG
+  // raster — so only that one real case takes the async branch below;
+  // every other layer kind runs the whole dispatch synchronously,
+  // start to finish, with zero deferral.
+  function _dispatchGenericCanvasEffects(layer, activeEntries, sceneTime) {
+    if (!layer) return null;
+    // Resolve the fixed-order, "latest wins per key" active list.
+    const byKey = {};
+    for (const { c, p } of activeEntries) {
+      if (GENERIC_CANVAS_FX[c.fxKey]) byKey[c.fxKey] = { c, p };   // later entries overwrite — matches existing "latest wins" convention
+    }
+    const chain = GENERIC_FX_STACK_ORDER.filter((k) => byKey[k]);
+
+    if (!chain.length) {
+      if (layer._weirdActive) _clearWeirdCanvas(layer);
+      return null;
+    }
+    if (!(layer.kind === "TEXT" || layer.kind === "IMG" || layer.kind === "SVG" || layer.kind === "SHAPE")) return null;
+
+    _ensureWeirdCanvases(layer);
+    // Rasterize the source EXACTLY once per layer per frame, before
+    // any effect in the chain runs — satisfies the "rasterize once,
+    // then apply all active effects" requirement directly.
+    const raster = layer.kind === "TEXT" ? _rasterizeTextToSource(layer) : _rasterizeAnyLayerToSource(layer);
+
+    const runChain = () => {
+      let srcCanvas = layer._weirdSourceCanvas;
+      for (let i = 0; i < chain.length; i++) {
+        const key = chain[i];
+        const { c, p } = byKey[key];
+        const entry = GENERIC_CANVAS_FX[key];
+        const isLast = i === chain.length - 1;
+        const dstCanvas = isLast ? layer._weirdCanvas : layer._weirdCanvas2;
+        if (entry.needsProgress) {
+          const dur = Math.max(0.001, c.duration || 0.001);
+          const progress = Math.max(0, Math.min(1, (sceneTime - (layer.start + c.start)) / dur));
+          entry.composite(srcCanvas, dstCanvas, p || c.params || {}, sceneTime, progress);
+        } else {
+          entry.composite(srcCanvas, dstCanvas, p || c.params || {}, sceneTime);
+        }
+        srcCanvas = dstCanvas;
+      }
+      _showWeirdCanvas(layer);
+    };
+
+    if (raster && typeof raster.then === "function") {
+      // Genuine pending SVG raster — the only case that truly needs
+      // to wait.  Return the promise so export callers (which DO
+      // await this) get correct sequencing; preview callers that
+      // don't await simply get the chain applied one tick later,
+      // same as the SVG path's pre-existing behavior before this
+      // change.
+      return raster.then(runChain);
+    }
+    runChain();
+    return null;
+  }
+
   /* Called from applyTextFxAtTime for TEXT layers.  Also callable
      directly from the export loop so preview and export use the SAME
-     compositor. */
+     compositor.  v19.67: now a thin wrapper around the shared
+     dispatcher — kept as its own named function so every existing
+     call site (2 preview, 5 export) needs zero changes beyond the
+     filter passed in (see GENERIC_FX_STACK_ORDER.includes below). */
   function applyWeirdSlicesOnText(layer, weirdClipEntries, sceneTime) {
     if (!layer || layer.kind !== "TEXT") return;
-    if (!weirdClipEntries || !weirdClipEntries.length) {
-      if (layer._weirdActive) _clearWeirdCanvas(layer);
-      return;
-    }
-    // Stacking multiple Weird clips is a no-op — use the last active
-    // one's params (matches "latest wins" convention used by morph /
-    // fill reveal / segment reveal).
-    const last = weirdClipEntries[weirdClipEntries.length - 1];
-    const clip = last.c;
-    const P = clip.params || {};
-    _ensureWeirdCanvases(layer);
-    _rasterizeTextToSource(layer);
-    _compositeWeirdSlices(layer, P, sceneTime);
-    _showWeirdCanvas(layer);
+    return _dispatchGenericCanvasEffects(layer, weirdClipEntries || [], sceneTime);
   }
 
   /* v19.44 WEIRD FOR NON-TEXT LAYERS.
+
    *
    * Extends the deterministic slice compositor to IMG / SVG / SHAPE.
    * The source-canvas raster comes from the layer's own DOM node
@@ -4317,9 +4576,38 @@
    * Preview for VIDEO still shows the raw video during Weird —
    * canvas overlay would require touching the video pipeline.
    */
+  // v19.67 DETERMINISM FIX + OVERSAMPLE.
+  //
+  // Two changes from the previous version:
+  //  1. Now async, returning a Promise that resolves once the source
+  //     is genuinely ready.  Previously the SVG branch fired off an
+  //     async Image load and returned immediately — callers had no
+  //     way to know whether the source was fresh or stale, so the
+  //     very first frame after any SVG content change could render
+  //     with blank/stale content, and WHETHER that happened depended
+  //     on timing that could differ between preview (paced by RAF)
+  //     and export (paced by its own await chain) — a real
+  //     determinism gap.  The dispatcher now awaits this function
+  //     directly, so every caller sees the same, complete result
+  //     before compositing runs, in both preview and export.
+  //  2. Oversample-aware: IMG and SHAPE draw through
+  //     ctx.setTransform(OVERSAMPLE,...) while working in LOGICAL
+  //     (natW × natH) units, same technique as _rasterizeTextToSource
+  //     — none of their existing math changes.  The SVG branch is
+  //     handled differently on purpose: rendering the SOURCE SVG
+  //     itself at only the logical size and then relying on a canvas
+  //     transform to stretch it would just reproduce the original
+  //     blurriness (stretching a low-res bitmap adds no detail).  So
+  //     the SVG clone is asked to rasterize at the PHYSICAL
+  //     (oversampled) size directly — genuinely sharper, not just
+  //     upscaled — and is then placed with a logical-coordinate
+  //     drawImage call under the same transform, which maps 1:1 onto
+  //     the physical buffer since the source bitmap is already at
+  //     that physical resolution.
   function _rasterizeAnyLayerToSource(layer) {
     const src = layer._weirdSourceCanvas;
-    const W = src.width, H = src.height;
+    const physW = src.width, physH = src.height;
+    const W = physW / CANVAS_FX_OVERSAMPLE, H = physH / CANVAS_FX_OVERSAMPLE;   // logical
     const sctx = src.getContext("2d");
     const kind = layer.kind;
     const node = layer.node;
@@ -4339,18 +4627,19 @@
         key = "svg|" + inner.length + "|" + W + "|" + H;
       }
     } catch (e) {}
-    if (key && layer._weirdSourceKey === key && layer._weirdSourceRasterOK) return;
+    if (key && layer._weirdSourceKey === key && layer._weirdSourceRasterOK) return null;   // synchronous completion — no genuine wait needed
 
-    // Always clear + draw a synchronous fallback FIRST so a Weird
-    // burst has something to work with on the very first frame,
-    // even before any async SVG raster completes.
-    sctx.clearRect(0, 0, W, H);
+    // Always clear + draw a synchronous fallback FIRST so there's
+    // something to work with even if a caller doesn't await (kept
+    // for robustness; every current call site does await).
+    sctx.clearRect(0, 0, physW, physH);
+    sctx.setTransform(CANVAS_FX_OVERSAMPLE, 0, 0, CANVAS_FX_OVERSAMPLE, 0, 0);
 
     try {
       if (kind === "IMG" && node && node.complete && node.naturalWidth > 0) {
         sctx.drawImage(node, 0, 0, W, H);
         layer._weirdSourceKey = key; layer._weirdSourceRasterOK = true;
-        return;
+        return null;   // synchronous completion — no genuine wait needed
       }
       if (kind === "SHAPE") {
         // Synchronous fallback: draw the shape's fill color as its
@@ -4387,63 +4676,73 @@
           sctx.strokeRect(s.strokeWidth / 2, s.strokeWidth / 2, W - s.strokeWidth, H - s.strokeWidth);
         }
         layer._weirdSourceKey = key; layer._weirdSourceRasterOK = true;
-        return;
+        return null;   // synchronous completion — no genuine wait needed
       }
-      if (kind === "SVG" && node && !layer._weirdRasterInFlight) {
-        // Serialize SVG with explicit dimensions so the loaded Image
-        // renders at the correct size.  Runs async — first frame will
-        // use whatever's currently in the source canvas (blank or
-        // last-rasterized); subsequent frames use the fresh raster.
-        layer._weirdRasterInFlight = true;
-        try {
-          // Clone and add explicit width/height so <img src=svgblob> sizes correctly
-          const clone = node.cloneNode(true);
-          clone.setAttribute("width", String(W));
-          clone.setAttribute("height", String(H));
-          if (!clone.getAttribute("xmlns")) clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-          const outer = new XMLSerializer().serializeToString(clone);
-          const svgBlob = new Blob([outer], { type: "image/svg+xml;charset=utf-8" });
-          const url = URL.createObjectURL(svgBlob);
-          const img = new Image();
-          img.onload = () => {
-            try {
-              const ctx2 = src.getContext("2d");
-              ctx2.clearRect(0, 0, W, H);
-              ctx2.drawImage(img, 0, 0, W, H);
-              layer._weirdSourceKey = key; layer._weirdSourceRasterOK = true;
-            } catch (e) {}
-            URL.revokeObjectURL(url);
-            layer._weirdRasterInFlight = false;
-          };
-          img.onerror = () => {
-            URL.revokeObjectURL(url);
-            layer._weirdRasterInFlight = false;
-          };
-          img.src = url;
-        } catch (e) { layer._weirdRasterInFlight = false; }
+      if (kind === "SVG" && node) {
+        // If a raster for this exact key is already in flight, await
+        // that same promise rather than starting a second one.
+        if (layer._weirdRasterInFlight && layer._weirdRasterInFlightKey === key) {
+          return layer._weirdRasterInFlight;
+        }
+        const p = new Promise((resolve) => {
+          try {
+            // Clone and request rasterization at the PHYSICAL
+            // (oversampled) size directly — see function comment for
+            // why this differs from the logical-units-under-transform
+            // approach used for IMG/SHAPE above.
+            const clone = node.cloneNode(true);
+            clone.setAttribute("width", String(physW));
+            clone.setAttribute("height", String(physH));
+            if (!clone.getAttribute("xmlns")) clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+            const outer = new XMLSerializer().serializeToString(clone);
+            const svgBlob = new Blob([outer], { type: "image/svg+xml;charset=utf-8" });
+            const url = URL.createObjectURL(svgBlob);
+            const img = new Image();
+            img.onload = () => {
+              try {
+                const ctx2 = src.getContext("2d");
+                ctx2.setTransform(1, 0, 0, 1, 0, 0);   // draw the already-physical-resolution bitmap 1:1, no further scaling
+                ctx2.clearRect(0, 0, physW, physH);
+                ctx2.drawImage(img, 0, 0, physW, physH);
+                layer._weirdSourceKey = key; layer._weirdSourceRasterOK = true;
+              } catch (e) {}
+              URL.revokeObjectURL(url);
+              layer._weirdRasterInFlight = null;
+              layer._weirdRasterInFlightKey = null;
+              resolve();
+            };
+            img.onerror = () => {
+              URL.revokeObjectURL(url);
+              layer._weirdRasterInFlight = null;
+              layer._weirdRasterInFlightKey = null;
+              resolve();   // resolve (not reject) — caller proceeds with whatever's in the source canvas already
+            };
+            img.src = url;
+          } catch (e) {
+            layer._weirdRasterInFlight = null;
+            layer._weirdRasterInFlightKey = null;
+            resolve();
+          }
+        });
+        layer._weirdRasterInFlight = p;
+        layer._weirdRasterInFlightKey = key;
+        return p;
       }
     } catch (e) {}
+    return null;   // synchronous completion — no genuine wait needed
   }
 
   /* Public entry — non-text layers.  Called from composeLayer for
      IMG/SVG/SHAPE layers with active weirdGlitch clips. */
+  /* v19.67: thin wrapper around the shared dispatcher, same as
+     applyWeirdSlicesOnText above — every existing call site (preview
+     and export) keeps working unchanged; only the filter each site
+     passes in needs to include the full generic-fx key set instead
+     of just "weirdGlitch" (see GENERIC_FX_STACK_ORDER.includes below). */
   function applyWeirdSlicesOnLayer(layer, weirdClipEntries, sceneTime) {
     if (!layer) return;
-    if (!weirdClipEntries || !weirdClipEntries.length) {
-      if (layer._weirdActive) _clearWeirdCanvas(layer);
-      return;
-    }
     if (!(layer.kind === "IMG" || layer.kind === "SVG" || layer.kind === "SHAPE")) return;
-    const last = weirdClipEntries[weirdClipEntries.length - 1];
-    const clip = last.c;
-    const P = clip.params || {};
-    _ensureWeirdCanvases(layer);
-    _rasterizeAnyLayerToSource(layer);
-    // Composite regardless of raster success — if the source is stale
-    // we still produce a sliced result; the first frame after edit
-    // may show the previous raster but the burst rhythm continues.
-    _compositeWeirdSlices(layer, P, sceneTime);
-    _showWeirdCanvas(layer);
+    return _dispatchGenericCanvasEffects(layer, weirdClipEntries || [], sceneTime);
   }
 
   /* Entry point — called from composeLayer for TEXT layers.
@@ -4701,7 +5000,7 @@
     // EFFECTS.weirdGlitch still runs on composeLayer but is invisible
     // (SVG hidden); harmless.  When no weird clip is active, the
     // canvas is hidden and the SVG shows again.
-    const weirdClips = activeAll.filter(({ c }) => c.fxKey === "weirdGlitch");
+    const weirdClips = activeAll.filter(({ c }) => GENERIC_FX_STACK_ORDER.includes(c.fxKey));
     applyWeirdSlicesOnText(layer, weirdClips, sceneTime);
     // v19.44: BULK TYPING CURSOR — render as a separate SVG overlay
     // element so the underlying text layout is never altered by blink
@@ -9868,8 +10167,15 @@
     for (const L of rasterLayers) {
       const inWindow = t >= L.start - 0.001 && t <= L.start + L.duration + 0.001;
       if (!inWindow) continue;
-      const activeWeird = activeEventClipsAt(L, t).filter((e) => e.c.fxKey === "weirdGlitch");
-      try { applyWeirdSlicesOnLayer(L, activeWeird, t); } catch (e) {}
+      const activeWeird = activeEventClipsAt(L, t).filter((e) => GENERIC_FX_STACK_ORDER.includes(e.c.fxKey));
+      // v19.67: awaited — applyWeirdSlicesOnLayer can now genuinely
+      // need to wait (a fresh SVG rasterization), and this function
+      // reads L._weirdActive/_weirdCanvas on the very next line.  For
+      // TEXT/IMG/SHAPE (and cached SVG) this resolves synchronously
+      // with no extra delay; only a truly fresh SVG raster takes the
+      // async path, and awaiting it here is exactly what makes this
+      // correct rather than reading stale state.
+      try { await applyWeirdSlicesOnLayer(L, activeWeird, t); } catch (e) {}
       if (L._weirdActive && L._weirdCanvas) {
         imgs[L.id] = L._weirdCanvas;
       } else {
@@ -9937,7 +10243,7 @@
       if (layer.kind === "TEXT") applyTextFxAtTime(layer, t, sig);
       else if (layer.kind === "IMG" || layer.kind === "SVG" || layer.kind === "SHAPE") {
         // v19.44: Weird slice compositor for non-text raster layers.
-        const active = activeEventClipsAt(layer, t).filter(e => e.c.fxKey === "weirdGlitch");
+        const active = activeEventClipsAt(layer, t).filter(e => GENERIC_FX_STACK_ORDER.includes(e.c.fxKey));
         applyWeirdSlicesOnLayer(layer, active, t);
       }
       if (r.hud) { anyHud = true; hudFlicker = r.hudFlicker; }
@@ -10375,7 +10681,7 @@
       if (layer.kind === "TEXT") applyTextFxAtTime(layer, t, sig);
       else if (layer.kind === "IMG" || layer.kind === "SVG" || layer.kind === "SHAPE") {
         // v19.44: Weird slice compositor for non-text raster layers.
-        const active = activeEventClipsAt(layer, t).filter(e => e.c.fxKey === "weirdGlitch");
+        const active = activeEventClipsAt(layer, t).filter(e => GENERIC_FX_STACK_ORDER.includes(e.c.fxKey));
         applyWeirdSlicesOnLayer(layer, active, t);
       }
       if (r.hud) { anyHud = true; hudFlicker = r.hudFlicker; }
@@ -18459,7 +18765,7 @@
     requestAnimationFrame(() => fitZoom());
     setTimeout(() => { fitZoom(); renderTimeline(); }, 120);
     // Test hook: expose internals for automated verification (harmless in production).
-    window.__phaserDebug = Object.assign(window.__phaserDebug || {}, { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, FX_EVENT_DEF, fxSupportsLayer, applyTextFxAtTime, applyWeirdSlicesOnText, applyWeirdSlicesOnLayer, updateTextLayersForExportFrame, updateNonTextWeirdSlicesForExportFrame, TEXT_FX_STRING, TEXT_FX_DOM, buildTextLayerSVG, updateTextLayer, startTextEdit, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, paintWebCodecsLayersForExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath, runSvgRepair, collectSvgRepairOps, releaseClipPaths, removeMasks, convertShapesToPaths, audio: () => audio,
+    window.__phaserDebug = Object.assign(window.__phaserDebug || {}, { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, FX_EVENT_DEF, fxSupportsLayer, applyTextFxAtTime, applyWeirdSlicesOnText, applyWeirdSlicesOnLayer, updateTextLayersForExportFrame, updateNonTextWeirdSlicesForExportFrame, _compositeRepeater, _compositeWeirdSlices, _dispatchGenericCanvasEffects, GENERIC_CANVAS_FX, GENERIC_FX_STACK_ORDER, CANVAS_FX_OVERSAMPLE, registerAsset, deleteLayer, TEXT_FX_STRING, TEXT_FX_DOM, buildTextLayerSVG, updateTextLayer, startTextEdit, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, paintWebCodecsLayersForExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath, runSvgRepair, collectSvgRepairOps, releaseClipPaths, removeMasks, convertShapesToPaths, audio: () => audio,
       renderTimeline,
     });
   }
