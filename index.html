@@ -168,8 +168,8 @@
             <div class="dz-glow"></div>
             <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M11 15V4M7 8l4-4 4 4" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 15v2a1 1 0 001 1h12a1 1 0 001-1v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
             <p class="dz-title">Drop files or browse</p>
-            <p class="dz-sub">Multiple SVG, PNG, JPG, WebP, MP4, WebM, MOV</p>
-            <input type="file" id="fileInput" accept=".svg,image/svg+xml,image/png,image/jpeg,image/webp,video/mp4,video/webm,video/quicktime,video/*" multiple hidden />
+            <p class="dz-sub">Multiple SVG, PNG, JPG, WebP, MP4, WebM, MOV, TTF, OTF, WOFF, WOFF2</p>
+            <input type="file" id="fileInput" accept=".svg,image/svg+xml,image/png,image/jpeg,image/webp,video/mp4,video/webm,video/quicktime,video/*,.ttf,.otf,.woff,.woff2,font/ttf,font/otf,font/woff,font/woff2,application/font-woff" multiple hidden />
           </div>
 
           <div class="prop-row" style="margin-top:14px">
@@ -255,7 +255,20 @@
               <!-- canvas frame = fixed artboard/export boundary -->
               <div class="artboard-frame" id="artboardFrame" aria-hidden="true"></div>
               <!-- selection box = selected layer only (different style) -->
-              <div class="selection-box" id="selectionBox" hidden aria-hidden="true"></div>
+              <div class="selection-box" id="selectionBox" hidden aria-hidden="true">
+                <!-- v19.50 resize handles.  On TEXT layers these
+                     modify textStyle.frameWidth / frameHeight (turning
+                     off autoWidth/autoHeight).  On other layer kinds
+                     they simply scale the wrap. -->
+                <div class="sb-handle sb-h-nw" data-handle="nw"></div>
+                <div class="sb-handle sb-h-n"  data-handle="n"></div>
+                <div class="sb-handle sb-h-ne" data-handle="ne"></div>
+                <div class="sb-handle sb-h-e"  data-handle="e"></div>
+                <div class="sb-handle sb-h-se" data-handle="se"></div>
+                <div class="sb-handle sb-h-s"  data-handle="s"></div>
+                <div class="sb-handle sb-h-sw" data-handle="sw"></div>
+                <div class="sb-handle sb-h-w"  data-handle="w"></div>
+              </div>
             </div>
           </div>
         </div>
@@ -282,6 +295,30 @@
             <button class="btn-accent block" id="aiRun">Apply direction</button>
           </div>
           <div class="ai-echo" id="aiEcho" aria-live="polite"></div>
+        </section>
+
+        <!-- v19.58 DIRECTORS (plural) — timeline orchestration.
+             Row content is fully dynamic (rendered by renderDirectorPanel
+             in script.js); this section only provides the container +
+             the "add" controls, matching how the timeline itself is a
+             static shell with JS-rendered tracks. -->
+        <section class="prop-group" id="directorsSection">
+          <div class="group-head"><h3>Directors</h3><span class="badge" id="directorsCountBadge">0</span></div>
+          <p class="group-hint">Each Director independently generates timed events. Focus Snap + Beat sync by default — change per Director.</p>
+          <div id="directorList"></div>
+          <div class="control" style="gap:6px">
+            <button class="t-btn" id="addDirectorBtn" title="Add a new Director (defaults: Focus Snap, synced to Beat)">+ Add Director</button>
+            <select id="directorPresetSelect" class="ctl-num" style="flex:1">
+              <option value="">Presets…</option>
+              <option value="Beat Driven">Beat Driven</option>
+              <option value="Bass Pulse">Bass Pulse</option>
+              <option value="Techno Cut">Techno Cut</option>
+              <option value="Fast Glitch">Fast Glitch</option>
+              <option value="Cinematic Build">Cinematic Build</option>
+              <option value="Photo Sync">Photo Sync (experimental)</option>
+              <option value="Text Sync">Text Sync (experimental)</option>
+            </select>
+          </div>
         </section>
 
         <!-- TRANSFORM -->
@@ -354,19 +391,33 @@
           </div>
           <div class="control"><span class="ctl-label">Font</span>
             <select id="textFontFamily" class="ctl-num" style="min-width:0; flex:1; width:auto; padding: 2px 6px">
-              <option value="Inter">Inter</option>
-              <option value="Roboto">Roboto</option>
-              <option value="Space Grotesk">Space Grotesk</option>
-              <option value="IBM Plex Mono">IBM Plex Mono</option>
-              <option value="JetBrains Mono">JetBrains Mono</option>
-              <option value="Roboto Mono">Roboto Mono</option>
-              <option value="Space Mono">Space Mono</option>
-              <option value="Michroma">Michroma</option>
+              <optgroup label="Built-in" id="fontBuiltinGroup">
+                <option value="Inter">Inter</option>
+                <option value="Roboto">Roboto</option>
+                <option value="Space Grotesk">Space Grotesk</option>
+                <option value="IBM Plex Mono">IBM Plex Mono</option>
+                <option value="JetBrains Mono">JetBrains Mono</option>
+                <option value="Roboto Mono">Roboto Mono</option>
+                <option value="Space Mono">Space Mono</option>
+                <option value="Michroma">Michroma</option>
+              </optgroup>
+              <!-- v19.53 uploaded fonts populate here via JS: -->
+              <optgroup label="Uploaded Fonts" id="fontProjectGroup"></optgroup>
             </select>
+            <!-- v19.54 Upload Fonts — inline with the Font dropdown,
+                 prominently styled as a real button.  Accepts multiple
+                 TTF/OTF/WOFF/WOFF2 files at once. -->
+            <label id="fontUploadBtn" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:var(--panel);background:var(--accent);cursor:pointer;padding:4px 8px;border-radius:4px;margin-left:6px;white-space:nowrap" title="Upload TTF, OTF, WOFF or WOFF2 files (multiple at once)">
+              <input type="file" id="fontUploadInput" accept=".ttf,.otf,.woff,.woff2,font/ttf,font/otf,font/woff,font/woff2,application/font-woff" style="display:none" multiple />
+              ↑ Upload Fonts
+            </label>
+          </div>
+          <div class="control"><span class="ctl-label" style="opacity:0.6">&nbsp;</span>
+            <span id="fontUploadStatus" style="font-size:11px;color:var(--ink-3);flex:1"></span>
           </div>
           <div class="control"><span class="ctl-label">Size</span>
-            <input type="number" min="8" max="800" step="1" value="64" id="textSize" class="ctl-num" />
-            <input type="range" min="8" max="400" step="1" value="64" id="textSizeRange" />
+            <input type="number" min="1" max="800" step="0.5" value="64" id="textSize" class="ctl-num" title="Font size in pt. Values under 8 are allowed; decimals like 3.5 work." />
+            <input type="range" min="1" max="400" step="0.5" value="64" id="textSizeRange" />
           </div>
           <div class="control"><span class="ctl-label">Weight</span>
             <select id="textWeight" class="ctl-num" style="min-width:0; flex:1; width:auto; padding: 2px 6px">
@@ -396,6 +447,50 @@
           </div>
           <div class="control"><span class="ctl-label">Line ht</span>
             <input type="number" min="0.5" max="4" step="0.05" value="1.2" id="textLineHeight" class="ctl-num" title="Line height multiplier (1.2 = 120%)" />
+          </div>
+          <!-- v19.54 Zero Style — Default vs Slashed Zero via OpenType.
+               Never replaces '0' with 'Ø'; uses font-feature-settings
+               "zero" 1 which is a no-op on fonts without the feature.
+               Live inspection is done client-side (see zeroSupportProbe
+               in script.js) to display an "unsupported" note if the
+               current font doesn't actually render a slashed variant. -->
+          <div class="control"><span class="ctl-label">Zero Style</span>
+            <select id="textZeroStyle" class="ctl-num" title="Font Default keeps the font's own zero. Slashed Zero requests the OpenType 'zero' feature. If unsupported by the current font, the '0' remains unchanged and a note appears below.">
+              <option value="default">Font Default</option>
+              <option value="slashed">Slashed Zero</option>
+            </select>
+          </div>
+          <div class="control"><span class="ctl-label" style="opacity:0.6">&nbsp;</span>
+            <span id="zeroSupportNote" style="font-size:11px;color:var(--ink-3);flex:1"></span>
+          </div>
+          <!-- Legacy checkbox kept hidden for backward compatibility
+               with saved projects that reference the old id. -->
+          <input type="checkbox" id="textSlashedZero" style="display:none" />
+          <!-- v19.46 Text Frame — controls whether the frame clips text. -->
+          <div class="control"><span class="ctl-label">Overflow</span>
+            <select id="textFrameOverflow" class="ctl-num" title="Visible = text and effects can extend outside the frame (default). Clip = frame acts as a mask.">
+              <option value="visible">Visible</option>
+              <option value="clip">Clip</option>
+            </select>
+          </div>
+          <!-- v19.50 Frame width / height numeric + auto toggles -->
+          <div class="control"><span class="ctl-label">Frame W</span>
+            <input type="number" min="20" max="4000" step="1" id="textFrameW" class="ctl-num" title="Frame width in artboard px.  Reflows text; never changes font size." />
+            <label style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;font-size:11px;color:var(--ink-2)">
+              <input type="checkbox" id="textAutoWidth" /> Auto
+            </label>
+          </div>
+          <div class="control"><span class="ctl-label">Frame H</span>
+            <input type="number" min="20" max="4000" step="1" id="textFrameH" class="ctl-num" title="Frame height in artboard px.  Never scales text; increases the layer's rendered area." />
+            <label style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;font-size:11px;color:var(--ink-2)">
+              <input type="checkbox" id="textAutoHeight" /> Auto
+            </label>
+          </div>
+          <div class="control"><span class="ctl-label">Auto Fit</span>
+            <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-2);cursor:pointer">
+              <input type="checkbox" id="textAutoFit" title="Scale font to fit within frame.  Off by default." />
+              Scale font to fit frame
+            </label>
           </div>
         </section>
 
@@ -756,12 +851,41 @@
         <span class="t-btn-label">Markers</span>
       </button>
       <!-- v18.8: Fit-all + Zoom-to-selection -->
-      <button class="t-btn" id="zoomFitAllBtn" title="Fit entire composition to timeline width (Shift+F)">
+      <button class="t-btn" id="zoomFitAllBtn" title="Fit entire timeline to view (Ctrl/Cmd+0, Shift+F, or double-click the Zoom slider)">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4V2h2M14 4V2h-2M2 12v2h2M14 12v2h-2M5 6l-3 2 3 2M11 6l3 2-3 2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
       <button class="t-btn" id="zoomToSelBtn" title="Zoom to selected clip (F)">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="3" y="6" width="10" height="4" stroke="currentColor" stroke-width="1.3"/><path d="M6 4v-2M10 4v-2M6 14v-2M10 14v-2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
       </button>
+      <!-- v19.57: compact keyboard-shortcuts reference, near the
+           timeline controls per this session's nav-shortcut spec.
+           Native title tooltip keeps this a zero-JS, zero-layout-risk
+           addition — hover to read, no popover state to manage. -->
+      <button class="t-btn" id="tlShortcutsHelpBtn" title="Timeline shortcuts:
+Space — Play/Pause
+←/→ — Seek 1 frame (Shift = 10 frames)
+Alt+←/→ — Move selected clip (Alt+Shift = trim end)
+Home/End — Jump to start/end
+Ctrl/Cmd+0 — Fit timeline (or double-click Zoom slider)
+Ctrl/Cmd or Alt + Wheel — Zoom at cursor
+Shift + Wheel — Scroll horizontally
++/− — Zoom in/out (timeline focused)
+Escape — Cancel current drag
+Shift+F — Fit timeline · F — Fit canvas">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.3" stroke="currentColor" stroke-width="1.2"/><path d="M6.2 6.1a1.8 1.8 0 013.4.9c0 1.2-1.6 1.3-1.6 2.6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="8" cy="11.4" r="0.6" fill="currentColor"/></svg>
+      </button>
+      <!-- v19.58 item 6: BPM ruler mode selector.  Purely a visual
+           label switch (see renderTimeline's ruler-mode branch) —
+           seconds stay the internal timing source of truth.  Beats
+           and Bars & Beats options are disabled via JS whenever
+           STATE.bpm is 0 (no BPM detected/entered), with a tooltip
+           explaining why, per "if BPM is unavailable, disable the
+           BPM modes and explain why." -->
+      <div class="seg" id="rulerModeSeg" title="Timeline ruler display — a visual representation only; clip/marker/playhead positions never change when you switch modes.">
+        <button class="seg-btn active" data-ruler-mode="seconds">Sec</button>
+        <button class="seg-btn" data-ruler-mode="beats" id="rulerModeBeatsBtn">Beats</button>
+        <button class="seg-btn" data-ruler-mode="barsbeats" id="rulerModeBarsBtn">Bars</button>
+      </div>
       <div class="tl-zoom">
         <span class="tl-label" style="margin-left:0">Zoom</span>
         <input type="range" id="tlZoom" min="0.25" max="16" step="0.05" value="1">
