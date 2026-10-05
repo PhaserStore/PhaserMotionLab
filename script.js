@@ -1440,11 +1440,12 @@
     let ok = 0;
     files.forEach((file) => {
       const reader = new FileReader();
-      if (file.type.includes("svg") || file.name.toLowerCase().endsWith(".svg")) { reader.onload = (e) => addSvgAsset(file.name, e.target.result); reader.readAsText(file); ok++; }
+      if (/\.(ttf|otf|woff2?)$/i.test(file.name) || file.type.includes("font")) { addFontAsset(file); ok++; }
+      else if (file.type.includes("svg") || file.name.toLowerCase().endsWith(".svg")) { reader.onload = (e) => addSvgAsset(file.name, e.target.result); reader.readAsText(file); ok++; }
       else if (file.type.startsWith("image/")) { reader.onload = (e) => addImageAsset(file.name, e.target.result); reader.readAsDataURL(file); ok++; }
       else if (file.type.startsWith("video/") || /\.(mp4|webm|mov|m4v)$/i.test(file.name)) { addVideoAsset(file); ok++; }
     });
-    if (!ok) toast("No supported files (SVG, PNG, JPG, WebP, MP4, WebM)");
+    if (!ok) toast("No supported files (SVG, PNG, JPG, WebP, MP4, WebM, TTF, OTF, WOFF, WOFF2)");
   }
 
   function addSvgAsset(name, svgText) {
@@ -2290,26 +2291,247 @@
   }
   function registerAsset(name, kind, node, dataUrl, meta) {
     const asset = { id: ++idSeq, name, kind, node, dataUrl, meta: meta || { natW: 512, natH: 512, complex: false } };
-    assets.push(asset); renderAssetList(); addLayerFromAsset(asset); toast(`Added ${name}`);
+    assets.push(asset); renderAssetList();
+    // v19.68: FONT assets are a resource used BY text layers, not a
+    // placeable canvas object — unlike IMG/SVG/VIDEO, importing one
+    // must never auto-create a layer.
+    if (kind !== "FONT") addLayerFromAsset(asset);
+    toast(`Added ${name}`);
+  }
+
+  // ================================================================
+  // v19.68 FONT ASSETS — first-class asset type (Assets → Fonts).
+  //
+  // Design: each imported font FILE is parsed for its real OpenType
+  // family/subfamily name (TTF/OTF; WOFF/WOFF2 fall back to filename
+  // — parsing those requires decoding TableDirectory + Brotli, out of
+  // scope for V1).  Multiple files that resolve to the SAME display
+  // family (e.g. "Inter-Regular.ttf" + "Inter-Bold.ttf") become
+  // multiple FACES of ONE font asset, not separate duplicate assets —
+  // matching how a real font family works.
+  //
+  // Critically, each font asset gets a GUARANTEED-UNIQUE internal CSS
+  // font-family name (upf<id>), never the font's own parsed name.
+  // Reusing the parsed name directly (what the previous text-panel
+  // upload button did) risks colliding with a built-in Google Fonts
+  // family of the same name, or with another uploaded font — causing
+  // document.fonts to hold two different FontFace registrations
+  // under one identifier with undefined which-wins behavior.  The
+  // internal name is what layer.textStyle.fontFamily actually holds
+  // and what every rendering path (SVG text, the Repeater/Weird
+  // Glitch canvas source, the edit overlay) uses as a CSS value; the
+  // human-readable name is cosmetic, shown only in the dropdown/card.
+  //
+  // A font is NEVER added to fontAssets (hence never selectable,
+  // never appears in the Fonts library or the text font dropdown)
+  // until FontFace.load() has resolved successfully — satisfying
+  // "do not make the font selectable until load() has completed"
+  // by construction, not by a separate flag to check later.
+  const fontAssets = [];   // [{ id, name, internalFamily, faces: [{weight,style,subfamily,filename}] }]
+  function _internalFontFamilyForId(id) { return "upf" + id; }
+  // Parse OpenType 'name' table for real family + subfamily.
+  // TTF/OTF: SFNT container starting with 0x00010000, 'OTTO', or 'true'.
+  function parseFontName(buf) {
+    const dv = new DataView(buf);
+    const magic = dv.getUint32(0);
+    if (magic !== 0x00010000 && magic !== 0x4F54544F /* 'OTTO' */ && magic !== 0x74727565 /* 'true' */) {
+      return null;
+    }
+    try {
+      const numTables = dv.getUint16(4);
+      let nameOffset = 0;
+      for (let i = 0; i < numTables; i++) {
+        const rec = 12 + i * 16;
+        const tag = String.fromCharCode(dv.getUint8(rec), dv.getUint8(rec + 1), dv.getUint8(rec + 2), dv.getUint8(rec + 3));
+        if (tag === "name") { nameOffset = dv.getUint32(rec + 8); break; }
+      }
+      if (!nameOffset) return null;
+      const count = dv.getUint16(nameOffset + 2);
+      const stringOffset = nameOffset + dv.getUint16(nameOffset + 4);
+      const results = { family: null, subfamily: null };
+      for (let i = 0; i < count; i++) {
+        const r = nameOffset + 6 + i * 12;
+        const platformID = dv.getUint16(r);
+        const encodingID = dv.getUint16(r + 2);
+        const nameID = dv.getUint16(r + 6);
+        const length = dv.getUint16(r + 8);
+        const offset = dv.getUint16(r + 10);
+        if (nameID !== 1 && nameID !== 2 && nameID !== 16 && nameID !== 17) continue;
+        let str = "";
+        if (platformID === 3 && encodingID === 1) {
+          for (let j = 0; j < length; j += 2) str += String.fromCharCode(dv.getUint16(stringOffset + offset + j));
+        } else if (platformID === 1 && encodingID === 0) {
+          for (let j = 0; j < length; j++) str += String.fromCharCode(dv.getUint8(stringOffset + offset + j));
+        } else continue;
+        if (nameID === 16 || (nameID === 1 && !results.family)) results.family = str;
+        if (nameID === 17 || (nameID === 2 && !results.subfamily)) results.subfamily = str;
+      }
+      return results;
+    } catch (e) { return null; }
+  }
+  function subfamilyToCSSDescriptors(subfamily) {
+    if (!subfamily) return { weight: "400", style: "normal" };
+    const s = subfamily.toLowerCase();
+    let weight = "400", style = "normal";
+    if (s.includes("italic") || s.includes("oblique")) style = "italic";
+    if (s.includes("thin"))         weight = "100";
+    else if (s.includes("extralight") || s.includes("ultralight")) weight = "200";
+    else if (s.includes("light"))   weight = "300";
+    else if (s.includes("medium"))  weight = "500";
+    else if (s.includes("semibold") || s.includes("demibold")) weight = "600";
+    else if (s.includes("extrabold") || s.includes("ultrabold")) weight = "800";
+    else if (s.includes("black") || s.includes("heavy")) weight = "900";
+    else if (s.includes("bold"))    weight = "700";
+    return { weight, style };
+  }
+  async function addFontAsset(file) {
+    try {
+      const buf = await file.arrayBuffer();
+      const meta = parseFontName(buf) || {};
+      let family = meta.family;
+      let subfamily = meta.subfamily;
+      if (!family) {
+        family = file.name
+          .replace(/\.(ttf|otf|woff2?)$/i, "")
+          .replace(/[-_ ](Regular|Medium|Semibold|SemiBold|DemiBold|Bold|Black|Light|Thin|Italic|Oblique|BoldItalic|MediumItalic|SemiBoldItalic|LightItalic|ThinItalic)$/i, "")
+          .trim() || "Uploaded Font";
+        const sfMatch = file.name.match(/(BoldItalic|MediumItalic|SemiBoldItalic|LightItalic|ThinItalic|Regular|Medium|Semibold|SemiBold|DemiBold|Bold|Black|Light|Thin|Italic|Oblique)/i);
+        if (sfMatch) subfamily = sfMatch[1];
+      }
+      family = family.replace(/[^A-Za-z0-9 _-]/g, "").trim() || "Uploaded";
+      const { weight, style } = subfamilyToCSSDescriptors(subfamily);
+
+      // Same display family as an already-registered font asset? Add
+      // this file as an additional FACE under that asset's existing
+      // internal family, rather than creating a second, duplicate
+      // asset entry.
+      let existing = fontAssets.find((a) => a.name === family);
+      const internalFamily = existing ? existing.internalFamily : _internalFontFamilyForId(++idSeq);
+
+      const face = new FontFace(internalFamily, buf, { weight, style });
+      await face.load();   // only after this resolves does the font become selectable anywhere
+      document.fonts.add(face);
+
+      if (existing) {
+        existing.faces.push({ weight, style, subfamily: subfamily || "Regular", filename: file.name });
+      } else {
+        existing = { id: ++idSeq, name: family, kind: "FONT", internalFamily, faces: [{ weight, style, subfamily: subfamily || "Regular", filename: file.name }] };
+        fontAssets.push(existing);
+        assets.push(existing);   // also listed in the main asset library, matching Images/SVG/Video
+      }
+      renderAssetList();
+      refreshFontDropdowns();
+      toast(`Font added: ${family}`);
+      return { ok: true, asset: existing };
+    } catch (err) {
+      toast(`Couldn't load font: ${file.name}`);
+      return { ok: false, error: String(err && err.message || err) };
+    }
+  }
+  // Re-populate every text-font <select>'s "Uploaded Fonts" optgroup
+  // from the current fontAssets list.  Called after any font is
+  // added or removed so the dropdown and the Assets panel never
+  // disagree about what's available.
+  function refreshFontDropdowns() {
+    const group = document.getElementById("fontProjectGroup");
+    if (!group) return;
+    const prevValue = el.textFontFamily ? el.textFontFamily.value : null;
+    group.innerHTML = "";
+    for (const a of fontAssets) {
+      const opt = document.createElement("option");
+      opt.value = a.internalFamily;
+      opt.textContent = `${a.name} (${a.faces.length} face${a.faces.length === 1 ? "" : "s"})`;
+      group.appendChild(opt);
+    }
+    // Preserve the current selection if it's still valid (e.g. after
+    // adding an unrelated font); browsers reset <select> value to the
+    // first option when innerHTML is replaced wholesale otherwise.
+    if (prevValue && el.textFontFamily && Array.from(el.textFontFamily.options).some(o => o.value === prevValue)) {
+      el.textFontFamily.value = prevValue;
+    }
   }
   function renderAssetList() {
     el.assetCount.textContent = assets.length;
     if (!assets.length) { el.assetList.innerHTML = '<div class="empty-note">Nothing here yet. Add files to start.</div>'; return; }
     el.assetList.innerHTML = "";
     assets.forEach((a) => {
-      const card = document.createElement("div"); card.className = "asset-card"; card.title = `${a.name} — click to add as a layer`;
-      // VIDEO assets use the first-frame snapshot dataURL, same as IMG.
-      // Only SVG is rendered from a live <svg> node.
-      const thumb = (a.kind === "IMG" || a.kind === "VIDEO")
-        ? `<img class="asset-thumb" src="${a.dataUrl}" alt="">`
-        : `<div class="asset-thumb">${svgThumb(a.node)}</div>`;
-      card.innerHTML = `<span class="asset-kind">${a.kind}</span><button class="asset-del" title="Remove from library">\u00d7</button>` + thumb;
-      card.addEventListener("click", (e) => { if (e.target.classList.contains("asset-del")) { removeAsset(a); e.stopPropagation(); } else { addLayerFromAsset(a); toast(`Layer added: ${a.name}`); } });
+      const card = document.createElement("div"); card.className = "asset-card";
+      if (a.kind === "FONT") {
+        // v19.68: Font cards preview "Aa" rendered IN the uploaded
+        // font itself (not a generic icon) so the user can see what
+        // it actually looks like before using it.  Clicking applies
+        // it to the currently-selected TEXT layer directly — fonts
+        // aren't placeable canvas objects, so there's no "add as a
+        // layer" behavior to fall back to the way IMG/SVG/VIDEO have.
+        card.title = `${a.name} — click to apply to the selected text layer`;
+        card.innerHTML = `<span class="asset-kind">FONT</span><button class="asset-del" title="Remove from library">\u00d7</button>` +
+          `<div class="asset-thumb" style="display:flex;align-items:center;justify-content:center;font-size:28px;font-family:'${a.internalFamily}',sans-serif;color:var(--text)">Aa</div>`;
+        card.addEventListener("click", (e) => {
+          if (e.target.classList.contains("asset-del")) { removeAsset(a); e.stopPropagation(); return; }
+          if (selectedLayer && selectedLayer.kind === "TEXT") {
+            _requestFontChangeFromAsset(selectedLayer, a);
+            toast(`Font applied: ${a.name}`);
+          } else {
+            toast("Select a text layer first, then click a font to apply it");
+          }
+        });
+      } else {
+        // VIDEO assets use the first-frame snapshot dataURL, same as IMG.
+        // Only SVG is rendered from a live <svg> node.
+        card.title = `${a.name} — click to add as a layer`;
+        const thumb = (a.kind === "IMG" || a.kind === "VIDEO")
+          ? `<img class="asset-thumb" src="${a.dataUrl}" alt="">`
+          : `<div class="asset-thumb">${svgThumb(a.node)}</div>`;
+        card.innerHTML = `<span class="asset-kind">${a.kind}</span><button class="asset-del" title="Remove from library">\u00d7</button>` + thumb;
+        card.addEventListener("click", (e) => { if (e.target.classList.contains("asset-del")) { removeAsset(a); e.stopPropagation(); } else { addLayerFromAsset(a); toast(`Layer added: ${a.name}`); } });
+      }
       el.assetList.appendChild(card);
     });
   }
   function svgThumb(node) { const c = node.cloneNode(true); c.setAttribute("width", "100%"); c.setAttribute("height", "100%"); return c.outerHTML; }
-  function removeAsset(a) { const i = assets.indexOf(a); if (i >= 0) assets.splice(i, 1); renderAssetList(); }
+  // v19.68: applies a font ASSET (as opposed to picking a family name
+  // from the dropdown) to a text layer.  Simpler than the dropdown's
+  // own font-change path — an asset in fontAssets is, by construction,
+  // already successfully through FontFace.load(), so there's no
+  // "wait for it" step needed here; this only exists as a distinct
+  // entry point because the Assets-panel card click and the dropdown
+  // selection are different gestures that both need to end up at the
+  // same place (layer.textStyle.fontFamily = internalFamily).
+  function _requestFontChangeFromAsset(layer, asset) {
+    if (!layer || layer.kind !== "TEXT" || !asset) return;
+    updateTextLayer(layer, { fontFamily: asset.internalFamily, fontMissing: false, fontMissingName: null });
+    if (typeof window.__updateZeroSupportNote === "function") window.__updateZeroSupportNote();
+    paintIfPaused();
+    renderInspector();
+  }
+  function removeAsset(a) {
+    const i = assets.indexOf(a); if (i >= 0) assets.splice(i, 1);
+    if (a.kind === "FONT") {
+      const fi = fontAssets.indexOf(a); if (fi >= 0) fontAssets.splice(fi, 1);
+      // Remove every registered FontFace under this asset's internal
+      // family — document.fonts can hold multiple (one per weight/
+      // style face) under the same family name.
+      document.fonts.forEach((f) => { if (f.family === a.internalFamily || f.family === `"${a.internalFamily}"`) document.fonts.delete(f); });
+      // v19.68 MISSING-FONT STATE: any TEXT layer currently using this
+      // font loses its source — rather than silently falling back to
+      // a different font (explicitly disallowed), flag the layer so
+      // the inspector can show a clear "font missing" state and the
+      // user can relink it (re-upload the same font, or pick another
+      // from the dropdown) rather than wonder why text suddenly
+      // rendered differently with no explanation.
+      for (const L of layers) {
+        if (L.kind === "TEXT" && L.textStyle && L.textStyle.fontFamily === a.internalFamily) {
+          L.textStyle.fontMissing = true;
+          L.textStyle.fontMissingName = a.name;
+          buildTextLayerSVG(L);
+        }
+      }
+      paintIfPaused();
+      refreshFontDropdowns();
+      renderInspector();
+    }
+    renderAssetList();
+  }
 
   /* ================ v19.0 TEXT TOOL ================
      Native text layer support.  Text layers are stored as
@@ -15613,174 +15835,33 @@
         _requestFontChange({ fontFamily: el.textFontFamily.value, _isSystemFontSelection: fromSystemGroup });
       });
     }
-    // v19.54 FONT UPLOAD with real metadata parsing.
-    //
-    // Reads user-selected TTF/OTF/WOFF/WOFF2 files.  Parses the OpenType
-    // 'name' table (TrueType/OpenType format) to extract the REAL font
-    // family name and subfamily (Regular/Bold/Italic/Bold Italic/etc.)
-    // stored in the font itself — not guessed from filename.
-    //
-    // Multiple files with the SAME name-table family are registered
-    // as one family with distinct FontFace weight/style descriptors,
-    // so browser picks the correct real face for a given weight+style
-    // combo (never synthesizes).  Font dropdown shows one entry per
-    // family; subfamilies appear as available weights in the Weight
-    // control (already handles numeric weights) and italic toggle.
-    //
-    // Format table:
-    //   Regular      → 400 / normal
-    //   Medium       → 500 / normal
-    //   Semibold     → 600 / normal
-    //   Bold         → 700 / normal
-    //   Italic       → 400 / italic
-    //   Bold Italic  → 700 / italic
-    //   Black        → 900 / normal
-    //   etc.
-    const uploadedFontFamilies = new Map();   // family → { faces: [{weight, style, face, subfamily}] }
-    // Parse OpenType name table for real family + subfamily.
-    // TTF/OTF: SFNT container starting with 0x00010000 or 'OTTO'.
-    // WOFF: starts with 'wOFF'; WOFF2: 'wOF2'.  For WOFF/WOFF2 we
-    // fall back to filename because parsing them requires decoding
-    // TableDirectory + Brotli (WOFF2).  For TTF/OTF we parse directly.
-    function parseFontName(buf) {
-      const dv = new DataView(buf);
-      const magic = dv.getUint32(0);
-      // Only parse plain TTF/OTF here.  WOFF/WOFF2 fall back to filename.
-      if (magic !== 0x00010000 && magic !== 0x4F54544F /* 'OTTO' */ && magic !== 0x74727565 /* 'true' */) {
-        return null;
-      }
-      try {
-        const numTables = dv.getUint16(4);
-        let nameOffset = 0, nameLength = 0;
-        for (let i = 0; i < numTables; i++) {
-          const rec = 12 + i * 16;
-          const tag = String.fromCharCode(dv.getUint8(rec), dv.getUint8(rec + 1), dv.getUint8(rec + 2), dv.getUint8(rec + 3));
-          if (tag === "name") {
-            nameOffset = dv.getUint32(rec + 8);
-            nameLength = dv.getUint32(rec + 12);
-            break;
-          }
-        }
-        if (!nameOffset) return null;
-        // name table: format(2), count(2), stringOffset(2), records[count]
-        const count = dv.getUint16(nameOffset + 2);
-        const stringOffset = nameOffset + dv.getUint16(nameOffset + 4);
-        const results = { family: null, subfamily: null };
-        for (let i = 0; i < count; i++) {
-          const r = nameOffset + 6 + i * 12;
-          const platformID = dv.getUint16(r);
-          const encodingID = dv.getUint16(r + 2);
-          const nameID = dv.getUint16(r + 6);
-          const length = dv.getUint16(r + 8);
-          const offset = dv.getUint16(r + 10);
-          if (nameID !== 1 && nameID !== 2 && nameID !== 16 && nameID !== 17) continue;
-          // Read string.  Windows platform (3) with encoding 1 = UTF-16BE.
-          // Mac platform (1) with encoding 0 = MacRoman (ASCII subset OK).
-          let str = "";
-          if (platformID === 3 && encodingID === 1) {
-            // UTF-16BE
-            for (let j = 0; j < length; j += 2) {
-              str += String.fromCharCode(dv.getUint16(stringOffset + offset + j));
-            }
-          } else if (platformID === 1 && encodingID === 0) {
-            for (let j = 0; j < length; j++) {
-              str += String.fromCharCode(dv.getUint8(stringOffset + offset + j));
-            }
-          } else continue;
-          // Prefer typographic family (nameID 16) over legacy family (1);
-          // typographic subfamily (17) over legacy subfamily (2).
-          if (nameID === 16 || (nameID === 1 && !results.family)) results.family = str;
-          if (nameID === 17 || (nameID === 2 && !results.subfamily)) results.subfamily = str;
-        }
-        return results;
-      } catch (e) {
-        return null;
-      }
-    }
-    // Map subfamily string → { weight, style } for CSS.
-    function subfamilyToCSSDescriptors(subfamily) {
-      if (!subfamily) return { weight: "400", style: "normal" };
-      const s = subfamily.toLowerCase();
-      let weight = "400", style = "normal";
-      if (s.includes("italic") || s.includes("oblique")) style = "italic";
-      if (s.includes("thin"))         weight = "100";
-      else if (s.includes("extralight") || s.includes("ultralight")) weight = "200";
-      else if (s.includes("light"))   weight = "300";
-      else if (s.includes("medium"))  weight = "500";
-      else if (s.includes("semibold") || s.includes("demibold")) weight = "600";
-      else if (s.includes("extrabold") || s.includes("ultrabold")) weight = "800";
-      else if (s.includes("black") || s.includes("heavy")) weight = "900";
-      else if (s.includes("bold"))    weight = "700";
-      return { weight, style };
-    }
+    // v19.68: the "Upload Fonts" button in the text panel is now a
+    // thin wrapper over addFontAsset — the SAME canonical font-asset
+    // registration path the Assets panel dropzone uses.  Previously
+    // this had its own, separate parsing/FontFace/registry logic
+    // (duplicated from — and registering under a DIFFERENT, name-
+    // collision-prone scheme than — the asset system).  Both entry
+    // points now produce identical, consistent results: one font
+    // asset in fontAssets, one entry in the Fonts library, one
+    // dropdown option, a guaranteed-unique internal family name.
     const fontUploadInput = document.getElementById("fontUploadInput");
     const fontUploadStatus = document.getElementById("fontUploadStatus");
-    const fontProjectGroup = document.getElementById("fontProjectGroup");
     if (fontUploadInput) {
       fontUploadInput.addEventListener("change", async () => {
         const files = Array.from(fontUploadInput.files || []);
         if (!files.length) return;
         const results = [];
         for (const file of files) {
-          try {
-            const buf = await file.arrayBuffer();
-            // Parse font metadata for real family + subfamily.
-            const meta = parseFontName(buf) || {};
-            // Fallback: derive family from filename with subfamily stripped.
-            let family = meta.family;
-            let subfamily = meta.subfamily;
-            if (!family) {
-              // Strip extension + common face suffixes
-              family = file.name
-                .replace(/\.(ttf|otf|woff2?)$/i, "")
-                .replace(/[-_ ](Regular|Medium|Semibold|SemiBold|DemiBold|Bold|Black|Light|Thin|Italic|Oblique|BoldItalic|MediumItalic|SemiBoldItalic|LightItalic|ThinItalic)$/i, "")
-                .trim() || "Uploaded Font";
-              // Guess subfamily from filename if not in metadata.
-              const sfMatch = file.name.match(/(BoldItalic|MediumItalic|SemiBoldItalic|LightItalic|ThinItalic|Regular|Medium|Semibold|SemiBold|DemiBold|Bold|Black|Light|Thin|Italic|Oblique)/i);
-              if (sfMatch) subfamily = sfMatch[1];
-            }
-            family = family.replace(/[^A-Za-z0-9 _-]/g, "").trim() || "Uploaded";
-            const { weight, style } = subfamilyToCSSDescriptors(subfamily);
-            // Register with FontFace API using REAL descriptors so the
-            // browser picks the correct file for each weight/style
-            // combination — no synthesized bold/italic.
-            const face = new FontFace(family, buf, { weight, style });
-            await face.load();
-            document.fonts.add(face);
-            // Track for the family-face registry.
-            if (!uploadedFontFamilies.has(family)) uploadedFontFamilies.set(family, { faces: [] });
-            uploadedFontFamilies.get(family).faces.push({ weight, style, subfamily: subfamily || "Regular", filename: file.name });
-            results.push({ ok: true, family, subfamily: subfamily || "Regular", weight, style });
-          } catch (err) {
-            results.push({ ok: false, error: String(err && err.message || err), name: file.name });
-          }
-        }
-        // Update the dropdown: one option per family (browser picks
-        // correct face at render time from weight+style).
-        if (fontProjectGroup) {
-          fontProjectGroup.innerHTML = "";
-          for (const [family, info] of uploadedFontFamilies.entries()) {
-            const opt = document.createElement("option");
-            opt.value = family;
-            opt.textContent = `${family} (${info.faces.length} face${info.faces.length === 1 ? "" : "s"})`;
-            fontProjectGroup.appendChild(opt);
-          }
+          const r = await addFontAsset(file);
+          results.push(r);
         }
         if (fontUploadStatus) {
-          const ok = results.filter(r => r.ok);
-          const fail = results.filter(r => !r.ok);
-          const familiesLoaded = new Set(ok.map(r => r.family));
-          fontUploadStatus.textContent = ok.length
-            ? `✓ ${ok.length} face${ok.length === 1 ? "" : "s"} loaded into ${familiesLoaded.size} famil${familiesLoaded.size === 1 ? "y" : "ies"}${fail.length ? ` · ${fail.length} failed` : ""}`
-            : `✗ ${fail.length} failed`;
+          const ok = results.filter(r => r.ok).length;
+          const fail = results.filter(r => !r.ok).length;
+          fontUploadStatus.textContent = ok
+            ? `\u2713 ${ok} font${ok === 1 ? "" : "s"} loaded${fail ? ` \u00b7 ${fail} failed` : ""}`
+            : `\u2717 ${fail} failed`;
           setTimeout(() => { fontUploadStatus.textContent = ""; }, 6000);
-        }
-        // Expose registry for debug/testing.
-        window.__uploadedFontFamilies = uploadedFontFamilies;
-        // Force re-render if the selected layer is text.
-        if (selectedLayer && selectedLayer.kind === "TEXT") {
-          buildTextLayerSVG(selectedLayer);
-          paintIfPaused();
         }
         fontUploadInput.value = "";
       });
