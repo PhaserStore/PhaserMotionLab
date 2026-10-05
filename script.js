@@ -4745,16 +4745,29 @@
       let srcCanvas = layer._weirdSourceCanvas;
       for (let i = 0; i < chain.length; i++) {
         const key = chain[i];
-        const { c, p } = byKey[key];
+        const { c } = byKey[key];
         const entry = GENERIC_CANVAS_FX[key];
         const isLast = i === chain.length - 1;
         const dstCanvas = isLast ? layer._weirdCanvas : layer._weirdCanvas2;
         if (entry.needsProgress) {
           const dur = Math.max(0.001, c.duration || 0.001);
           const progress = Math.max(0, Math.min(1, (sceneTime - (layer.start + c.start)) / dur));
-          entry.composite(srcCanvas, dstCanvas, p || c.params || {}, sceneTime, progress);
+          entry.composite(srcCanvas, dstCanvas, c.params || {}, sceneTime, progress);
         } else {
-          entry.composite(srcCanvas, dstCanvas, p || c.params || {}, sceneTime);
+          // v19.69 CRITICAL FIX: `p` here is the clip's PROGRESS
+          // (0..1, from activeEventClipsAt's {c, p} shape) — never
+          // params.  `p || c.params || {}` meant that for nearly the
+          // entire duration of any clip (any p > 0, which is truthy),
+          // this silently passed a NUMBER as the params argument
+          // instead of the actual params object.  Every param read
+          // inside _compositeWeirdSlices (P.glitchChance, P.shake,
+          // P.chroma, etc.) then evaluated to undefined on a Number,
+          // falling back to hardcoded defaults regardless of what the
+          // user had actually set on the sliders.  This is the direct
+          // cause of Weird Glitch looking "weaker" than before the
+          // dispatcher existed — user-adjusted intensity settings
+          // were being silently discarded on every frame.
+          entry.composite(srcCanvas, dstCanvas, c.params || {}, sceneTime);
         }
         srcCanvas = dstCanvas;
       }
@@ -13057,13 +13070,38 @@
      Static layers (SVG, IMG, TEXT) are rasterized once per session and
      reused — the canvas content doesn't change between frames.  Video
      layers must be rasterized every frame because the source frame
-     changes with time.  The cache key is the layer id + a version
-     counter incremented whenever the layer's static content changes.
-     Video layers always miss the cache and rasterize fresh. */
-  const _pixelSweepRasterCache = new Map();   // layer.id → { canvas, version }
+     changes with time.  Video layers always miss the cache and
+     rasterize fresh.
+
+     v19.69 BUG FIX: the cache key used to be layer.id alone, with a
+     "version counter incremented whenever the layer's static content
+     changes" — but invalidatePixelSweepCache (the only way to bump
+     that counter) was never actually called anywhere in the file.
+     Confirmed by searching every call site: none exist.  Practical
+     effect: once a layer's Pixel Sweep source was rasterized, it
+     stayed cached FOREVER, regardless of any later edit — text
+     changes, color changes, and specifically font changes (including
+     switching to an uploaded font asset) all went completely
+     unnoticed, leaving Pixel Sweep sweeping across a stale, wrong-
+     font raster with mismatched glyph metrics — exactly "replaced by
+     a fallback/default font and the layout becomes broken."
+     Fix: a content-aware cache key, the same pattern already proven
+     correct for the Repeater/Weird Glitch source cache
+     (_weirdSourceKey) — comparing a signature of the properties that
+     actually affect rendered appearance, rather than trusting an
+     external invalidation call that never came. */
+  const _pixelSweepRasterCache = new Map();   // layer.id → { canvas, version, key }
   function invalidatePixelSweepCache(layerId) {
     if (layerId == null) _pixelSweepRasterCache.clear();
     else _pixelSweepRasterCache.delete(layerId);
+  }
+  function _pixelSweepCacheKey(layer) {
+    if (layer.kind === "TEXT") {
+      const s = layer.textStyle || {};
+      return "text|" + s.text + "|" + s.fontFamily + "|" + s.fontSize + "|" + s.fontWeight + "|" + s.color + "|" + s.align + "|" + layer.natW + "|" + layer.natH;
+    }
+    const inner = layer.node ? (layer.node.innerHTML || layer.node.outerHTML || "") : "";
+    return layer.kind + "|" + inner.length + "|" + layer.natW + "|" + layer.natH;
   }
 
   // Returns a canvas (or the underlying element for IMG/VIDEO) that
@@ -13086,17 +13124,18 @@
     // capture the composite of all members with current effect
     // mutations.  Otherwise falls through to the standard
     // XMLSerializer path.
+    const key = layer.kind !== "GROUP" ? _pixelSweepCacheKey(layer) : null;
     const cached = _pixelSweepRasterCache.get(layer.id);
     // For GROUP layers we DON'T cache — the composite changes as
     // member effects mutate their DOM, so the source canvas must be
-    // rebuilt each frame.  For static layer kinds the cache stays.
-    if (layer.kind !== "GROUP" && cached && cached.canvas && cached.loaded) return cached.canvas;
-    if (layer.kind !== "GROUP" && cached && cached.canvas) return cached.canvas;
+    // rebuilt each frame.  For static layer kinds the cache stays
+    // ONLY while the content key still matches.
+    if (layer.kind !== "GROUP" && cached && cached.canvas && cached.key === key) return cached.canvas;
 
     const w = layer.natW || 512, h = layer.natH || 512;
     const c = document.createElement("canvas"); c.width = w; c.height = h;
     const ctx = c.getContext("2d");
-    const entry = { canvas: c, version: 1, loaded: false };
+    const entry = { canvas: c, version: 1, loaded: false, key };
     if (layer.kind !== "GROUP") _pixelSweepRasterCache.set(layer.id, entry);
     // Rasterize via serialize → Blob URL → Image → drawImage.  For
     // GROUP layers, build the synthetic SVG on the fly.
@@ -13127,7 +13166,24 @@
         });
         nodeToSerialize = outer;
       } else {
-        nodeToSerialize = layer.node;
+        // v19.69 FIX: clone rather than serializing layer.node
+        // directly.  Pixel Sweep's own overlay-management (see
+        // updatePixelSweepPreview) sets layer.node.style.visibility =
+        // "hidden" once the sweep is active, so only the overlay
+        // canvas shows.  getLayerSourceCanvas's FIRST rasterization
+        // for a layer runs before that hide takes effect, so it was
+        // never affected — but any LATER re-rasterization (triggered
+        // by the content-aware cache key above whenever text, font,
+        // or size changes while the sweep is already active) would
+        // serialize the ALREADY-HIDDEN live node, baking
+        // visibility:hidden into the resulting SVG string and
+        // producing a completely blank rasterized image.  Cloning
+        // and clearing visibility on the clone guarantees the
+        // rasterized source always reflects what the layer actually
+        // looks like, independent of this or any other feature's own
+        // transient DOM visibility bookkeeping.
+        nodeToSerialize = layer.node.cloneNode(true);
+        nodeToSerialize.style.visibility = "";
       }
       const svgStr = new XMLSerializer().serializeToString(nodeToSerialize);
       const url = URL.createObjectURL(new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" }));
@@ -18846,7 +18902,7 @@
     requestAnimationFrame(() => fitZoom());
     setTimeout(() => { fitZoom(); renderTimeline(); }, 120);
     // Test hook: expose internals for automated verification (harmless in production).
-    window.__phaserDebug = Object.assign(window.__phaserDebug || {}, { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, FX_EVENT_DEF, fxSupportsLayer, applyTextFxAtTime, applyWeirdSlicesOnText, applyWeirdSlicesOnLayer, updateTextLayersForExportFrame, updateNonTextWeirdSlicesForExportFrame, _compositeRepeater, _compositeWeirdSlices, _dispatchGenericCanvasEffects, GENERIC_CANVAS_FX, GENERIC_FX_STACK_ORDER, CANVAS_FX_OVERSAMPLE, registerAsset, deleteLayer, TEXT_FX_STRING, TEXT_FX_DOM, buildTextLayerSVG, updateTextLayer, startTextEdit, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, paintWebCodecsLayersForExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath, runSvgRepair, collectSvgRepairOps, releaseClipPaths, removeMasks, convertShapesToPaths, audio: () => audio,
+    window.__phaserDebug = Object.assign(window.__phaserDebug || {}, { drawExportFrame, rasterizeAll, activeEventClipsAt, EVENT_EFFECTS, evaluateLayerAtTime, FX_EVENTS, FX_EVENT_DEF, fxSupportsLayer, applyTextFxAtTime, applyWeirdSlicesOnText, applyWeirdSlicesOnLayer, updateTextLayersForExportFrame, updateNonTextWeirdSlicesForExportFrame, _compositeRepeater, _compositeWeirdSlices, _dispatchGenericCanvasEffects, GENERIC_CANVAS_FX, GENERIC_FX_STACK_ORDER, CANVAS_FX_OVERSAMPLE, registerAsset, deleteLayer, getLayerSourceCanvas, invalidatePixelSweepCache, TEXT_FX_STRING, TEXT_FX_DOM, buildTextLayerSVG, updateTextLayer, startTextEdit, getState: () => STATE, getLayers: () => layers, createEventClip, sourceTimeAt, initVideoLayersForExport, driveVideoLayersRealtime, finalizeVideoLayersAfterExport, paintWebCodecsLayersForExport, duplicateLayer, createTextLayerAt, createShapeLayerAt, paintIfPaused, analyzeSvgLayer, analyzeMorph, primitiveToCanonicalPath, runSvgRepair, collectSvgRepairOps, releaseClipPaths, removeMasks, convertShapesToPaths, audio: () => audio,
       renderTimeline,
     });
   }
