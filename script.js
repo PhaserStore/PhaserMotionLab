@@ -1783,7 +1783,7 @@
       this._frameRate = 30;
       this._codec = null;
       this._codecDescription = null;
-      this._cache = new FrameLRU(60, 256 * 1024 * 1024);
+      this._cache = new FrameLRU(6, 32 * 1024 * 1024);
       this._pendingResolvers = new Map();  // idx → [{resolve, reject}]
       this._submittedUpTo = -1;
       this._closed = false;
