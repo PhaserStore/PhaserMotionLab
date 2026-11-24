@@ -12990,7 +12990,11 @@ layer._exportRasterCanvas = null;
              layer's true dimensions.
      Returns: the output canvas containing the swept result.
   */
-  function applyPixelSweep(source, params, output) {
+  // Sdílený pracovní canvas pro redukci vzorku v režimu Average.
+// applyPixelSweep() je synchronní, takže jej lze bezpečně znovu použít.
+const _pixelSweepAverageCanvas = document.createElement("canvas");
+
+function applyPixelSweep(source, params, output) {
     // Source dimensions — used only to compute source-coord sample
     // positions.  The OUTPUT canvas dimensions drive the sweep math.
     const srcW = source.naturalWidth || source.videoWidth || source.width;
