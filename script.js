@@ -15017,7 +15017,7 @@ if (!c) {
 }
 if (c.width !== rasterW) c.width = rasterW;
 if (c.height !== rasterH) c.height = rasterH;
-const ctx = c.getContext("2d"); { alpha: false });
+const ctx = c.getContext("2d", { alpha: false });
     const imgs = await rasterizeAll(W, H);
     redirectImgsToExportCanvases(imgs);
     const bg = resolveExportBg(true, false);
