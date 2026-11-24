@@ -13096,9 +13096,10 @@ const ictx = inter.getContext("2d");
       }
     } else {
       if (useAverage) {
-        const inter = document.createElement("canvas");
-        inter.width = outW; inter.height = 1;
-        const ictx = inter.getContext("2d");
+        const inter = _pixelSweepAverageCanvas;
+if (inter.width !== outW) inter.width = outW;
+if (inter.height !== 1) inter.height = 1;
+const ictx = inter.getContext("2d");
         ictx.imageSmoothingEnabled = true;
         const srcY = Math.max(0, Math.min(srcH - srcSampleW, sampleAtSrc - halfSrcW));
         ictx.drawImage(source, 0, srcY, srcW, srcSampleW, 0, 0, outW, 1);
