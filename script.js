@@ -13704,10 +13704,19 @@ const ictx = inter.getContext("2d");
       const svgStr = new XMLSerializer().serializeToString(serializeNode);
       const url = URL.createObjectURL(new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" }));
       const svgImg = new Image();
-      svgImg.onload = () => {
-        const c = document.createElement("canvas");
-        c.width = rasterW; c.height = rasterH;
+            svgImg.onload = () => {
+        // Recyklace JEDNOHO canvasu na vrstvu napříč opakovaným
+        // rastrováním (každý frame videoexportu volá tuto funkci pro
+        // každou vrstvu znovu) — místo nové alokace při každém volání.
+        // Vázáno na layer._exportRasterCanvas, ne na modulovou
+        // proměnnou, takže se vrstvy skládané ve stejném snímku
+        // navzájem nepřepíšou.
+        let c = layer._exportRasterCanvas;
+        if (!c) { c = document.createElement("canvas"); layer._exportRasterCanvas = c; }
+        if (c.width !== rasterW) c.width = rasterW;
+        if (c.height !== rasterH) c.height = rasterH;
         const ctx = c.getContext("2d");
+        ctx.clearRect(0, 0, rasterW, rasterH);
         // Enable high-quality smoothing for the vector→bitmap step —
         // this is the ONLY step where interpolation matters, since
         // it's SVG's antialiased rendering being written to pixels.
@@ -15005,8 +15014,15 @@ const ictx = inter.getContext("2d");
       }
     }
 
-    // 5) Prepare scene canvas + imgs.  BEFORE the video loop (which
+        // 5) Prepare scene canvas + imgs.  BEFORE the video loop (which
     // needs them) and BEFORE audio encoding (which is independent).
+<<<<<<< HEAD
+    // Jde o JEDEN finální canvas celé scény (ne per-layer cache),
+    // takže se nerecykluje přes snímky — alpha:false je tu správně,
+    // MP4/H.264 alfa kanál nemá bez ohledu na průhlednost vrstev.
+    const c = document.createElement("canvas"); c.width = W; c.height = H;
+    const ctx = c.getContext("2d", { alpha: false });
+=======
    // Rasterizační výstup se recykluje pro danou vrstvu mezi snímky.
 // Každá vrstva potřebuje vlastní výstupní canvas: drawExportFrame()
 // čte obrazy všech vrstev až při následném složení snímku.
@@ -15018,6 +15034,7 @@ if (!c) {
 if (c.width !== rasterW) c.width = rasterW;
 if (c.height !== rasterH) c.height = rasterH;
 const ctx = c.getContext("2d", { alpha: false });
+>>>>>>> f600ceecc3203fb6850eb14173f902a5035a6627
     const imgs = await rasterizeAll(W, H);
     redirectImgsToExportCanvases(imgs);
     const bg = resolveExportBg(true, false);
