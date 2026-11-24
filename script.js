@@ -4332,35 +4332,22 @@ function _releaseGenericFxCanvasSet(layer) {
   const GENERIC_FX_STACK_ORDER = ["repeater", "weirdGlitch"];
 
   function _ensureWeirdCanvases(layer) {
-    const W = Math.max(1, layer.natW | 0) * CANVAS_FX_OVERSAMPLE;
-    const H = Math.max(1, layer.natH | 0) * CANVAS_FX_OVERSAMPLE;
-    if (!layer._weirdCanvas) {
-      layer._weirdCanvas = document.createElement("canvas");
-      // Fills the wrap so the CSS transforms (position, scale, rotation)
-      // applied to layer.wrap carry through to the visible canvas.
-      layer._weirdCanvas.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;display:none";
-      layer.wrap.appendChild(layer._weirdCanvas);
-    }
-    // v19.67: second ping-pong buffer.  When more than one generic
-    // canvas effect is active on a layer, effects chain: stage 1
-    // reads the rasterized source and writes here; stage 2 reads
-    // this and writes back to _weirdCanvas; and so on, alternating.
-    // With exactly 2 effects in GENERIC_FX_STACK_ORDER today, one
-    // extra buffer is sufficient; adding a 3rd/4th effect later still
-    // only ever needs these same two buffers (they keep alternating).
-    if (!layer._weirdCanvas2) {
-      layer._weirdCanvas2 = document.createElement("canvas");
-      layer._weirdCanvas2.style.cssText = "display:none";
-    }
-    if (!layer._weirdSourceCanvas) layer._weirdSourceCanvas = document.createElement("canvas");
-    if (layer._weirdCanvas.width        !== W) layer._weirdCanvas.width        = W;
-    if (layer._weirdCanvas.height       !== H) layer._weirdCanvas.height       = H;
-    if (layer._weirdCanvas2.width       !== W) layer._weirdCanvas2.width       = W;
-    if (layer._weirdCanvas2.height      !== H) layer._weirdCanvas2.height      = H;
-    if (layer._weirdSourceCanvas.width  !== W) layer._weirdSourceCanvas.width  = W;
-    if (layer._weirdSourceCanvas.height !== H) layer._weirdSourceCanvas.height = H;
+  _acquireGenericFxCanvasSet(layer);
+
+  // 1× rozlišení: buffer odpovídá přirozeným rozměrům vrstvy.
+  const W = Math.max(1, layer.natW | 0);
+  const H = Math.max(1, layer.natH | 0);
+  const buffers = layer._genericFxBuffers;
+
+  for (const canvas of [buffers.source, buffers.output, buffers.intermediate]) {
+    if (canvas.width !== W) canvas.width = W;
+    if (canvas.height !== H) canvas.height = H;
   }
 
+  if (buffers.output.parentNode !== layer.wrap) {
+    layer.wrap.appendChild(buffers.output);
+  }
+}
   function _rasterizeTextToSource(layer) {
     // The "displayed text" — either what applyTextFxAtTime last wrote
     // to the SVG, or the original textStyle.text if no string mutators
