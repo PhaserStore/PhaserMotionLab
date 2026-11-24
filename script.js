@@ -14799,7 +14799,15 @@ layer._weirdActive = false;
      falls back to WebM).  All failure modes are logged with a distinct
      prefix so users on Edge can grep DevTools console. */
   async function exportMP4_S3() {
-    const diag = { steps: [], finalPath: null };
+  // Uvolni snímky z náhledové cache a resetuj dekodér před exportem,
+  // aby export nezačínal s pamětí obsazenou starými VideoFrame snímky.
+  layers.forEach((layer) => {
+    if (!layer.videoSource) return;
+    layer.videoSource._cache.clear();
+    layer.videoSource._resetDecoderForRewind();
+  });
+
+  const diag = { steps: [], finalPath: null };
     const step = (label, extra) => {
       diag.steps.push({ label, ...(extra || {}) });
       console.log("[Phaser MP4 S3]", label, extra || "");
