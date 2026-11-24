@@ -15000,8 +15000,17 @@ layer._weirdActive = false;
 
     // 5) Prepare scene canvas + imgs.  BEFORE the video loop (which
     // needs them) and BEFORE audio encoding (which is independent).
-    const c = document.createElement("canvas"); c.width = W; c.height = H;
-    const ctx = c.getContext("2d", { alpha: false });
+   // Rasterizační výstup se recykluje pro danou vrstvu mezi snímky.
+// Každá vrstva potřebuje vlastní výstupní canvas: drawExportFrame()
+// čte obrazy všech vrstev až při následném složení snímku.
+let c = layer._exportRasterCanvas;
+if (!c) {
+  c = document.createElement("canvas");
+  layer._exportRasterCanvas = c;
+}
+if (c.width !== rasterW) c.width = rasterW;
+if (c.height !== rasterH) c.height = rasterH;
+const ctx = c.getContext("2d"); { alpha: false });
     const imgs = await rasterizeAll(W, H);
     redirectImgsToExportCanvases(imgs);
     const bg = resolveExportBg(true, false);
