@@ -4264,7 +4264,65 @@
   // rather than compounding it, so calling it every frame is safe
   // and cannot drift even if an early-return path ever skips a
   // matching "restore".
-  const CANVAS_FX_OVERSAMPLE = 2;
+  const CANVAS_FX_OVERSAMPLE = 1;
+
+// Canvas sety se sdílejí přes pool. Každá aktivní vrstva si set
+// dočasně vypůjčí; po deaktivaci efektu se vrátí do poolu.
+const _genericFxCanvasPool = [];
+let _genericFxLeaseSeq = 0;
+
+function _acquireGenericFxCanvasSet(layer) {
+  if (layer._genericFxBuffers) return;
+
+  const buffers = _genericFxCanvasPool.pop() || {
+    source: document.createElement("canvas"),
+    output: document.createElement("canvas"),
+    intermediate: document.createElement("canvas"),
+  };
+
+  layer._genericFxBuffers = buffers;
+  layer._genericFxLeaseId = ++_genericFxLeaseSeq;
+  layer._weirdSourceCanvas = buffers.source;
+  layer._weirdCanvas = buffers.output;
+  layer._weirdCanvas2 = buffers.intermediate;
+
+  buffers.output.style.cssText =
+    "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;display:none";
+  buffers.intermediate.style.cssText = "display:none";
+
+  if (layer.wrap && buffers.output.parentNode !== layer.wrap) {
+    layer.wrap.appendChild(buffers.output);
+  }
+}
+
+function _releaseGenericFxCanvasSet(layer) {
+  const buffers = layer && layer._genericFxBuffers;
+  if (!buffers) return;
+
+  // Zneplatní případný asynchronní SVG raster probíhající pro tuto výpůjčku.
+  layer._genericFxLeaseId = ++_genericFxLeaseSeq;
+  layer._weirdRasterInFlight = null;
+  layer._weirdRasterInFlightKey = null;
+
+  if (buffers.output.parentNode) buffers.output.parentNode.removeChild(buffers.output);
+  buffers.output.style.display = "none";
+  buffers.output.style.transform = "";
+
+  for (const canvas of [buffers.source, buffers.output, buffers.intermediate]) {
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+
+  layer._genericFxBuffers = null;
+  layer._weirdSourceCanvas = null;
+  layer._weirdCanvas = null;
+  layer._weirdCanvas2 = null;
+  layer._weirdSourceKey = null;
+  layer._weirdSourceRasterOK = false;
+
+  _genericFxCanvasPool.push(buffers);
+}
   // Fixed, deterministic stack order for generic canvas effects.
   // NOT clip.start-order — these effects semantically chain (repeat
   // then slice reads differently than slice then repeat), so the
