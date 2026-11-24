@@ -7035,14 +7035,9 @@ img.onerror = () => {
       try { if (layer._exportVideoEl.parentNode) layer._exportVideoEl.parentNode.removeChild(layer._exportVideoEl); } catch (e) {}
       layer._exportVideoEl = null;
     }
-    // v19.42: weird slice compositor cleanup (text layers).
-    if (layer._weirdCanvas) {
-      try { if (layer._weirdCanvas.parentNode) layer._weirdCanvas.parentNode.removeChild(layer._weirdCanvas); } catch (e) {}
-      layer._weirdCanvas = null;
-    }
-    layer._weirdSourceCanvas = null;
-    layer._weirdSourceKey = null;
-    layer._weirdActive = false;
+    // Vrátí zapůjčené generické FX buffery do sdíleného poolu.
+_releaseGenericFxCanvasSet(layer);
+layer._weirdActive = false;
     // Path B: release the decoder + close all cached VideoFrames.
     // Without this, GPU memory leaks with every deleted video layer.
     if (layer.videoSource) { try { layer.videoSource.close(); } catch (e) {} layer.videoSource = null; }
