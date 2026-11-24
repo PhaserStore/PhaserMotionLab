@@ -13083,10 +13083,14 @@ function applyPixelSweep(source, params, output) {
 
     if (isHorizontal) {
       if (useAverage) {
+              if (useAverage) {
         const inter = _pixelSweepAverageCanvas;
-if (inter.width !== 1) inter.width = 1;
-if (inter.height !== outH) inter.height = outH;
-const ictx = inter.getContext("2d");
+        if (inter.width !== 1) inter.width = 1;
+        if (inter.height !== outH) inter.height = outH;
+        const ictx = inter.getContext("2d");
+        // Vyčistit PŘED opakovaným použitím — jinak starý obsah
+        // prosvítá přes průhledné pixely zdroje (source-over blend).
+        ictx.clearRect(0, 0, inter.width, inter.height);
         ictx.imageSmoothingEnabled = true;
         const srcX = Math.max(0, Math.min(srcW - srcSampleW, sampleAtSrc - halfSrcW));
         ictx.drawImage(source, srcX, 0, srcSampleW, srcH, 0, 0, 1, outH);
