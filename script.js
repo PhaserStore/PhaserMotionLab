@@ -4873,8 +4873,9 @@ function _releaseGenericFxCanvasSet(layer) {
   //     that physical resolution.
   function _rasterizeAnyLayerToSource(layer) {
     const src = layer._weirdSourceCanvas;
-    const physW = src.width, physH = src.height;
-    const W = physW / CANVAS_FX_OVERSAMPLE, H = physH / CANVAS_FX_OVERSAMPLE;   // logical
+const leaseId = layer._genericFxLeaseId;
+const physW = src.width, physH = src.height;
+const W = physW / CANVAS_FX_OVERSAMPLE, H = physH / CANVAS_FX_OVERSAMPLE;   // logical
     const sctx = src.getContext("2d");
     const kind = layer.kind;
     const node = layer.node;
