@@ -13083,7 +13083,6 @@ function applyPixelSweep(source, params, output) {
 
     if (isHorizontal) {
       if (useAverage) {
-              if (useAverage) {
         const inter = _pixelSweepAverageCanvas;
         if (inter.width !== 1) inter.width = 1;
         if (inter.height !== outH) inter.height = outH;
