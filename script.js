@@ -4621,24 +4621,11 @@ function _releaseGenericFxCanvasSet(layer) {
   }
 
   function _clearWeirdCanvas(layer) {
-    if (layer._weirdCanvas) {
-      layer._weirdCanvas.style.display = "none";
-      layer._weirdCanvas.style.transform = "";
-      const ctx = layer._weirdCanvas.getContext("2d");
-      ctx.clearRect(0, 0, layer._weirdCanvas.width, layer._weirdCanvas.height);
-    }
-    // v19.67: also clear the intermediate ping-pong buffer — otherwise
-    // stale content from a previous chain (e.g. Repeater's output)
-    // could linger and be visible for one frame if effects are
-    // re-added later without the buffer being cleared first.
-    if (layer._weirdCanvas2) {
-      const ctx2 = layer._weirdCanvas2.getContext("2d");
-      ctx2.clearRect(0, 0, layer._weirdCanvas2.width, layer._weirdCanvas2.height);
-    }
-    if (layer.node && layer.node.style) layer.node.style.visibility = "";
-    layer._weirdActive = false;
-    layer._weirdSourceKey = null;
-  }
+  if (!layer) return;
+  if (layer.node && layer.node.style) layer.node.style.visibility = "";
+  layer._weirdActive = false;
+  _releaseGenericFxCanvasSet(layer);
+}
 
   // ================================================================
   // v19.67 GENERIC CANVAS-EFFECT REGISTRY + DISPATCHER
