@@ -4967,24 +4967,42 @@ const W = physW / CANVAS_FX_OVERSAMPLE, H = physH / CANVAS_FX_OVERSAMPLE;   // l
             const url = URL.createObjectURL(svgBlob);
             const img = new Image();
             img.onload = () => {
-              try {
-                const ctx2 = src.getContext("2d");
-                ctx2.setTransform(1, 0, 0, 1, 0, 0);   // draw the already-physical-resolution bitmap 1:1, no further scaling
-                ctx2.clearRect(0, 0, physW, physH);
-                ctx2.drawImage(img, 0, 0, physW, physH);
-                layer._weirdSourceKey = key; layer._weirdSourceRasterOK = true;
-              } catch (e) {}
-              URL.revokeObjectURL(url);
-              layer._weirdRasterInFlight = null;
-              layer._weirdRasterInFlightKey = null;
-              resolve();
-            };
-            img.onerror = () => {
-              URL.revokeObjectURL(url);
-              layer._weirdRasterInFlight = null;
-              layer._weirdRasterInFlightKey = null;
-              resolve();   // resolve (not reject) — caller proceeds with whatever's in the source canvas already
-            };
+  // Canvas set mohl být během asynchronního načítání vrácen do poolu
+  // a zapůjčen jiné vrstvě. V takovém případě do něj nezapisujeme.
+  if (layer._genericFxLeaseId !== leaseId || layer._weirdSourceCanvas !== src) {
+    URL.revokeObjectURL(url);
+    if (layer._weirdRasterInFlight === p) {
+      layer._weirdRasterInFlight = null;
+      layer._weirdRasterInFlightKey = null;
+    }
+    resolve();
+    return;
+  }
+
+  try {
+    const ctx2 = src.getContext("2d");
+    ctx2.setTransform(1, 0, 0, 1, 0, 0);
+    ctx2.clearRect(0, 0, physW, physH);
+    ctx2.drawImage(img, 0, 0, physW, physH);
+    layer._weirdSourceKey = key;
+    layer._weirdSourceRasterOK = true;
+  } catch (e) {}
+
+  URL.revokeObjectURL(url);
+  if (layer._weirdRasterInFlight === p) {
+    layer._weirdRasterInFlight = null;
+    layer._weirdRasterInFlightKey = null;
+  }
+  resolve();
+};
+img.onerror = () => {
+  URL.revokeObjectURL(url);
+  if (layer._weirdRasterInFlight === p) {
+    layer._weirdRasterInFlight = null;
+    layer._weirdRasterInFlightKey = null;
+  }
+  resolve();
+};
             img.src = url;
           } catch (e) {
             layer._weirdRasterInFlight = null;
