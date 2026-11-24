@@ -13099,11 +13099,12 @@ function applyPixelSweep(source, params, output) {
         octx.drawImage(source, sampleAtSrc, 0, 1, srcH, stretchDstLo, 0, stretchDstW, outH);
       }
     } else {
-      if (useAverage) {
+            if (useAverage) {
         const inter = _pixelSweepAverageCanvas;
-if (inter.width !== outW) inter.width = outW;
-if (inter.height !== 1) inter.height = 1;
-const ictx = inter.getContext("2d");
+        if (inter.width !== outW) inter.width = outW;
+        if (inter.height !== 1) inter.height = 1;
+        const ictx = inter.getContext("2d");
+        ictx.clearRect(0, 0, inter.width, inter.height);
         ictx.imageSmoothingEnabled = true;
         const srcY = Math.max(0, Math.min(srcH - srcSampleW, sampleAtSrc - halfSrcW));
         ictx.drawImage(source, 0, srcY, srcW, srcSampleW, 0, 0, outW, 1);
