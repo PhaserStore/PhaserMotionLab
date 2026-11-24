@@ -4762,9 +4762,9 @@ function _releaseGenericFxCanvasSet(layer) {
     const chain = GENERIC_FX_STACK_ORDER.filter((k) => byKey[k]);
 
     if (!chain.length) {
-      if (layer._weirdActive) _clearWeirdCanvas(layer);
-      return null;
-    }
+  if (layer._weirdActive || layer._genericFxBuffers) _clearWeirdCanvas(layer);
+  return null;
+}
     if (!(layer.kind === "TEXT" || layer.kind === "IMG" || layer.kind === "SVG" || layer.kind === "SHAPE")) return null;
 
     _ensureWeirdCanvases(layer);
