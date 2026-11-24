@@ -7043,6 +7043,7 @@ layer._weirdActive = false;
     if (layer.videoSource) { try { layer.videoSource.close(); } catch (e) {} layer.videoSource = null; }
     // S2: drop the export-resolution canvas reference so GC can reclaim.
     if (layer._exportCanvas) layer._exportCanvas = null;
+layer._exportRasterCanvas = null;
     // v19.16: deleting a GROUP also disposes its members — their DOM
     // is inside the group wrap and would leak otherwise.  User can
     // ungroup first if they want the members back.
